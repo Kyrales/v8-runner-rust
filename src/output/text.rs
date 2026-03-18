@@ -1,5 +1,5 @@
-use serde::Serialize;
 use crate::output::json::Envelope;
+use serde::Serialize;
 
 pub struct TextPresenter {
     pub no_color: bool,

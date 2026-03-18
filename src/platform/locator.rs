@@ -14,7 +14,10 @@ pub enum PlatformBinary {
     EdtCli,
 }
 
-pub fn locate(binary: PlatformBinary, explicit_path: Option<&PathBuf>) -> Result<PathBuf, LocatorError> {
+pub fn locate(
+    binary: PlatformBinary,
+    explicit_path: Option<&PathBuf>,
+) -> Result<PathBuf, LocatorError> {
     if let Some(p) = explicit_path {
         if p.exists() {
             return Ok(p.clone());
@@ -41,7 +44,11 @@ fn which(name: &str) -> Result<PathBuf, ()> {
         .and_then(|paths| {
             std::env::split_paths(&paths).find_map(|dir| {
                 let candidate = dir.join(name);
-                if candidate.exists() { Some(candidate) } else { None }
+                if candidate.exists() {
+                    Some(candidate)
+                } else {
+                    None
+                }
             })
         })
         .ok_or(())

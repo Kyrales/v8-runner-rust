@@ -1,6 +1,6 @@
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::change_detection::file_state::FileState;
@@ -8,10 +8,16 @@ use crate::change_detection::file_state::FileState;
 #[derive(Debug, Error)]
 pub enum StorageError {
     #[error("I/O error for storage '{path}': {source}")]
-    Io { path: PathBuf, source: std::io::Error },
+    Io {
+        path: PathBuf,
+        source: std::io::Error,
+    },
 
     #[error("JSON error for storage '{path}': {source}")]
-    Json { path: PathBuf, source: serde_json::Error },
+    Json {
+        path: PathBuf,
+        source: serde_json::Error,
+    },
 }
 
 /// Persisted map of path → FileState, stored as JSON.

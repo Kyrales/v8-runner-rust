@@ -1,8 +1,8 @@
-pub mod process;
-pub mod locator;
 pub mod connection;
 pub mod designer;
-pub mod enterprise;
 pub mod edt;
+pub mod enterprise;
 pub mod ibcmd;
 pub mod interactive;
+pub mod locator;
+pub mod process;

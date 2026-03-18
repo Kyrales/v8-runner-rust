@@ -97,6 +97,13 @@ impl ProcessExecutor {
         args: &[&str],
         workdir: Option<&Path>,
     ) -> Result<ProcessResult, ProcessError> {
-        Self::run(program, args, RunOptions { workdir, ..Default::default() })
+        Self::run(
+            program,
+            args,
+            RunOptions {
+                workdir,
+                ..Default::default()
+            },
+        )
     }
 }

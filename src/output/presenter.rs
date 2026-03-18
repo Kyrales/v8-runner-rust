@@ -1,6 +1,6 @@
-use serde::Serialize;
 use crate::output::json::Envelope;
 use crate::output::text::{JsonPresenter, TextPresenter};
+use serde::Serialize;
 
 pub enum ColorMode {
     Enabled,
@@ -29,7 +29,8 @@ impl Presenter {
 
     pub fn print_error(&self, msg: &str) {
         if self.is_json() {
-            let env = Envelope::<serde_json::Value>::err("error", 0, serde_json::json!({"message": msg}));
+            let env =
+                Envelope::<serde_json::Value>::err("error", 0, serde_json::json!({"message": msg}));
             self.json.print(&env);
         } else {
             self.text.print_error(msg);

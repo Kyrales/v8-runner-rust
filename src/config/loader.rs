@@ -51,7 +51,11 @@ fn resolve_config_path(config_path: Option<&str>) -> Result<std::path::PathBuf, 
     }
 
     // Default search locations
-    let candidates = ["application.yaml", "application.yml", "config/application.yaml"];
+    let candidates = [
+        "application.yaml",
+        "application.yml",
+        "config/application.yaml",
+    ];
     for candidate in &candidates {
         let p = Path::new(candidate);
         if p.exists() {

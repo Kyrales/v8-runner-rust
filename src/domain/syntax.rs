@@ -1,5 +1,5 @@
-use serde::{Deserialize, Serialize};
 use crate::domain::issue::Issue;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SyntaxCheckResult {

@@ -23,3 +23,5 @@
 
 # OS-specific files
 .DS_Store
+
+kotlin-example/

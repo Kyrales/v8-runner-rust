@@ -1,5 +1,5 @@
-use std::path::{Path, PathBuf};
 use sha2::{Digest, Sha256};
+use std::path::{Path, PathBuf};
 use thiserror::Error;
 use walkdir::WalkDir;
 
@@ -8,13 +8,22 @@ use crate::change_detection::file_state::{mtime_secs, FileState};
 #[derive(Debug, Error)]
 pub enum ScanError {
     #[error("failed to walk directory '{path}': {source}")]
-    Walk { path: PathBuf, source: walkdir::Error },
+    Walk {
+        path: PathBuf,
+        source: walkdir::Error,
+    },
 
     #[error("failed to read file '{path}': {source}")]
-    Read { path: PathBuf, source: std::io::Error },
+    Read {
+        path: PathBuf,
+        source: std::io::Error,
+    },
 
     #[error("failed to read metadata for '{path}': {source}")]
-    Meta { path: PathBuf, source: std::io::Error },
+    Meta {
+        path: PathBuf,
+        source: std::io::Error,
+    },
 }
 
 /// Directory/file names that are always excluded from scanning.

@@ -1,13 +1,13 @@
 mod app;
+mod change_detection;
 mod cli;
 mod config;
 mod domain;
-mod use_cases;
-mod change_detection;
-mod platform;
-mod parsers;
 mod output;
+mod parsers;
+mod platform;
 mod support;
+mod use_cases;
 
 use std::process;
 
