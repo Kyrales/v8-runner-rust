@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::time::Duration;
 
 use thiserror::Error;
 
@@ -16,6 +17,8 @@ pub struct ProcessRequest {
     pub stdout_log_path: Option<PathBuf>,
     /// Optional path where runner-captured stderr is mirrored.
     pub stderr_log_path: Option<PathBuf>,
+    /// Optional grace period used by `spawn()` to detect immediate startup failures.
+    pub startup_probe: Option<Duration>,
 }
 
 /// Result of a completed `run()` invocation.
@@ -47,6 +50,12 @@ pub struct SpawnResult {
 pub enum ProcessError {
     #[error("failed to spawn process '{cmd}': {source}")]
     SpawnFailed { cmd: String, source: std::io::Error },
+
+    #[error("failed to observe process startup '{cmd}': {source}")]
+    StartupCheckFailed { cmd: String, source: std::io::Error },
+
+    #[error("process exited before startup completed '{cmd}' (exit {exit_code})")]
+    ExitedEarly { cmd: String, exit_code: i32 },
 
     #[error("failed to write stdout log '{path}': {source}")]
     StdoutLogIo {
@@ -110,6 +119,7 @@ impl ProcessRunner for ProcessExecutor {
     }
 
     fn spawn(&self, request: &ProcessRequest) -> Result<SpawnResult, ProcessError> {
+        let rendered_command = render_command(request);
         let mut cmd = Command::new(&request.program);
         cmd.args(&request.args);
         cmd.stdin(Stdio::null());
@@ -120,12 +130,31 @@ impl ProcessRunner for ProcessExecutor {
         }
 
         let child = cmd.spawn().map_err(|source| ProcessError::SpawnFailed {
-            cmd: render_command(request),
+            cmd: rendered_command.clone(),
             source,
         })?;
+        let pid = child.id();
+        let mut child = child;
+
+        if let Some(startup_probe) = request.startup_probe {
+            std::thread::sleep(startup_probe);
+            if let Some(status) =
+                child
+                    .try_wait()
+                    .map_err(|source| ProcessError::StartupCheckFailed {
+                        cmd: rendered_command.clone(),
+                        source,
+                    })?
+            {
+                return Err(ProcessError::ExitedEarly {
+                    cmd: rendered_command,
+                    exit_code: status.code().unwrap_or(-1),
+                });
+            }
+        }
 
         Ok(SpawnResult {
-            pid: child.id(),
+            pid,
             binary: request.program.clone(),
         })
     }
@@ -143,6 +172,7 @@ mod tests {
     use super::{ProcessError, ProcessExecutor, ProcessRequest, ProcessRunner};
     use std::fs;
     use std::path::Path;
+    use std::time::Duration;
     use tempfile::tempdir;
 
     #[cfg(unix)]
@@ -156,8 +186,13 @@ mod tests {
 
     #[cfg(unix)]
     fn write_script(path: &Path, body: &str) {
-        fs::write(path, format!("#!/bin/sh\n{body}\n")).expect("write script");
-        make_executable(path);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).expect("create dirs");
+        }
+        let staged = path.with_extension("tmp");
+        fs::write(&staged, format!("#!/bin/sh\n{body}\n")).expect("write script");
+        make_executable(&staged);
+        fs::rename(&staged, path).expect("rename script");
     }
 
     #[cfg(unix)]
@@ -177,6 +212,7 @@ mod tests {
                 workdir: None,
                 stdout_log_path: Some(stdout_log.clone()),
                 stderr_log_path: Some(stderr_log.clone()),
+                startup_probe: None,
             })
             .expect("run");
 
@@ -208,11 +244,37 @@ mod tests {
                 workdir: None,
                 stdout_log_path: None,
                 stderr_log_path: None,
+                startup_probe: None,
             })
             .expect("spawn");
 
         assert!(result.pid > 0);
         assert_eq!(result.binary, script);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn spawn_detects_immediate_exit_when_probe_is_requested() {
+        let dir = tempdir().expect("tempdir");
+        let script = dir.path().join("exit.sh");
+        write_script(&script, "exit 7");
+
+        let runner = ProcessExecutor;
+        let err = runner
+            .spawn(&ProcessRequest {
+                program: script,
+                args: vec![],
+                workdir: None,
+                stdout_log_path: None,
+                stderr_log_path: None,
+                startup_probe: Some(Duration::from_millis(50)),
+            })
+            .expect_err("expected early exit");
+
+        assert!(matches!(
+            err,
+            ProcessError::ExitedEarly { exit_code: 7, .. }
+        ));
     }
 
     #[cfg(unix)]
@@ -230,6 +292,7 @@ mod tests {
                 workdir: None,
                 stdout_log_path: Some(dir.path().join("missing").join("stdout.log")),
                 stderr_log_path: None,
+                startup_probe: None,
             })
             .expect_err("expected log write failure");
 

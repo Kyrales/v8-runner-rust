@@ -154,6 +154,7 @@ impl<'a> DesignerDsl<'a> {
                 workdir: None,
                 stdout_log_path: None,
                 stderr_log_path: None,
+                startup_probe: None,
             })
             .map_err(DesignerError::Spawn)?;
 
@@ -196,8 +197,13 @@ mod tests {
 
     #[cfg(unix)]
     fn write_script(path: &Path, body: &str) {
-        fs::write(path, format!("#!/bin/sh\n{body}\n")).expect("write script");
-        make_executable(path);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).expect("create dirs");
+        }
+        let staged = path.with_extension("tmp");
+        fs::write(&staged, format!("#!/bin/sh\n{body}\n")).expect("write script");
+        make_executable(&staged);
+        fs::rename(&staged, path).expect("rename script");
     }
 
     #[cfg(unix)]

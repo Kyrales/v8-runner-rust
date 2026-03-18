@@ -33,7 +33,7 @@ tools:
     # Installation hint can point either to a binary:
     # path: /opt/1cv8/x86_64/8.3.25.1234/1cv8
     #
-    # ...or to an installation/bin directory:
+    # ...or to an installation root with versioned subdirectories:
     # path: /opt/1cv8/x86_64
     #
     # Exact platform version for auto-discovery:

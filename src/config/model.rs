@@ -83,8 +83,8 @@ pub struct ToolsConfig {
 pub struct PlatformToolConfig {
     /// Installation hint for platform utilities.
     ///
-    /// May point either to a concrete binary (`1cv8`, `1cv8c`, `ibcmd`) or to an installation/bin
-    /// directory from which sibling binaries can be derived.
+    /// May point to a concrete binary (`1cv8`, `1cv8c`, `ibcmd`), to an installation `bin`
+    /// directory, or to a platform root that contains versioned subdirectories.
     pub path: Option<PathBuf>,
 
     /// Exact platform version in `major.minor.patch.build` format, for example `8.3.25.1234`.

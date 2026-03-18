@@ -1,4 +1,4 @@
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::cli::args::LaunchArgs;
 use crate::config::model::AppConfig;
@@ -10,6 +10,8 @@ use crate::platform::locator::UtilityType;
 use crate::platform::process::ProcessRequest;
 use crate::platform::utilities::PlatformUtilities;
 use crate::support::error::AppError;
+
+const LAUNCH_STARTUP_PROBE: Duration = Duration::from_millis(250);
 
 pub fn execute(
     config: &AppConfig,
@@ -44,6 +46,7 @@ pub fn execute(
             workdir: None,
             stdout_log_path: None,
             stderr_log_path: None,
+            startup_probe: Some(LAUNCH_STARTUP_PROBE),
         })
         .map_err(|e| AppError::Platform(e.to_string()))?;
 

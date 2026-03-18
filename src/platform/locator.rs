@@ -185,6 +185,13 @@ impl Locator {
             return Ok(location);
         }
 
+        let hint_candidates = self.search_hint_candidates(utility);
+        if !hint_candidates.is_empty() {
+            let selected = self.select_candidate(utility, hint_candidates)?;
+            self.cache.insert(cache_key, selected.clone());
+            return Ok(selected);
+        }
+
         let candidates = self.search_candidates(utility);
         let selected = self.select_candidate(utility, candidates)?;
         self.cache.insert(cache_key, selected.clone());
@@ -258,6 +265,32 @@ impl Locator {
 
         candidates.extend(path_candidates(utility));
         candidates
+    }
+
+    fn search_hint_candidates(&self, utility: UtilityType) -> Vec<Candidate> {
+        if utility.is_platform() {
+            let Some(hint) = self.platform_hint.as_ref() else {
+                return Vec::new();
+            };
+            if !hint.is_dir() {
+                return Vec::new();
+            }
+
+            if let Some(required) = &self.platform_version {
+                platform_candidates_for_version(utility, required, std::slice::from_ref(hint))
+            } else {
+                platform_candidates_any_version(utility, std::slice::from_ref(hint))
+            }
+        } else {
+            let Some(hint) = self.edt_hint.as_ref() else {
+                return Vec::new();
+            };
+            if !hint.is_dir() {
+                return Vec::new();
+            }
+
+            edt_candidates_any_version(utility, std::slice::from_ref(hint))
+        }
     }
 
     fn select_candidate(
@@ -623,6 +656,20 @@ mod tests {
             locator.locate(UtilityType::V8).expect("locate").path,
             binary
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn explicit_root_hint_searches_versioned_children() {
+        let dir = tempdir().expect("tempdir");
+        let root = dir.path().join("platform-root");
+        let version = PlatformVersion::parse_strict("8.3.25.1234").expect("version");
+        let thin = root.join("8.3.25.1234").join("bin").join("1cv8c");
+        touch_executable(&thin);
+
+        let mut locator = Locator::with_roots(Some(root), Some(version), None, vec![], vec![]);
+
+        assert_eq!(locator.locate(UtilityType::V8C).expect("locate").path, thin);
     }
 
     #[cfg(unix)]

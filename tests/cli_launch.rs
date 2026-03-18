@@ -18,21 +18,30 @@ fn write_script(path: &Path) {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).expect("parent");
     }
-    fs::write(path, "#!/bin/sh\nexit 0\n").expect("write");
-    make_executable(path);
+    let staged = path.with_extension("tmp");
+    fs::write(&staged, "#!/bin/sh\nsleep 1\n").expect("write");
+    make_executable(&staged);
+    fs::rename(&staged, path).expect("rename");
 }
 
-fn write_config(path: &Path, base_path: &Path, work_path: &Path, platform_path: &Path) {
-    fs::write(
-        path,
-        format!(
-            "basePath: '{}'\nworkPath: '{}'\nformat: DESIGNER\nbuilder: DESIGNER\nconnection: 'File=/tmp/ib'\nsource-set:\n  - name: main\n    purpose: CONFIGURATION\n    path: .\ntools:\n  platform:\n    path: '{}'\n",
-            base_path.display(),
-            work_path.display(),
-            platform_path.display(),
-        ),
-    )
-    .expect("config");
+fn write_config(
+    path: &Path,
+    base_path: &Path,
+    work_path: &Path,
+    platform_path: &Path,
+    platform_version: Option<&str>,
+) {
+    let mut config = format!(
+        "basePath: '{}'\nworkPath: '{}'\nformat: DESIGNER\nbuilder: DESIGNER\nconnection: 'File=/tmp/ib'\nsource-set:\n  - name: main\n    purpose: CONFIGURATION\n    path: .\ntools:\n  platform:\n    path: '{}'\n",
+        base_path.display(),
+        work_path.display(),
+        platform_path.display(),
+    );
+    if let Some(platform_version) = platform_version {
+        config.push_str(&format!("    version: '{}'\n", platform_version));
+    }
+
+    fs::write(path, config).expect("config");
 }
 
 fn setup_project() -> (tempfile::TempDir, PathBuf, PathBuf, PathBuf) {
@@ -46,9 +55,32 @@ fn setup_project() -> (tempfile::TempDir, PathBuf, PathBuf, PathBuf) {
     fs::create_dir_all(&work_path).expect("work");
     write_script(&install_dir.join("bin").join("1cv8"));
     write_script(&install_dir.join("bin").join("1cv8c"));
-    write_config(&config_path, &base_path, &work_path, &install_dir);
+    write_config(&config_path, &base_path, &work_path, &install_dir, None);
 
     (dir, config_path, install_dir, work_path)
+}
+
+fn setup_versioned_project() -> (tempfile::TempDir, PathBuf, PathBuf, PathBuf) {
+    let dir = tempdir().expect("tempdir");
+    let base_path = dir.path().join("project");
+    let work_path = dir.path().join("work");
+    let root_path = dir.path().join("platform-root");
+    let version = root_path.join("8.3.25.1234");
+    let config_path = dir.path().join("application.yaml");
+
+    fs::create_dir_all(&base_path).expect("base");
+    fs::create_dir_all(&work_path).expect("work");
+    write_script(&version.join("bin").join("1cv8"));
+    write_script(&version.join("bin").join("1cv8c"));
+    write_config(
+        &config_path,
+        &base_path,
+        &work_path,
+        &root_path,
+        Some("8.3.25.1234"),
+    );
+
+    (dir, config_path, version, work_path)
 }
 
 #[test]
@@ -138,4 +170,55 @@ fn launch_thick_uses_v8_binary() {
         payload["data"]["binary"].as_str().expect("binary"),
         install_dir.join("bin").join("1cv8").to_string_lossy()
     );
+}
+
+#[test]
+fn launch_uses_versioned_root_hint() {
+    let (_dir, config_path, version_dir, _work_path) = setup_versioned_project();
+    let output = std::process::Command::cargo_bin("v8-test-runner")
+        .expect("binary")
+        .args([
+            "--config",
+            &config_path.display().to_string(),
+            "--output",
+            "json",
+            "launch",
+            "--mode",
+            "thin",
+        ])
+        .output()
+        .expect("run command");
+
+    assert!(output.status.success());
+    let payload: Value = serde_json::from_slice(&output.stdout).expect("json");
+    assert_eq!(
+        payload["data"]["binary"].as_str().expect("binary"),
+        version_dir.join("bin").join("1cv8c").to_string_lossy()
+    );
+}
+
+#[test]
+fn launch_fails_when_process_exits_during_startup_probe() {
+    let (_dir, config_path, install_dir, _work_path) = setup_project();
+    let thin = install_dir.join("bin").join("1cv8c");
+    let staged = thin.with_extension("tmp");
+    fs::write(&staged, "#!/bin/sh\nexit 9\n").expect("write");
+    make_executable(&staged);
+    fs::rename(&staged, &thin).expect("rename");
+
+    let output = std::process::Command::cargo_bin("v8-test-runner")
+        .expect("binary")
+        .args([
+            "--config",
+            &config_path.display().to_string(),
+            "launch",
+            "--mode",
+            "thin",
+        ])
+        .output()
+        .expect("run command");
+
+    assert!(!output.status.success());
+    assert_eq!(output.status.code(), Some(4));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("exited before startup completed"));
 }
