@@ -27,10 +27,7 @@ pub enum ScanError {
     },
 
     #[error("failed to convert mtime for '{path}': {source}")]
-    Mtime {
-        path: PathBuf,
-        source: MtimeError,
-    },
+    Mtime { path: PathBuf, source: MtimeError },
 
     #[error("failed to build path relative to scan root '{root}' for '{path}'")]
     RelativePath { root: PathBuf, path: PathBuf },
@@ -78,12 +75,11 @@ pub fn scan(
     watermark: Option<u64>,
     stored_keys: &HashSet<String>,
 ) -> Result<ScanSnapshot, ScanError> {
-    let scan_started_at = mtime_nanos(std::time::SystemTime::now(), root).map_err(
-        |source| ScanError::Mtime {
+    let scan_started_at =
+        mtime_nanos(std::time::SystemTime::now(), root).map_err(|source| ScanError::Mtime {
             path: root.to_path_buf(),
             source,
-        },
-    )?;
+        })?;
     let mut seen_files = Vec::new();
     let mut candidates = Vec::new();
 
@@ -120,11 +116,14 @@ pub fn scan(
             source: e,
         })?;
 
-        let mtime_ns = mtime_nanos(meta.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH), path)
-            .map_err(|source| ScanError::Mtime {
-                path: path.to_path_buf(),
-                source,
-            })?;
+        let mtime_ns = mtime_nanos(
+            meta.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH),
+            path,
+        )
+        .map_err(|source| ScanError::Mtime {
+            path: path.to_path_buf(),
+            source,
+        })?;
         let rel_path = rel_path(root, path)?;
         let seen = SeenFile {
             path: path.to_path_buf(),

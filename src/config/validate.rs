@@ -4,6 +4,7 @@ use thiserror::Error;
 
 use crate::config::model::{AppConfig, BuilderBackend, SourceFormat, SourceSetPurpose};
 use crate::platform::locator::PlatformVersion;
+use crate::support::path::is_safe_path_segment;
 
 #[derive(Debug, Error)]
 pub enum ConfigValidationError {
@@ -116,25 +117,7 @@ fn validate_source_sets(config: &AppConfig) -> Result<(), ConfigValidationError>
 }
 
 fn validate_source_set_name(name: &str) -> Result<(), ConfigValidationError> {
-    if name.is_empty() {
-        return Err(ConfigValidationError::InvalidSourceSetName(name.to_owned()));
-    }
-
-    let mut components = Path::new(name).components();
-    let is_single_normal_component =
-        matches!(components.next(), Some(std::path::Component::Normal(_)))
-            && components.next().is_none();
-
-    if !is_single_normal_component {
-        return Err(ConfigValidationError::InvalidSourceSetName(name.to_owned()));
-    }
-
-    if name.chars().any(|ch| {
-        matches!(
-            ch,
-            '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' | '\0'
-        )
-    }) {
+    if !is_safe_path_segment(name) {
         return Err(ConfigValidationError::InvalidSourceSetName(name.to_owned()));
     }
 

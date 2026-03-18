@@ -24,7 +24,11 @@ pub struct FileState {
 impl FileState {
     /// Construct a captured file state from absolute path, mtime, and content hash.
     pub fn new(path: PathBuf, mtime_ns: u64, hash: String) -> Self {
-        Self { path, mtime_ns, hash }
+        Self {
+            path,
+            mtime_ns,
+            hash,
+        }
     }
 }
 
@@ -32,10 +36,12 @@ impl FileState {
 ///
 /// Returns `Err` for pre-epoch times or values that overflow `u64`.
 pub fn mtime_nanos(t: SystemTime, path: &Path) -> Result<u64, MtimeError> {
-    let dur = t.duration_since(SystemTime::UNIX_EPOCH).map_err(|_| MtimeError {
-        path: path.to_path_buf(),
-        reason: "pre-epoch mtime",
-    })?;
+    let dur = t
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map_err(|_| MtimeError {
+            path: path.to_path_buf(),
+            reason: "pre-epoch mtime",
+        })?;
     dur.as_nanos().try_into().map_err(|_| MtimeError {
         path: path.to_path_buf(),
         reason: "mtime nanoseconds overflow u64",

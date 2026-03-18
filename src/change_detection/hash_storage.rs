@@ -123,7 +123,8 @@ impl HashStorage {
             .iter()
             .map_err(|e| map_storage_error(&self.path, "iterate mtime table", e))?
         {
-            let (k, mtime) = item.map_err(|e| map_storage_error(&self.path, "read mtime row", e))?;
+            let (k, mtime) =
+                item.map_err(|e| map_storage_error(&self.path, "read mtime row", e))?;
             let rel = k.value().to_owned();
             let hash = hash_tbl
                 .get(rel.as_str())

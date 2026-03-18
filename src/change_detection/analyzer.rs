@@ -86,7 +86,7 @@ pub fn analyze_context(context: &SourceSetContext, work_path: &Path) -> ContextA
         Err(e) => {
             if e.is_recoverable() {
                 tracing::warn!(
-                    source_set = %context.name,
+                    source_set = %context.name(),
                     error = %e,
                     "recoverable storage problem, switching to fallback mode"
                 );
@@ -103,11 +103,11 @@ pub fn analyze_context(context: &SourceSetContext, work_path: &Path) -> ContextA
     };
 
     let stored_keys: HashSet<String> = snapshot.entries.keys().cloned().collect();
-    let scan = match scanner::scan(&context.path, snapshot.watermark, &stored_keys) {
+    let scan = match scanner::scan(context.path(), snapshot.watermark, &stored_keys) {
         Ok(scan) => scan,
         Err(e) => {
             tracing::warn!(
-                source_set = %context.name,
+                source_set = %context.name(),
                 error = %e,
                 "scan failed, switching to fallback mode"
             );
@@ -119,14 +119,18 @@ pub fn analyze_context(context: &SourceSetContext, work_path: &Path) -> ContextA
     };
 
     let mut changes = detect_changes(&scan.candidates, &snapshot.entries);
-    let seen_rel: HashSet<&str> = scan.seen_files.iter().map(|f| f.rel_path.as_str()).collect();
+    let seen_rel: HashSet<&str> = scan
+        .seen_files
+        .iter()
+        .map(|f| f.rel_path.as_str())
+        .collect();
     changes.extend(
         snapshot
             .entries
             .iter()
             .filter(|(rel, _)| !seen_rel.contains(rel.as_str()))
             .map(|(rel, _)| FileChange {
-                path: context.path.join(rel),
+                path: context.path().join(rel),
                 kind: ChangeKind::Deleted,
                 new_hash: None,
             }),
@@ -196,7 +200,11 @@ pub fn rescan_and_commit_full(
         },
     )?;
     storage
-        .commit_snapshot(&full.snapshot, full.scan_started_at, full.observed_generation)
+        .commit_snapshot(
+            &full.snapshot,
+            full.scan_started_at,
+            full.observed_generation,
+        )
         .map_err(|e| map_commit_error(context, storage.path(), e))
 }
 
@@ -226,7 +234,11 @@ fn build_prepared_state(
     stored: &HashMap<String, StoredFileState>,
     observed_generation: u64,
 ) -> PreparedStateUpdate {
-    let seen_rel: HashSet<&str> = scan.seen_files.iter().map(|f| f.rel_path.as_str()).collect();
+    let seen_rel: HashSet<&str> = scan
+        .seen_files
+        .iter()
+        .map(|f| f.rel_path.as_str())
+        .collect();
     let candidate_map: HashMap<&str, &scanner::CandidateFile> = scan
         .candidates
         .iter()
@@ -301,9 +313,8 @@ fn full_snapshot(
     context: &SourceSetContext,
     input: &StorageSnapshotInputs,
 ) -> Result<FullSnapshot, ChangeDetectionError> {
-    let scan = scanner::scan(&context.path, input.watermark, &input.stored_keys).map_err(|e| {
-        map_scan_error(context, e)
-    })?;
+    let scan = scanner::scan(context.path(), input.watermark, &input.stored_keys)
+        .map_err(|e| map_scan_error(context, e))?;
     let mut snapshot = HashMap::new();
     for candidate in scan.candidates {
         snapshot.insert(
@@ -342,7 +353,7 @@ fn map_storage_hard(
     err: StorageError,
 ) -> ChangeDetectionError {
     ChangeDetectionError::StorageHard {
-        source_set: context.name.clone(),
+        source_set: context.name().to_owned(),
         storage_path: storage_path.to_path_buf(),
         reason: err.to_string(),
     }
@@ -357,7 +368,7 @@ fn map_commit_error(
         StorageError::ConcurrentStateModified {
             expected, actual, ..
         } => ChangeDetectionError::ConcurrentStateModified {
-            source_set: context.name.clone(),
+            source_set: context.name().to_owned(),
             storage_path: storage_path.to_path_buf(),
             expected,
             actual,
@@ -368,8 +379,8 @@ fn map_commit_error(
 
 fn map_scan_error(context: &SourceSetContext, err: ScanError) -> ChangeDetectionError {
     ChangeDetectionError::StorageHard {
-        source_set: context.name.clone(),
-        storage_path: context.path.clone(),
+        source_set: context.name().to_owned(),
+        storage_path: context.path().to_path_buf(),
         reason: format!("scan failed: {err}"),
     }
 }
