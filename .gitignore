@@ -1,3 +1,25 @@
+# Rust build artifacts
+/target/
+**/*.rs.bk
+
+# Coverage and profiling outputs
+*.profraw
+*.profdata
+/coverage/
+/tarpaulin-report.html
+
+# Local environment overrides
+.env
+.env.*
+!.env.example
+.direnv/
+
+# IDE and local tooling
 .claude/
+.idea/
+.mcp.json
 .tmp/
 .vscode/
+
+# OS-specific files
+.DS_Store

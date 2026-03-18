@@ -1,0 +1,39 @@
+# Example configuration for v8-test-runner
+# Copy to application.yaml and adjust paths for your project
+
+# Root path of the project sources (Designer format)
+basePath: /path/to/project/sources
+
+# Working directory for temp files and hash storages
+workPath: /tmp/v8-test-runner/my-project
+
+# Source format: DESIGNER or EDT
+format: DESIGNER
+
+# Builder backend: DESIGNER or IBCMD
+builder: DESIGNER
+
+# 1C infobase connection string
+connection: "File=/path/to/infobase"
+
+# Source sets: list of configurations and extensions
+source-set:
+  - name: main
+    purpose: CONFIGURATION
+    path: .  # relative to basePath
+
+  # Uncomment to add an extension:
+  # - name: my-extension
+  #   purpose: EXTENSION
+  #   path: extensions/my-extension
+
+# Platform tools configuration (optional)
+tools:
+  platform:
+    # Explicit path to 1cv8/1cv8c binary (auto-discovered if omitted)
+    # path: /opt/1cv8/x86_64/8.3.25.1234/1cv8
+    version: "8.3.25"
+
+  edt-cli:
+    # path: /opt/1cedtcli/1cedtcli
+    auto-start: false
