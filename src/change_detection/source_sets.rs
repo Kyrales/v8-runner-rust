@@ -99,7 +99,8 @@ fn absolutize_path(path: &Path) -> PathBuf {
 mod tests {
     use super::SourceSetsService;
     use crate::config::model::{
-        AppConfig, BuilderBackend, SourceFormat, SourceSetConfig, SourceSetPurpose, ToolsConfig,
+        AppConfig, BuildConfig, BuilderBackend, SourceFormat, SourceSetConfig, SourceSetPurpose,
+        ToolsConfig,
     };
     use std::path::Path;
 
@@ -116,6 +117,7 @@ mod tests {
                 purpose: SourceSetPurpose::Configuration,
                 path: std::path::PathBuf::from("src"),
             }],
+            build: BuildConfig::default(),
             tools: ToolsConfig::default(),
         };
 

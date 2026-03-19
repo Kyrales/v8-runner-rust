@@ -54,14 +54,14 @@
 ### Build
 
 - [x] Реализовать `DesignerDsl`
-- [ ] Реализовать `build_project` use case
-- [ ] Реализовать `--full-rebuild` как очистку state cache
-- [ ] Реализовать выбор затронутых `source-set`
-- [ ] Реализовать `PartialLoadListGenerator`
-- [ ] Для `.bsl`-файлов добавлять в list связанные XML и каталог объекта
-- [ ] Запретить partial при изменении `Configuration.xml`
-- [ ] Запретить partial при превышении порога числа файлов
-- [ ] Сохранять state только после успешного build
+- [x] Реализовать `build_project` use case
+- [x] Реализовать `--full-rebuild` как forced full execution без destructive cache cleanup
+- [x] Реализовать выбор затронутых `source-set`
+- [x] Реализовать `PartialLoadListGenerator`
+- [x] Для `.bsl`-файлов добавлять в list связанные XML и каталог объекта
+- [x] Запретить partial при изменении `Configuration.xml`
+- [x] Запретить partial при превышении порога числа файлов
+- [x] Сохранять state только после успешного build
 
 ### Tests
 

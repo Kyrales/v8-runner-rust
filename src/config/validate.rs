@@ -40,6 +40,9 @@ pub enum ConfigValidationError {
 
     #[error("platform version must use exact format major.minor.patch.build: {0}")]
     InvalidPlatformVersion(String),
+
+    #[error("build.partialLoadThreshold must be greater than or equal to 1")]
+    InvalidPartialLoadThreshold,
 }
 
 /// Validate high-level application configuration consistency and filesystem references.
@@ -49,6 +52,7 @@ pub fn validate(config: &AppConfig) -> Result<(), ConfigValidationError> {
     validate_source_sets(config)?;
     validate_connection(config)?;
     validate_platform_version(config)?;
+    validate_build_config(config)?;
     Ok(())
 }
 
@@ -151,12 +155,20 @@ fn validate_platform_version(config: &AppConfig) -> Result<(), ConfigValidationE
     Ok(())
 }
 
+fn validate_build_config(config: &AppConfig) -> Result<(), ConfigValidationError> {
+    if config.build.partial_load_threshold == 0 {
+        return Err(ConfigValidationError::InvalidPartialLoadThreshold);
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{validate, ConfigValidationError};
     use crate::config::model::{
-        AppConfig, BuilderBackend, PlatformToolConfig, SourceFormat, SourceSetConfig,
-        SourceSetPurpose, ToolsConfig,
+        AppConfig, BuildConfig, BuilderBackend, PlatformToolConfig, SourceFormat,
+        SourceSetConfig, SourceSetPurpose, ToolsConfig,
     };
     use tempfile::tempdir;
 
@@ -181,6 +193,7 @@ mod tests {
                     .expect("relative")
                     .to_path_buf(),
             }],
+            build: BuildConfig::default(),
             tools: ToolsConfig {
                 platform: PlatformToolConfig {
                     path: None,
@@ -218,6 +231,7 @@ mod tests {
                     .expect("relative")
                     .to_path_buf(),
             }],
+            build: BuildConfig::default(),
             tools: ToolsConfig::default(),
         };
 
@@ -249,6 +263,7 @@ mod tests {
                     .expect("relative")
                     .to_path_buf(),
             }],
+            build: BuildConfig::default(),
             tools: ToolsConfig::default(),
         };
 
@@ -280,9 +295,44 @@ mod tests {
                     .expect("relative")
                     .to_path_buf(),
             }],
+            build: BuildConfig::default(),
             tools: ToolsConfig::default(),
         };
 
         validate(&config).expect("safe source-set name should pass");
+    }
+
+    #[test]
+    fn rejects_zero_partial_load_threshold() {
+        let base = tempdir().expect("base");
+        let work = tempdir().expect("work");
+        let source_dir = base.path().join("src");
+        std::fs::create_dir_all(&source_dir).expect("source dir");
+
+        let config = AppConfig {
+            base_path: base.path().to_path_buf(),
+            work_path: work.path().to_path_buf(),
+            format: SourceFormat::Designer,
+            builder: BuilderBackend::Designer,
+            connection: "File=/tmp/ib".to_owned(),
+            source_sets: vec![SourceSetConfig {
+                name: "main".to_owned(),
+                purpose: SourceSetPurpose::Configuration,
+                path: source_dir
+                    .strip_prefix(base.path())
+                    .expect("relative")
+                    .to_path_buf(),
+            }],
+            build: BuildConfig {
+                partial_load_threshold: 0,
+            },
+            tools: ToolsConfig::default(),
+        };
+
+        let err = validate(&config).expect_err("expected invalid partial load threshold");
+        assert!(matches!(
+            err,
+            ConfigValidationError::InvalidPartialLoadThreshold
+        ));
     }
 }

@@ -387,21 +387,50 @@ fn map_scan_error(context: &SourceSetContext, err: ScanError) -> ChangeDetection
 
 #[cfg(test)]
 mod tests {
-    use super::{ChangeKind, FileChange};
+    use super::{rescan_and_commit_full, ChangeDetectionError, ChangeKind, FileChange};
     use crate::change_detection::partial_load::decide;
-    use std::path::PathBuf;
+    use crate::domain::source_set::SourceSetContext;
+    use tempfile::tempdir;
 
     #[test]
     fn partial_load_contract_stays_compatible_with_file_change() {
+        let dir = tempdir().expect("tempdir");
+        let root = dir.path().join("src");
+        let object_dir = root.join("Catalogs.Items");
+        let module = object_dir.join("ObjectModule.bsl");
+        std::fs::create_dir_all(&object_dir).expect("object dir");
+        std::fs::write(&module, "module").expect("module");
+
         let changes = vec![FileChange {
-            path: PathBuf::from("/tmp/Catalogs.Items/ObjectModule.bsl"),
+            path: module,
             kind: ChangeKind::Modified,
             new_hash: Some("abc".to_owned()),
         }];
-        let decision = decide(&changes, &PathBuf::from("/tmp"));
+        let decision = decide(
+            &changes,
+            &root,
+            crate::change_detection::partial_load::DEFAULT_PARTIAL_LOAD_THRESHOLD,
+        );
         assert!(matches!(
             decision,
             crate::change_detection::partial_load::LoadDecision::Partial(_)
         ));
+    }
+
+    #[test]
+    fn hard_storage_errors_stay_hard_during_full_rescan() {
+        let dir = tempdir().expect("tempdir");
+        let source_root = dir.path().join("src");
+        let work_path = dir.path().join("work");
+        std::fs::create_dir_all(&source_root).expect("source");
+        std::fs::write(source_root.join("Configuration.xml"), "<xml />").expect("config");
+
+        let storage_path = work_path.join("hash-storages").join("designer-main.redb");
+        std::fs::create_dir_all(&storage_path).expect("storage dir");
+
+        let context = SourceSetContext::new("main", source_root, "designer-main");
+        let error = rescan_and_commit_full(&context, &work_path).expect_err("expected hard error");
+
+        assert!(matches!(error, ChangeDetectionError::StorageHard { .. }));
     }
 }

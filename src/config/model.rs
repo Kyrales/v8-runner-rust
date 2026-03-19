@@ -25,6 +25,10 @@ pub struct AppConfig {
     #[serde(rename = "source-set")]
     pub source_sets: Vec<SourceSetConfig>,
 
+    /// Build pipeline configuration
+    #[serde(default)]
+    pub build: BuildConfig,
+
     /// Platform tools configuration
     #[serde(default)]
     pub tools: ToolsConfig,
@@ -68,6 +72,25 @@ pub struct SourceSetConfig {
 pub enum SourceSetPurpose {
     Configuration,
     Extension,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BuildConfig {
+    #[serde(default = "default_partial_load_threshold")]
+    pub partial_load_threshold: usize,
+}
+
+impl Default for BuildConfig {
+    fn default() -> Self {
+        Self {
+            partial_load_threshold: default_partial_load_threshold(),
+        }
+    }
+}
+
+fn default_partial_load_threshold() -> usize {
+    20
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]

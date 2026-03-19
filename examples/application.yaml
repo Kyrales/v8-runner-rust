@@ -27,6 +27,11 @@ source-set:
   #   purpose: EXTENSION
   #   path: extensions/my-extension
 
+# Build pipeline settings (optional)
+build:
+  # Switch to full load when the expanded partial file list grows beyond this number.
+  partialLoadThreshold: 20
+
 # Platform tools configuration (optional)
 tools:
   platform:

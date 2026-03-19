@@ -2,8 +2,8 @@ use std::path::{Path, PathBuf};
 
 use crate::change_detection::analyzer::{ChangeKind, FileChange};
 
-/// Maximum number of changed files before forcing a full load.
-pub const PARTIAL_LOAD_THRESHOLD: usize = 20;
+/// Default maximum number of changed files before forcing a full load.
+pub const DEFAULT_PARTIAL_LOAD_THRESHOLD: usize = 20;
 
 /// The name of the root configuration descriptor — if changed, partial load is forbidden.
 const CONFIGURATION_XML: &str = "Configuration.xml";
@@ -18,71 +18,130 @@ pub enum LoadDecision {
 }
 
 /// Decide whether a partial or full load is appropriate for `changes`.
-///
-/// Rules (per spec):
-/// - If `Configuration.xml` is among the changed files → Full.
-/// - If any file was deleted → Full (partial load cannot safely replay removals).
-/// - If the number of expanded files exceeds [`PARTIAL_LOAD_THRESHOLD`] → Full.
-/// - Otherwise → Partial with the expanded file list.
-pub fn decide(changes: &[FileChange], source_root: &Path) -> LoadDecision {
-    // Configuration.xml touched → must do full load.
-    let has_config_xml = changes.iter().any(|c| {
-        c.path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .map(|n| n == CONFIGURATION_XML)
-            .unwrap_or(false)
-    });
-
-    if has_config_xml {
+pub fn decide(changes: &[FileChange], source_root: &Path, threshold: usize) -> LoadDecision {
+    if threshold == 0 {
         return LoadDecision::Full;
     }
 
-    if changes.iter().any(|c| c.kind == ChangeKind::Deleted) {
+    if changes.iter().any(|change| is_configuration_xml(&change.path)) {
         return LoadDecision::Full;
     }
 
-    let expanded = expand_files(changes, source_root);
+    if changes.iter().any(|change| change.kind == ChangeKind::Deleted) {
+        return LoadDecision::Full;
+    }
 
-    if expanded.len() > PARTIAL_LOAD_THRESHOLD {
+    let Some(expanded) = expand_files(changes, source_root) else {
+        return LoadDecision::Full;
+    };
+
+    if expanded.is_empty() || expanded.len() > threshold {
         LoadDecision::Full
     } else {
         LoadDecision::Partial(expanded)
     }
 }
 
-/// Expand the raw changed-file list into the set of paths that Designer needs
-/// for a partial load.
+/// Write a partial-load list file (UTF-8, one path per line, no empty lines).
 ///
-/// Rules (per spec / Designer `-partial` semantics):
-/// - Every changed file is included as-is.
-/// - For `.bsl` files: also include the sibling XML descriptor and the
-///   parent object directory (Designer needs the full object context).
-fn expand_files(changes: &[FileChange], _source_root: &Path) -> Vec<PathBuf> {
-    let mut paths: Vec<PathBuf> = Vec::new();
+/// Paths are written relative to `source_root` as required by Designer's
+/// `-listFile` parameter when running in agent mode.
+pub fn write_list_file(paths: &[PathBuf], source_root: &Path, dest: &Path) -> std::io::Result<()> {
+    let root_real = canonicalize_existing(source_root).ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!("source root does not exist or is not canonicalizable: {}", source_root.display()),
+        )
+    })?;
+    let mut lines = Vec::new();
+
+    for path in paths {
+        let rel = safe_relative_path(path, source_root, &root_real).ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!(
+                    "path cannot be safely represented in partial list: {}",
+                    path.display()
+                ),
+            )
+        })?;
+        if !rel.as_os_str().is_empty() {
+            lines.push(rel.display().to_string());
+        }
+    }
+
+    std::fs::write(dest, lines.join("\r\n"))
+}
+
+fn expand_files(changes: &[FileChange], source_root: &Path) -> Option<Vec<PathBuf>> {
+    let root_real = canonicalize_existing(source_root)?;
+    let mut paths = Vec::new();
 
     for change in changes {
-        paths.push(change.path.clone());
+        push_if_safe(&mut paths, &change.path, source_root, &root_real)?;
 
         if is_bsl(&change.path) {
-            // Sibling XML descriptor (same stem, .xml extension).
             if let Some(xml) = sibling_xml(&change.path) {
-                if xml.exists() && !paths.contains(&xml) {
-                    paths.push(xml);
-                }
+                push_if_safe_if_exists(&mut paths, &xml, source_root, &root_real)?;
             }
-            // Parent object directory.
-            if let Some(obj_dir) = object_dir(&change.path) {
-                if obj_dir.exists() && !paths.contains(&obj_dir) {
-                    paths.push(obj_dir);
-                }
+
+            if let Some(object_dir) = object_dir(&change.path, source_root) {
+                push_if_safe_if_exists(&mut paths, &object_dir, source_root, &root_real)?;
             }
         }
     }
 
     paths.sort();
     paths.dedup();
-    paths
+    Some(paths)
+}
+
+fn push_if_safe(
+    paths: &mut Vec<PathBuf>,
+    candidate: &Path,
+    source_root: &Path,
+    root_real: &Path,
+) -> Option<()> {
+    let relative = safe_relative_path(candidate, source_root, root_real)?;
+    paths.push(source_root.join(relative));
+    Some(())
+}
+
+fn push_if_safe_if_exists(
+    paths: &mut Vec<PathBuf>,
+    candidate: &Path,
+    source_root: &Path,
+    root_real: &Path,
+) -> Option<()> {
+    if !candidate.exists() {
+        return Some(());
+    }
+
+    push_if_safe(paths, candidate, source_root, root_real)
+}
+
+fn safe_relative_path(path: &Path, source_root: &Path, root_real: &Path) -> Option<PathBuf> {
+    let candidate_real = canonicalize_existing(path)?;
+    if !candidate_real.starts_with(root_real) {
+        return None;
+    }
+
+    if let Ok(relative) = path.strip_prefix(source_root) {
+        return Some(relative.to_path_buf());
+    }
+
+    candidate_real.strip_prefix(root_real).ok().map(Path::to_path_buf)
+}
+
+fn canonicalize_existing(path: &Path) -> Option<PathBuf> {
+    std::fs::canonicalize(path).ok()
+}
+
+fn is_configuration_xml(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .map(|name| name == CONFIGURATION_XML)
+        .unwrap_or(false)
 }
 
 fn is_bsl(path: &Path) -> bool {
@@ -100,18 +159,17 @@ fn sibling_xml(bsl: &Path) -> Option<PathBuf> {
 }
 
 /// Return the object directory that owns a `.bsl` module.
-///
-/// Designer object layout: `ObjectType.ObjectName/Forms/FormName/Module.bsl`
-/// or `ObjectType.ObjectName/ObjectModule.bsl`.
-/// The "object directory" is the parent for top-level object modules, or the
-/// ancestor above the nested kind/name folders for paths like `Forms/Foo/Module.bsl`.
-fn object_dir(bsl: &Path) -> Option<PathBuf> {
+fn object_dir(bsl: &Path, source_root: &Path) -> Option<PathBuf> {
     let parent = bsl.parent()?;
+    let relative = bsl.strip_prefix(source_root).ok();
     let is_nested_module = bsl
         .file_name()
         .and_then(|n| n.to_str())
         .map(|name| name.eq_ignore_ascii_case("Module.bsl"))
-        .unwrap_or(false);
+        .unwrap_or(false)
+        && relative
+            .map(|path| path.components().count() >= 4)
+            .unwrap_or(false);
 
     if is_nested_module {
         return parent.parent()?.parent().map(Path::to_path_buf);
@@ -120,37 +178,21 @@ fn object_dir(bsl: &Path) -> Option<PathBuf> {
     Some(parent.to_path_buf())
 }
 
-/// Write a partial-load list file (UTF-8, one path per line, no empty lines).
-///
-/// Paths are written relative to `source_root` as required by Designer's
-/// `-listFile` parameter when running in agent mode.
-pub fn write_list_file(paths: &[PathBuf], source_root: &Path, dest: &Path) -> std::io::Result<()> {
-    let mut content = String::new();
-    for path in paths {
-        let rel = path.strip_prefix(source_root).unwrap_or(path);
-        if rel.as_os_str().is_empty() {
-            continue;
-        }
-        content.push_str(&rel.display().to_string());
-        content.push_str("\r\n");
-    }
-    std::fs::write(dest, content.as_bytes())
-}
-
 #[cfg(test)]
 mod tests {
     use std::path::{Path, PathBuf};
 
     use tempfile::tempdir;
 
-    use super::{object_dir, write_list_file};
+    use super::{decide, object_dir, write_list_file, LoadDecision, DEFAULT_PARTIAL_LOAD_THRESHOLD};
+    use crate::change_detection::analyzer::{ChangeKind, FileChange};
 
     #[test]
     fn object_dir_uses_parent_for_top_level_modules() {
         let bsl = Path::new("/tmp/src/Catalogs.Items/ObjectModule.bsl");
 
         assert_eq!(
-            object_dir(bsl),
+            object_dir(bsl, Path::new("/tmp/src")),
             Some(PathBuf::from("/tmp/src/Catalogs.Items"))
         );
     }
@@ -160,7 +202,7 @@ mod tests {
         let bsl = Path::new("/tmp/src/Catalogs.Items/Forms/Form1/Module.bsl");
 
         assert_eq!(
-            object_dir(bsl),
+            object_dir(bsl, Path::new("/tmp/src")),
             Some(PathBuf::from("/tmp/src/Catalogs.Items"))
         );
     }
@@ -174,5 +216,145 @@ mod tests {
         write_list_file(&[root.to_path_buf()], root, &list_file).expect("write list");
 
         assert_eq!(std::fs::read_to_string(list_file).expect("read list"), "");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_list_file_fails_for_paths_outside_root() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempdir().expect("tempdir");
+        let root = temp.path().join("src");
+        let outside = temp.path().join("outside");
+        let link = root.join("Catalogs.Items");
+        let escaped = outside.join("ObjectModule.bsl");
+        let list_file = temp.path().join("partial.lst");
+
+        std::fs::create_dir_all(&root).expect("root");
+        std::fs::create_dir_all(&outside).expect("outside");
+        std::fs::write(&escaped, "module").expect("escaped");
+        symlink(&outside, &link).expect("link");
+
+        let err = write_list_file(&[link.join("ObjectModule.bsl")], &root, &list_file)
+            .expect_err("expected invalid path");
+
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn decide_expands_bsl_to_xml_and_object_dir() {
+        let temp = tempdir().expect("tempdir");
+        let root = temp.path();
+        let object_dir = root.join("Catalogs.Items");
+        let module = object_dir.join("ObjectModule.bsl");
+        let xml = object_dir.join("ObjectModule.xml");
+
+        std::fs::create_dir_all(&object_dir).expect("create object dir");
+        std::fs::write(&module, "module").expect("write module");
+        std::fs::write(&xml, "<xml />").expect("write xml");
+
+        let decision = decide(
+            &[FileChange {
+                path: module.clone(),
+                kind: ChangeKind::Modified,
+                new_hash: Some("hash".to_owned()),
+            }],
+            root,
+            DEFAULT_PARTIAL_LOAD_THRESHOLD,
+        );
+
+        assert_eq!(
+            decision,
+            LoadDecision::Partial(vec![object_dir, module, xml])
+        );
+    }
+
+    #[test]
+    fn decide_forces_full_when_configuration_xml_changed() {
+        let temp = tempdir().expect("tempdir");
+        let root = temp.path();
+        let config_xml = root.join("Configuration.xml");
+        std::fs::write(&config_xml, "<xml />").expect("write config");
+
+        let decision = decide(
+            &[FileChange {
+                path: config_xml,
+                kind: ChangeKind::Modified,
+                new_hash: Some("hash".to_owned()),
+            }],
+            root,
+            DEFAULT_PARTIAL_LOAD_THRESHOLD,
+        );
+
+        assert_eq!(decision, LoadDecision::Full);
+    }
+
+    #[test]
+    fn decide_forces_full_when_deleted_files_exist() {
+        let temp = tempdir().expect("tempdir");
+        let root = temp.path();
+        let removed = root.join("Catalogs.Items").join("ObjectModule.bsl");
+
+        let decision = decide(
+            &[FileChange {
+                path: removed,
+                kind: ChangeKind::Deleted,
+                new_hash: None,
+            }],
+            root,
+            DEFAULT_PARTIAL_LOAD_THRESHOLD,
+        );
+
+        assert_eq!(decision, LoadDecision::Full);
+    }
+
+    #[test]
+    fn decide_forces_full_when_threshold_is_exceeded() {
+        let temp = tempdir().expect("tempdir");
+        let root = temp.path();
+        let mut changes = Vec::new();
+
+        for index in 0..=DEFAULT_PARTIAL_LOAD_THRESHOLD {
+            let path = root.join(format!("CommonModules/Module{index}.bsl"));
+            std::fs::create_dir_all(path.parent().expect("parent")).expect("mkdir");
+            std::fs::write(&path, "module").expect("write");
+            changes.push(FileChange {
+                path,
+                kind: ChangeKind::Modified,
+                new_hash: Some(format!("hash-{index}")),
+            });
+        }
+
+        let decision = decide(&changes, root, DEFAULT_PARTIAL_LOAD_THRESHOLD);
+        assert_eq!(decision, LoadDecision::Full);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn traversal_or_symlink_escape_forces_full() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempdir().expect("tempdir");
+        let root = temp.path().join("src");
+        let outside_dir = temp.path().join("outside");
+        let link_dir = root.join("Catalogs.Items");
+        let escaped = outside_dir.join("ObjectModule.bsl");
+
+        std::fs::create_dir_all(&outside_dir).expect("outside");
+        std::fs::create_dir_all(&root).expect("root");
+        std::fs::write(&escaped, "module").expect("write escaped");
+        symlink(&outside_dir, &link_dir).expect("create symlink");
+
+        let decision = decide(
+            &[FileChange {
+                path: link_dir.join("ObjectModule.bsl"),
+                kind: ChangeKind::Modified,
+                new_hash: Some("hash".to_owned()),
+            }],
+            &root,
+            DEFAULT_PARTIAL_LOAD_THRESHOLD,
+        );
+
+        assert_eq!(decision, LoadDecision::Full);
     }
 }
