@@ -23,6 +23,7 @@ quick-xml = { version = "0.36", features = ["serialize"] }
 tempfile = "3"
 camino = { version = "1", features = ["serde1"] }
 chrono = { version = "0.4", features = ["serde"] }
+libc = "0.2"
 
 [dev-dependencies]
 assert_cmd = "2"

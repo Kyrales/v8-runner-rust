@@ -23,11 +23,17 @@ pub fn decide(changes: &[FileChange], source_root: &Path, threshold: usize) -> L
         return LoadDecision::Full;
     }
 
-    if changes.iter().any(|change| is_configuration_xml(&change.path)) {
+    if changes
+        .iter()
+        .any(|change| is_configuration_xml(&change.path))
+    {
         return LoadDecision::Full;
     }
 
-    if changes.iter().any(|change| change.kind == ChangeKind::Deleted) {
+    if changes
+        .iter()
+        .any(|change| change.kind == ChangeKind::Deleted)
+    {
         return LoadDecision::Full;
     }
 
@@ -50,7 +56,10 @@ pub fn write_list_file(paths: &[PathBuf], source_root: &Path, dest: &Path) -> st
     let root_real = canonicalize_existing(source_root).ok_or_else(|| {
         std::io::Error::new(
             std::io::ErrorKind::NotFound,
-            format!("source root does not exist or is not canonicalizable: {}", source_root.display()),
+            format!(
+                "source root does not exist or is not canonicalizable: {}",
+                source_root.display()
+            ),
         )
     })?;
     let mut lines = Vec::new();
@@ -130,7 +139,10 @@ fn safe_relative_path(path: &Path, source_root: &Path, root_real: &Path) -> Opti
         return Some(relative.to_path_buf());
     }
 
-    candidate_real.strip_prefix(root_real).ok().map(Path::to_path_buf)
+    candidate_real
+        .strip_prefix(root_real)
+        .ok()
+        .map(Path::to_path_buf)
 }
 
 fn canonicalize_existing(path: &Path) -> Option<PathBuf> {
@@ -184,7 +196,9 @@ mod tests {
 
     use tempfile::tempdir;
 
-    use super::{decide, object_dir, write_list_file, LoadDecision, DEFAULT_PARTIAL_LOAD_THRESHOLD};
+    use super::{
+        decide, object_dir, write_list_file, LoadDecision, DEFAULT_PARTIAL_LOAD_THRESHOLD,
+    };
     use crate::change_detection::analyzer::{ChangeKind, FileChange};
 
     #[test]

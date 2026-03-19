@@ -167,8 +167,8 @@ fn validate_build_config(config: &AppConfig) -> Result<(), ConfigValidationError
 mod tests {
     use super::{validate, ConfigValidationError};
     use crate::config::model::{
-        AppConfig, BuildConfig, BuilderBackend, PlatformToolConfig, SourceFormat,
-        SourceSetConfig, SourceSetPurpose, ToolsConfig,
+        AppConfig, BuildConfig, BuilderBackend, PlatformToolConfig, SourceFormat, SourceSetConfig,
+        SourceSetPurpose, ToolsConfig,
     };
     use tempfile::tempdir;
 

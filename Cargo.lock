@@ -935,6 +935,7 @@ dependencies = [
  "chrono",
  "clap",
  "insta",
+ "libc",
  "predicates",
  "quick-xml",
  "redb",

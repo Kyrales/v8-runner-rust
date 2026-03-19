@@ -1,11 +1,18 @@
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DumpResult {
     pub ok: bool,
+    pub source_set: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub extension: Option<String>,
     pub mode: DumpMode,
-    pub target_path: std::path::PathBuf,
+    pub target_path: PathBuf,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub platform_log_path: Option<PathBuf>,
     pub duration_ms: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
 }
 

@@ -7,7 +7,9 @@ use crate::change_detection::hash_storage::{HashStorage, StorageError};
 use crate::change_detection::partial_load::{self, LoadDecision};
 use crate::change_detection::source_sets::SourceSetsService;
 use crate::cli::args::BuildArgs;
-use crate::config::model::{AppConfig, BuilderBackend, SourceFormat, SourceSetConfig, SourceSetPurpose};
+use crate::config::model::{
+    AppConfig, BuilderBackend, SourceFormat, SourceSetConfig, SourceSetPurpose,
+};
 use crate::domain::build::{BuildMode, BuildResult, BuildStep};
 use crate::domain::source_set::SourceSetContext;
 use crate::output::json::Envelope;
@@ -25,7 +27,11 @@ const BUILD_COMMAND: &str = "build";
 const SUPPORTED_BUILD_ERROR: &str =
     "build currently supports only builder=DESIGNER and format=DESIGNER";
 
-pub fn execute(config: &AppConfig, args: &BuildArgs, presenter: &Presenter) -> Result<(), AppError> {
+pub fn execute(
+    config: &AppConfig,
+    args: &BuildArgs,
+    presenter: &Presenter,
+) -> Result<(), AppError> {
     let result = match run_build(config, args) {
         Ok(result) => result,
         Err(failure) => {
@@ -60,9 +66,7 @@ struct BuildExecutionFailure {
 
 enum StepCommit {
     Prepared(PreparedStateUpdate),
-    RescanFull {
-        recover_storage: bool,
-    },
+    RescanFull { recover_storage: bool },
 }
 
 enum StepPlan {
@@ -102,7 +106,10 @@ fn run_build(config: &AppConfig, args: &BuildArgs) -> Result<BuildResult, BuildE
     let analysis_by_name = if args.full_rebuild {
         None
     } else {
-        Some(analyze_contexts_by_name(&service, &contexts_by_name.values().cloned().collect::<Vec<_>>()))
+        Some(analyze_contexts_by_name(
+            &service,
+            &contexts_by_name.values().cloned().collect::<Vec<_>>(),
+        ))
     };
 
     let mut utilities = PlatformUtilities::from_config(config);
@@ -319,11 +326,12 @@ fn execute_source_set_step(
     commit: &StepCommit,
 ) -> Result<(), AppError> {
     let load_result = if let Some(paths) = partial_paths {
-        let list_file = partial_list_file(&config.work_path)
-            .map_err(|error| AppError::Runtime(format!("failed to create partial list file: {error}")))?;
-        partial_load::write_list_file(paths, context.path(), list_file.path()).map_err(|error| {
-            AppError::Runtime(format!("failed to write partial load list: {error}"))
+        let list_file = partial_list_file(&config.work_path).map_err(|error| {
+            AppError::Runtime(format!("failed to create partial list file: {error}"))
         })?;
+        partial_load::write_list_file(paths, context.path(), list_file.path()).map_err(
+            |error| AppError::Runtime(format!("failed to write partial load list: {error}")),
+        )?;
         build_designer_dsl(config, binary, runner, &source_set.name, step_index, "load")?
             .load_config_from_files_partial(
                 context.path(),
@@ -338,14 +346,23 @@ fn execute_source_set_step(
     };
     ensure_platform_success("load", source_set, &load_result)?;
 
-    let update_result = build_designer_dsl(config, binary, runner, &source_set.name, step_index, "update")?
-        .update_db_cfg(extension_name(source_set))
-        .map_err(|error| AppError::Platform(error.to_string()))?;
+    let update_result = build_designer_dsl(
+        config,
+        binary,
+        runner,
+        &source_set.name,
+        step_index,
+        "update",
+    )?
+    .update_db_cfg(extension_name(source_set))
+    .map_err(|error| AppError::Platform(error.to_string()))?;
     ensure_platform_success("update_db_cfg", source_set, &update_result)?;
 
     match commit {
-        StepCommit::Prepared(prepared) => analyzer::commit_success(context, &config.work_path, prepared)
-            .map_err(|error| AppError::Runtime(error.to_string())),
+        StepCommit::Prepared(prepared) => {
+            analyzer::commit_success(context, &config.work_path, prepared)
+                .map_err(|error| AppError::Runtime(error.to_string()))
+        }
         StepCommit::RescanFull { recover_storage } => {
             commit_full_rescan(context, &config.work_path, *recover_storage)
         }
@@ -406,9 +423,12 @@ fn build_designer_dsl<'a>(
     step_index: usize,
     action: &str,
 ) -> Result<DesignerDsl<'a>, AppError> {
-    let log_dir = platform_logs_dir(&config.work_path)
-        .map_err(|error| AppError::Runtime(format!("failed to create platform logs dir: {error}")))?;
-    let log_file = log_dir.join(format!("build-{step_index:02}-{source_set_name}-{action}.log"));
+    let log_dir = platform_logs_dir(&config.work_path).map_err(|error| {
+        AppError::Runtime(format!("failed to create platform logs dir: {error}"))
+    })?;
+    let log_file = log_dir.join(format!(
+        "build-{step_index:02}-{source_set_name}-{action}.log"
+    ));
 
     Ok(DesignerDsl::new(
         binary.to_path_buf(),
@@ -444,7 +464,11 @@ fn ensure_platform_success(
     if !result.process.stderr.trim().is_empty() {
         details.push(format!("stderr: {}", result.process.stderr.trim()));
     }
-    if let Some(log) = result.platform_log.as_deref().filter(|log| !log.trim().is_empty()) {
+    if let Some(log) = result
+        .platform_log
+        .as_deref()
+        .filter(|log| !log.trim().is_empty())
+    {
         details.push(format!("platform log: {}", log.trim()));
     }
     if let Some(path) = &result.platform_log_path {
@@ -511,7 +535,11 @@ fn render_text_result(result: &BuildResult, presenter: &Presenter, succeeded: bo
 
     if !succeeded {
         presenter.print_info("Build failed");
-    } else if result.steps.iter().all(|step| matches!(step.mode, BuildMode::Skipped) && step.ok) {
+    } else if result
+        .steps
+        .iter()
+        .all(|step| matches!(step.mode, BuildMode::Skipped) && step.ok)
+    {
         presenter.print_ok("Build completed: no changes");
     } else {
         presenter.print_ok("Build completed successfully");
@@ -610,17 +638,26 @@ mod tests {
         fs::create_dir_all(base_path.join("main").join("Catalogs.Items")).expect("main dir");
         fs::create_dir_all(base_path.join("ext").join("CommonModules")).expect("ext dir");
         fs::write(
-            base_path.join("main").join("Catalogs.Items").join("ObjectModule.bsl"),
+            base_path
+                .join("main")
+                .join("Catalogs.Items")
+                .join("ObjectModule.bsl"),
             "procedure Test() endprocedure",
         )
         .expect("main bsl");
         fs::write(
-            base_path.join("main").join("Catalogs.Items").join("ObjectModule.xml"),
+            base_path
+                .join("main")
+                .join("Catalogs.Items")
+                .join("ObjectModule.xml"),
             "<MetaDataObject />",
         )
         .expect("main xml");
         fs::write(
-            base_path.join("ext").join("CommonModules").join("Module.bsl"),
+            base_path
+                .join("ext")
+                .join("CommonModules")
+                .join("Module.bsl"),
             "procedure Test() endprocedure",
         )
         .expect("ext bsl");
@@ -663,8 +700,16 @@ mod tests {
             BuilderBackend::Designer,
         );
 
-        let failure = run_build(&config, &BuildArgs { full_rebuild: false }).expect_err("failure");
-        assert!(matches!(failure.error, AppError::Validation(ref msg) if msg == SUPPORTED_BUILD_ERROR));
+        let failure = run_build(
+            &config,
+            &BuildArgs {
+                full_rebuild: false,
+            },
+        )
+        .expect_err("failure");
+        assert!(
+            matches!(failure.error, AppError::Validation(ref msg) if msg == SUPPORTED_BUILD_ERROR)
+        );
         assert!(!calls.exists());
     }
 
@@ -678,14 +723,30 @@ mod tests {
         let calls = dir.path().join("calls.log");
         create_source_tree(&base);
         write_designer_script(&script, &calls, None);
-        let config = build_config(&base, &work, &script, 20, SourceFormat::Designer, BuilderBackend::Designer);
+        let config = build_config(
+            &base,
+            &work,
+            &script,
+            20,
+            SourceFormat::Designer,
+            BuilderBackend::Designer,
+        );
         prime_snapshots(&config);
 
-        let result = run_build(&config, &BuildArgs { full_rebuild: false }).expect("build");
+        let result = run_build(
+            &config,
+            &BuildArgs {
+                full_rebuild: false,
+            },
+        )
+        .expect("build");
 
         assert!(result.ok);
         assert_eq!(result.steps.len(), 2);
-        assert!(result.steps.iter().all(|step| matches!(step.mode, BuildMode::Skipped) && step.ok));
+        assert!(result
+            .steps
+            .iter()
+            .all(|step| matches!(step.mode, BuildMode::Skipped) && step.ok));
         assert!(!calls.exists());
     }
 
@@ -699,16 +760,31 @@ mod tests {
         let calls = dir.path().join("calls.log");
         create_source_tree(&base);
         write_designer_script(&script, &calls, None);
-        let config = build_config(&base, &work, &script, 20, SourceFormat::Designer, BuilderBackend::Designer);
+        let config = build_config(
+            &base,
+            &work,
+            &script,
+            20,
+            SourceFormat::Designer,
+            BuilderBackend::Designer,
+        );
         prime_snapshots(&config);
 
         fs::write(
-            base.join("main").join("Catalogs.Items").join("ObjectModule.bsl"),
+            base.join("main")
+                .join("Catalogs.Items")
+                .join("ObjectModule.bsl"),
             "procedure Test()\n  // changed\nendprocedure",
         )
         .expect("modify main");
 
-        let result = run_build(&config, &BuildArgs { full_rebuild: false }).expect("build");
+        let result = run_build(
+            &config,
+            &BuildArgs {
+                full_rebuild: false,
+            },
+        )
+        .expect("build");
         let calls_text = fs::read_to_string(&calls).expect("calls");
 
         assert!(matches!(result.steps[0].mode, BuildMode::Partial { .. }));
@@ -719,7 +795,13 @@ mod tests {
         assert!(calls_text.contains("-listFile"));
         assert_eq!(storage_generation(&config, "main"), 2);
 
-        let rerun = run_build(&config, &BuildArgs { full_rebuild: false }).expect("rerun");
+        let rerun = run_build(
+            &config,
+            &BuildArgs {
+                full_rebuild: false,
+            },
+        )
+        .expect("rerun");
         assert!(matches!(rerun.steps[0].mode, BuildMode::Skipped));
     }
 
@@ -733,7 +815,14 @@ mod tests {
         let calls = dir.path().join("calls.log");
         create_source_tree(&base);
         write_designer_script(&script, &calls, None);
-        let config = build_config(&base, &work, &script, 20, SourceFormat::Designer, BuilderBackend::Designer);
+        let config = build_config(
+            &base,
+            &work,
+            &script,
+            20,
+            SourceFormat::Designer,
+            BuilderBackend::Designer,
+        );
         prime_snapshots(&config);
 
         fs::write(
@@ -742,7 +831,13 @@ mod tests {
         )
         .expect("modify ext");
 
-        let result = run_build(&config, &BuildArgs { full_rebuild: false }).expect("build");
+        let result = run_build(
+            &config,
+            &BuildArgs {
+                full_rebuild: false,
+            },
+        )
+        .expect("build");
         let calls_text = fs::read_to_string(&calls).expect("calls");
 
         assert!(matches!(result.steps[0].mode, BuildMode::Skipped));
@@ -762,7 +857,14 @@ mod tests {
         let calls = dir.path().join("calls.log");
         create_source_tree(&base);
         write_designer_script(&script, &calls, None);
-        let config = build_config(&base, &work, &script, 20, SourceFormat::Designer, BuilderBackend::Designer);
+        let config = build_config(
+            &base,
+            &work,
+            &script,
+            20,
+            SourceFormat::Designer,
+            BuilderBackend::Designer,
+        );
         prime_snapshots(&config);
 
         let service = SourceSetsService::new(&config);
@@ -774,7 +876,10 @@ mod tests {
         let result = run_build(&config, &BuildArgs { full_rebuild: true }).expect("build");
         let calls_text = fs::read_to_string(&calls).expect("calls");
 
-        assert!(result.steps.iter().all(|step| matches!(step.mode, BuildMode::Full)));
+        assert!(result
+            .steps
+            .iter()
+            .all(|step| matches!(step.mode, BuildMode::Full)));
         assert!(!calls_text.contains("-partial"));
         assert_eq!(storage_generation(&config, "main"), 1);
         assert_eq!(storage_generation(&config, "ext"), 1);
@@ -826,11 +931,20 @@ mod tests {
         let calls = dir.path().join("calls.log");
         create_source_tree(&base);
         write_designer_script(&script, &calls, Some("/UpdateDBCfg -Extension ext"));
-        let config = build_config(&base, &work, &script, 20, SourceFormat::Designer, BuilderBackend::Designer);
+        let config = build_config(
+            &base,
+            &work,
+            &script,
+            20,
+            SourceFormat::Designer,
+            BuilderBackend::Designer,
+        );
         prime_snapshots(&config);
 
         fs::write(
-            base.join("main").join("Catalogs.Items").join("ObjectModule.bsl"),
+            base.join("main")
+                .join("Catalogs.Items")
+                .join("ObjectModule.bsl"),
             "procedure Test()\n  // changed\nendprocedure",
         )
         .expect("modify main");
@@ -840,7 +954,13 @@ mod tests {
         )
         .expect("modify ext");
 
-        let failure = run_build(&config, &BuildArgs { full_rebuild: false }).expect_err("failure");
+        let failure = run_build(
+            &config,
+            &BuildArgs {
+                full_rebuild: false,
+            },
+        )
+        .expect_err("failure");
         let calls_text = fs::read_to_string(&calls).expect("calls");
 
         assert!(failure.result.steps[0].ok);

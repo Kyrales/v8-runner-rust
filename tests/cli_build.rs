@@ -60,17 +60,26 @@ fn setup_project() -> (tempfile::TempDir, PathBuf, PathBuf) {
     fs::create_dir_all(base_path.join("ext").join("CommonModules")).expect("ext");
     fs::create_dir_all(&work_path).expect("work");
     fs::write(
-        base_path.join("main").join("Catalogs.Items").join("ObjectModule.bsl"),
+        base_path
+            .join("main")
+            .join("Catalogs.Items")
+            .join("ObjectModule.bsl"),
         "procedure Test() endprocedure",
     )
     .expect("main bsl");
     fs::write(
-        base_path.join("main").join("Catalogs.Items").join("ObjectModule.xml"),
+        base_path
+            .join("main")
+            .join("Catalogs.Items")
+            .join("ObjectModule.xml"),
         "<MetaDataObject />",
     )
     .expect("main xml");
     fs::write(
-        base_path.join("ext").join("CommonModules").join("Module.bsl"),
+        base_path
+            .join("ext")
+            .join("CommonModules")
+            .join("Module.bsl"),
         "procedure Test() endprocedure",
     )
     .expect("ext bsl");
@@ -123,7 +132,12 @@ fn build_text_failure_does_not_print_success_footer() {
 
     let output = std::process::Command::cargo_bin("v8-test-runner")
         .expect("binary")
-        .args(["--config", &config_path.display().to_string(), "build", "--full-rebuild"])
+        .args([
+            "--config",
+            &config_path.display().to_string(),
+            "build",
+            "--full-rebuild",
+        ])
         .output()
         .expect("run command");
 
