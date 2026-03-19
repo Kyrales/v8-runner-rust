@@ -92,7 +92,7 @@ impl<'a> DesignerDsl<'a> {
         self.run(&args)
     }
 
-    /// `/DumpConfigToFiles <dir> [-Extension <name>]`
+    /// `/DumpConfigToFiles <dir> [-Extension <name>] -updateConfigDumpInfo`
     pub fn dump_config_to_files(
         &self,
         target_dir: &Path,
@@ -101,6 +101,7 @@ impl<'a> DesignerDsl<'a> {
         let mut args = self.base_args();
         args.push("/DumpConfigToFiles".to_owned());
         args.push(target_dir.display().to_string());
+        args.push("-updateConfigDumpInfo".to_owned());
         if let Some(extension) = extension {
             args.push("-Extension".to_owned());
             args.push(extension.to_owned());
@@ -279,5 +280,31 @@ mod tests {
             .as_deref()
             .expect("read error")
             .contains("failed to read designer /Out log"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dump_config_to_files_requests_config_dump_info_update() {
+        let dir = tempdir().expect("tempdir");
+        let script = dir.path().join("1cv8");
+        let args_log = dir.path().join("args.log");
+        write_script(
+            &script,
+            &format!("printf '%s\n' \"$@\" > \"{}\"\nexit 0", args_log.display()),
+        );
+        let runner = ProcessExecutor;
+        let dsl = DesignerDsl::new(
+            script,
+            V8Connection::from_connection_string("File=/tmp/ib"),
+            &runner as &dyn ProcessRunner,
+            None,
+        );
+
+        dsl.dump_config_to_files(dir.path().join("out").as_path(), None)
+            .expect("dump config");
+
+        let args = fs::read_to_string(args_log).expect("args log");
+        assert!(args.contains("/DumpConfigToFiles"));
+        assert!(args.contains("-updateConfigDumpInfo"));
     }
 }
