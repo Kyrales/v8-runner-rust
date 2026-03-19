@@ -56,7 +56,14 @@ fn write_ibcmd_script(path: &Path, calls_log: &Path, fail_pattern: Option<&str>)
 }
 
 fn write_config(path: &Path, base_path: &Path, work_path: &Path, platform_path: &Path) {
-    write_config_with_builder(path, base_path, work_path, platform_path, "DESIGNER", "File=/tmp/ib");
+    write_config_with_builder(
+        path,
+        base_path,
+        work_path,
+        platform_path,
+        "DESIGNER",
+        "File=/tmp/ib",
+    );
 }
 
 fn write_config_with_builder(
@@ -173,7 +180,14 @@ fn setup_ibcmd_project() -> (
         "File=/tmp/ib",
     );
 
-    (dir, config_path, binary_path, work_path, base_path, calls_log)
+    (
+        dir,
+        config_path,
+        binary_path,
+        work_path,
+        base_path,
+        calls_log,
+    )
 }
 
 #[test]
@@ -301,8 +315,7 @@ fn build_ibcmd_full_rebuild_invokes_import_and_apply() {
 
 #[test]
 fn build_ibcmd_partial_uses_relative_positional_args_and_base_dir() {
-    let (_dir, config_path, _binary_path, _work_path, base_path, calls_log) =
-        setup_ibcmd_project();
+    let (_dir, config_path, _binary_path, _work_path, base_path, calls_log) = setup_ibcmd_project();
 
     let output = std::process::Command::cargo_bin("v8-test-runner")
         .expect("binary")
@@ -338,8 +351,7 @@ fn build_ibcmd_partial_uses_relative_positional_args_and_base_dir() {
 
 #[test]
 fn build_ibcmd_server_connection_fails_at_config_load() {
-    let (dir, config_path, binary_path, _work_path, _base_path, _calls_log) =
-        setup_ibcmd_project();
+    let (dir, config_path, binary_path, _work_path, _base_path, _calls_log) = setup_ibcmd_project();
     write_config_with_builder(
         &config_path,
         &dir.path().join("project"),
@@ -357,4 +369,33 @@ fn build_ibcmd_server_connection_fails_at_config_load() {
 
     assert!(!output.status.success());
     assert_eq!(output.status.code(), Some(2));
+}
+
+#[test]
+fn build_ibcmd_accepts_raw_f_connection() {
+    let (dir, config_path, binary_path, _work_path, _base_path, calls_log) = setup_ibcmd_project();
+    write_config_with_builder(
+        &config_path,
+        &dir.path().join("project"),
+        &dir.path().join("work"),
+        &binary_path,
+        "IBCMD",
+        "/F /tmp/ib",
+    );
+
+    let output = std::process::Command::cargo_bin("v8-test-runner")
+        .expect("binary")
+        .args([
+            "--config",
+            &config_path.display().to_string(),
+            "build",
+            "--full-rebuild",
+        ])
+        .output()
+        .expect("run command");
+
+    assert!(output.status.success());
+    let calls = fs::read_to_string(calls_log).expect("calls");
+    assert!(calls.contains("--database-path=/tmp/ib"));
+    assert!(calls.contains("config apply"));
 }

@@ -12,14 +12,15 @@ pub struct V8Connection {
 impl V8Connection {
     /// Build a reusable connection model from a raw connection string.
     pub fn from_connection_string(raw: &str) -> Self {
-        let connection_args = if raw.starts_with('/') {
-            split_arg_string(raw)
+        let trimmed = raw.trim();
+        let connection_args = if trimmed.starts_with('/') || trimmed.starts_with('-') {
+            split_arg_string(trimmed)
         } else {
-            vec!["/IBConnectionString".to_owned(), raw.to_owned()]
+            vec!["/IBConnectionString".to_owned(), trimmed.to_owned()]
         };
 
         Self {
-            raw: raw.to_owned(),
+            raw: trimmed.to_owned(),
             connection_args,
             user: None,
             password: None,
@@ -44,6 +45,10 @@ impl V8Connection {
 
     /// Return the file-based infobase path when connection string contains `File=...`.
     pub fn file_path(&self) -> Option<&str> {
+        if self.raw.starts_with('/') || self.raw.starts_with('-') {
+            return file_path_from_args(&self.connection_args);
+        }
+
         self.raw.split(';').find_map(|part| {
             let part = part.trim();
             let lower = part.to_lowercase();
@@ -54,6 +59,17 @@ impl V8Connection {
             }
         })
     }
+}
+
+fn file_path_from_args(args: &[String]) -> Option<&str> {
+    let mut args = args.iter();
+    while let Some(arg) = args.next() {
+        if arg.eq_ignore_ascii_case("/f") || arg.eq_ignore_ascii_case("-f") {
+            return args.next().map(String::as_str);
+        }
+    }
+
+    None
 }
 
 fn split_arg_string(raw: &str) -> Vec<String> {
@@ -110,6 +126,28 @@ mod tests {
     fn extracts_file_path_from_connection_string() {
         let connection = V8Connection::from_connection_string("Srvr=demo;File=/tmp/ib;Ref=test");
 
+        assert_eq!(connection.file_path(), Some("/tmp/ib"));
+    }
+
+    #[test]
+    fn extracts_file_path_from_raw_f_args() {
+        let connection = V8Connection::from_connection_string("/F \"/tmp/my ib\"");
+
+        assert_eq!(connection.file_path(), Some("/tmp/my ib"));
+    }
+
+    #[test]
+    fn extracts_file_path_from_dash_f_args() {
+        let connection = V8Connection::from_connection_string("-F /tmp/ib");
+
+        assert_eq!(connection.file_path(), Some("/tmp/ib"));
+    }
+
+    #[test]
+    fn trims_leading_whitespace_before_parsing_raw_args() {
+        let connection = V8Connection::from_connection_string("  /F /tmp/ib  ");
+
+        assert_eq!(connection.args(), vec!["/F", "/tmp/ib"]);
         assert_eq!(connection.file_path(), Some("/tmp/ib"));
     }
 }

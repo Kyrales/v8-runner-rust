@@ -347,8 +347,7 @@ mod tests {
                 .expect("connection");
         let dsl = IbcmdDsl::new(script, conn, &runner as &dyn ProcessRunner);
 
-        dsl.config_export_full(dir.path(), None)
-            .expect("export");
+        dsl.config_export_full(dir.path(), None).expect("export");
 
         let args = fs::read_to_string(args_log).expect("args");
         assert!(args.contains("export"));

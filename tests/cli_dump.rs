@@ -50,7 +50,14 @@ fn write_config(path: &Path, base_path: &Path, work_path: &Path, platform_path: 
     fs::write(path, config).expect("config");
 }
 
-fn setup_project() -> (tempfile::TempDir, PathBuf, PathBuf, PathBuf, PathBuf, PathBuf) {
+fn setup_project() -> (
+    tempfile::TempDir,
+    PathBuf,
+    PathBuf,
+    PathBuf,
+    PathBuf,
+    PathBuf,
+) {
     let dir = tempdir().expect("tempdir");
     let base_path = dir.path().join("project");
     let work_path = dir.path().join("work");
@@ -65,7 +72,14 @@ fn setup_project() -> (tempfile::TempDir, PathBuf, PathBuf, PathBuf, PathBuf, Pa
     write_ibcmd_script(&binary_path, &calls_log, None);
     write_config(&config_path, &base_path, &work_path, &binary_path);
 
-    (dir, config_path, binary_path, work_path, base_path, calls_log)
+    (
+        dir,
+        config_path,
+        binary_path,
+        work_path,
+        base_path,
+        calls_log,
+    )
 }
 
 #[test]
@@ -127,8 +141,7 @@ fn dump_ibcmd_incremental_json_success() {
 
 #[test]
 fn dump_ibcmd_partial_remains_unsupported() {
-    let (_dir, config_path, _binary_path, _work_path, _base_path, _calls_log) =
-        setup_project();
+    let (_dir, config_path, _binary_path, _work_path, _base_path, _calls_log) = setup_project();
 
     let output = std::process::Command::cargo_bin("v8-test-runner")
         .expect("binary")

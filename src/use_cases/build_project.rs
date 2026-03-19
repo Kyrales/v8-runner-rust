@@ -375,7 +375,10 @@ fn run_build_ibcmd(
     config: &AppConfig,
     args: &BuildArgs,
 ) -> Result<BuildResult, BuildExecutionFailure> {
-    info!(full_rebuild = args.full_rebuild, "preparing ibcmd build plan");
+    info!(
+        full_rebuild = args.full_rebuild,
+        "preparing ibcmd build plan"
+    );
 
     let started = Instant::now();
     let service = SourceSetsService::new(config);
@@ -1053,10 +1056,9 @@ fn execute_source_set_step_ibcmd(
     let dsl = build_ibcmd_dsl(config, binary, runner)?;
     let extension = extension_name(source_set);
     let load_result = if let Some(paths) = partial_paths {
-        let rel_paths =
-            partial_load::relative_paths(paths, context.path()).map_err(|error| {
-                AppError::Runtime(format!("failed to convert partial paths: {error}"))
-            })?;
+        let rel_paths = partial_load::relative_paths(paths, context.path()).map_err(|error| {
+            AppError::Runtime(format!("failed to convert partial paths: {error}"))
+        })?;
         dsl.config_import_partial(context.path(), &rel_paths, extension)
             .map_err(map_ibcmd_error)?
     } else {
@@ -1167,17 +1169,15 @@ fn build_ibcmd_dsl<'a>(
     binary: &Path,
     runner: &'a dyn ProcessRunner,
 ) -> Result<IbcmdDsl<'a>, AppError> {
-    let connection = IbcmdConnection::from_v8_connection(&config.v8_connection())
-        .map_err(map_ibcmd_error)?;
+    let connection =
+        IbcmdConnection::from_v8_connection(&config.v8_connection()).map_err(map_ibcmd_error)?;
 
     Ok(IbcmdDsl::new(binary.to_path_buf(), connection, runner))
 }
 
 fn map_ibcmd_error(error: IbcmdError) -> AppError {
     match error {
-        IbcmdError::ServerConnectionNotSupported => {
-            AppError::Validation(error.to_string())
-        }
+        IbcmdError::ServerConnectionNotSupported => AppError::Validation(error.to_string()),
         IbcmdError::Spawn(_) => AppError::Platform(error.to_string()),
     }
 }
@@ -1562,7 +1562,9 @@ mod tests {
             },
         )
         .expect_err("failure");
-        assert!(matches!(failure.error, AppError::Validation(ref msg) if msg == SUPPORTED_EDT_BUILD_ERROR));
+        assert!(
+            matches!(failure.error, AppError::Validation(ref msg) if msg == SUPPORTED_EDT_BUILD_ERROR)
+        );
         assert!(!calls.exists());
     }
 
@@ -1584,13 +1586,7 @@ mod tests {
             SourceFormat::Designer,
             BuilderBackend::Ibcmd,
         );
-        let result = run_build(
-            &config,
-            &BuildArgs {
-                full_rebuild: true,
-            },
-        )
-        .expect("build");
+        let result = run_build(&config, &BuildArgs { full_rebuild: true }).expect("build");
 
         assert!(result.ok);
         let calls_text = fs::read_to_string(&calls).expect("calls");

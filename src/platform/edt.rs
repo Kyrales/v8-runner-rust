@@ -7,6 +7,12 @@ use crate::platform::result::PlatformCommandResult;
 
 #[derive(Debug, Error)]
 pub enum EdtError {
+    #[error("failed to prepare edt workspace '{path}': {source}")]
+    PrepareWorkspace {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+
     #[error("failed to execute edt process: {0}")]
     Spawn(ProcessError),
 }
@@ -71,6 +77,11 @@ impl<'a> EdtDsl<'a> {
         args: &[String],
         out_log: Option<&Path>,
     ) -> Result<PlatformCommandResult, EdtError> {
+        std::fs::create_dir_all(&self.workspace).map_err(|source| EdtError::PrepareWorkspace {
+            path: self.workspace.clone(),
+            source,
+        })?;
+
         if let Some(path) = out_log {
             let _ = std::fs::remove_file(path);
         }
@@ -222,5 +233,26 @@ mod tests {
             .as_deref()
             .expect("log read error")
             .contains("failed to read edt --file log"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn export_project_creates_workspace_before_spawn() {
+        let dir = tempdir().expect("tempdir");
+        let script = dir.path().join("1cedtcli");
+        write_script(
+            &script,
+            "ws=\"\"\nprev=\"\"\nfor arg in \"$@\"; do\n  if [ \"$prev\" = \"-data\" ]; then ws=\"$arg\"; fi\n  prev=\"$arg\"\ndone\n[ -d \"$ws\" ] || exit 11\nexit 0",
+        );
+        let workspace = dir.path().join("missing").join("ws");
+
+        let runner = ProcessExecutor;
+        let dsl = EdtDsl::new(script, workspace.clone(), &runner as &dyn ProcessRunner);
+        let result = dsl
+            .export_project(Path::new("/tmp/project"), Path::new("/tmp/out"))
+            .expect("export project");
+
+        assert_eq!(result.process.exit_code, 0);
+        assert!(workspace.is_dir());
     }
 }

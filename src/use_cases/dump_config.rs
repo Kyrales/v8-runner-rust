@@ -440,14 +440,13 @@ fn run_full_dump_ibcmd(
     )
     .map_err(|error| AppError::Runtime(format!("failed to write stage metadata: {error}")))?;
 
-    let dump_result =
-        match build_ibcmd_dsl(config, binary, runner)?
-            .config_export_full(&staging_dir, resolved.extension.as_deref())
-            .map_err(map_ibcmd_error)
-        {
-            Ok(result) => result,
-            Err(error) => return Err(cleanup_staging_on_platform_failure(&staging_dir, error)),
-        };
+    let dump_result = match build_ibcmd_dsl(config, binary, runner)?
+        .config_export_full(&staging_dir, resolved.extension.as_deref())
+        .map_err(map_ibcmd_error)
+    {
+        Ok(result) => result,
+        Err(error) => return Err(cleanup_staging_on_platform_failure(&staging_dir, error)),
+    };
     ensure_platform_success("dump", resolved, &dump_result)
         .map_err(|error| cleanup_staging_on_platform_failure(&staging_dir, error))?;
 
@@ -790,17 +789,15 @@ fn build_ibcmd_dsl<'a>(
     binary: &Path,
     runner: &'a dyn ProcessRunner,
 ) -> Result<IbcmdDsl<'a>, AppError> {
-    let connection = IbcmdConnection::from_v8_connection(&config.v8_connection())
-        .map_err(map_ibcmd_error)?;
+    let connection =
+        IbcmdConnection::from_v8_connection(&config.v8_connection()).map_err(map_ibcmd_error)?;
 
     Ok(IbcmdDsl::new(binary.to_path_buf(), connection, runner))
 }
 
 fn map_ibcmd_error(error: IbcmdError) -> AppError {
     match error {
-        IbcmdError::ServerConnectionNotSupported => {
-            AppError::Validation(error.to_string())
-        }
+        IbcmdError::ServerConnectionNotSupported => AppError::Validation(error.to_string()),
         IbcmdError::Spawn(_) => AppError::Platform(error.to_string()),
     }
 }
@@ -978,7 +975,12 @@ mod tests {
     }
 
     fn build_config(base_path: &Path, work_path: &Path, platform_path: &Path) -> AppConfig {
-        build_config_with_builder(base_path, work_path, platform_path, BuilderBackend::Designer)
+        build_config_with_builder(
+            base_path,
+            work_path,
+            platform_path,
+            BuilderBackend::Designer,
+        )
     }
 
     fn build_config_with_builder(
@@ -1067,7 +1069,8 @@ mod tests {
     #[test]
     fn ibcmd_dump_support_matrix_accepts_designer_format_with_ibcmd_builder() {
         let dir = tempdir().expect("tempdir");
-        let config = build_config_with_builder(dir.path(), dir.path(), dir.path(), BuilderBackend::Ibcmd);
+        let config =
+            build_config_with_builder(dir.path(), dir.path(), dir.path(), BuilderBackend::Ibcmd);
 
         let error = validate_supported_matrix(&config);
 

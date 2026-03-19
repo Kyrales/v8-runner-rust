@@ -35,7 +35,7 @@ pub enum ConfigValidationError {
     #[error("connection string is empty")]
     EmptyConnection,
 
-    #[error("IBCMD builder requires a file-based connection string (File=...)")]
+    #[error("IBCMD builder requires a file-based connection string (File=... or /F <path>)")]
     IbcmdRequiresFileConnection,
 
     #[error("EDT format requires builder=DESIGNER")]
@@ -43,6 +43,16 @@ pub enum ConfigValidationError {
 
     #[error("format EDT requires at least one source-set with a valid EDT project path")]
     EdtNoProjects,
+
+    #[error(
+        "EDT source-set '{source_set}' path overlaps generated work target for '{generated_for}': source={source_path}, target={generated_path}"
+    )]
+    EdtSourceSetPathOverlapsGeneratedTarget {
+        source_set: String,
+        source_path: String,
+        generated_for: String,
+        generated_path: String,
+    },
 
     #[error("platform version must use exact format major.minor.patch.build: {0}")]
     InvalidPlatformVersion(String),
@@ -101,6 +111,7 @@ fn validate_source_sets(config: &AppConfig) -> Result<(), ConfigValidationError>
 
     let mut names = HashSet::<String>::new();
     let mut resolved_paths = HashSet::<String>::new();
+    let mut edt_source_paths = Vec::new();
     for ss in &config.source_sets {
         validate_source_set_name(&ss.name)?;
         if config.format == SourceFormat::Edt && is_reserved_workdir_name(&ss.name) {
@@ -137,6 +148,14 @@ fn validate_source_sets(config: &AppConfig) -> Result<(), ConfigValidationError>
                 normalized_key,
             ));
         }
+
+        if config.format == SourceFormat::Edt {
+            edt_source_paths.push((ss.name.clone(), normalized));
+        }
+    }
+
+    if config.format == SourceFormat::Edt {
+        validate_edt_runtime_paths(config, &edt_source_paths)?;
     }
 
     Ok(())
@@ -155,14 +174,41 @@ fn validate_connection(config: &AppConfig) -> Result<(), ConfigValidationError> 
         return Err(ConfigValidationError::EmptyConnection);
     }
 
-    if config.builder == BuilderBackend::Ibcmd {
-        let conn = config.connection.to_lowercase();
-        if !conn.contains("file=") {
-            return Err(ConfigValidationError::IbcmdRequiresFileConnection);
+    if config.builder == BuilderBackend::Ibcmd && config.v8_connection().file_path().is_none() {
+        return Err(ConfigValidationError::IbcmdRequiresFileConnection);
+    }
+
+    Ok(())
+}
+
+fn validate_edt_runtime_paths(
+    config: &AppConfig,
+    edt_source_paths: &[(String, std::path::PathBuf)],
+) -> Result<(), ConfigValidationError> {
+    let canonical_work_path =
+        std::fs::canonicalize(&config.work_path).unwrap_or_else(|_| config.work_path.clone());
+
+    for (generated_for, _) in edt_source_paths {
+        let generated_path = canonical_work_path.join(generated_for);
+        for (source_set, source_path) in edt_source_paths {
+            if paths_overlap(source_path, &generated_path) {
+                return Err(
+                    ConfigValidationError::EdtSourceSetPathOverlapsGeneratedTarget {
+                        source_set: source_set.clone(),
+                        source_path: source_path.display().to_string(),
+                        generated_for: generated_for.clone(),
+                        generated_path: generated_path.display().to_string(),
+                    },
+                );
+            }
         }
     }
 
     Ok(())
+}
+
+fn paths_overlap(left: &Path, right: &Path) -> bool {
+    left == right || left.starts_with(right) || right.starts_with(left)
 }
 
 fn is_reserved_workdir_name(name: &str) -> bool {
@@ -491,6 +537,36 @@ mod tests {
     }
 
     #[test]
+    fn ibcmd_allows_raw_f_connection() {
+        let base = tempdir().expect("base");
+        let work = tempdir().expect("work");
+        let source_dir = base.path().join("src");
+        std::fs::create_dir_all(&source_dir).expect("source dir");
+
+        let config = AppConfig {
+            base_path: base.path().to_path_buf(),
+            work_path: work.path().to_path_buf(),
+            format: SourceFormat::Designer,
+            builder: BuilderBackend::Ibcmd,
+            connection: "/F /tmp/ib".to_owned(),
+            credentials: Default::default(),
+            source_sets: vec![SourceSetConfig {
+                name: "main".to_owned(),
+                purpose: SourceSetPurpose::Configuration,
+                path: source_dir
+                    .strip_prefix(base.path())
+                    .expect("relative")
+                    .to_path_buf(),
+            }],
+            build: BuildConfig::default(),
+            tools: ToolsConfig::default(),
+            tests: TestsConfig::default(),
+        };
+
+        validate(&config).expect("raw /F connection should be accepted for IBCMD");
+    }
+
+    #[test]
     fn edt_format_rejects_missing_source_set_path() {
         let base = tempdir().expect("base");
         let work = tempdir().expect("work");
@@ -544,6 +620,40 @@ mod tests {
 
         let err = validate(&config).expect_err("expected missing edt source sets");
         assert!(matches!(err, ConfigValidationError::EdtNoProjects));
+    }
+
+    #[test]
+    fn rejects_edt_source_set_path_overlapping_generated_work_target() {
+        let shared = tempdir().expect("shared");
+        let source_dir = shared.path().join("main");
+        std::fs::create_dir_all(&source_dir).expect("source dir");
+
+        let config = AppConfig {
+            base_path: shared.path().to_path_buf(),
+            work_path: shared.path().to_path_buf(),
+            format: SourceFormat::Edt,
+            builder: BuilderBackend::Designer,
+            connection: "File=/tmp/ib".to_owned(),
+            credentials: Default::default(),
+            source_sets: vec![SourceSetConfig {
+                name: "main".to_owned(),
+                purpose: SourceSetPurpose::Configuration,
+                path: std::path::PathBuf::from("main"),
+            }],
+            build: BuildConfig::default(),
+            tools: ToolsConfig::default(),
+            tests: TestsConfig::default(),
+        };
+
+        let err = validate(&config).expect_err("expected EDT overlap validation error");
+        assert!(matches!(
+            err,
+            ConfigValidationError::EdtSourceSetPathOverlapsGeneratedTarget {
+                source_set,
+                generated_for,
+                ..
+            } if source_set == "main" && generated_for == "main"
+        ));
     }
 
     #[test]
