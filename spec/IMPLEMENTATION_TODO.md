@@ -101,8 +101,8 @@
 
 ## Волна 1: тестирование и документация
 
-- [ ] Добавить unit-тесты на change detection
-- [ ] Добавить unit-тесты на `PartialLoadListGenerator`
+- [x] Добавить unit-тесты на change detection
+- [x] Добавить unit-тесты на `PartialLoadListGenerator`
 - [x] Добавить unit-тесты на JUnit parser
 - [x] Добавить unit-тесты на YaXUnit log parser
 - [x] Добавить unit-тесты на designer validation parser

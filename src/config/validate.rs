@@ -121,9 +121,9 @@ fn validate_source_sets(config: &AppConfig) -> Result<(), ConfigValidationError>
             config.base_path.join(&ss.path)
         };
 
-        if (config.format == SourceFormat::Designer || config.format == SourceFormat::Edt)
-            && !full_path.exists()
-        {
+        // DESIGNER source-set paths also serve as dump targets and may be created by the dump
+        // use case on demand. EDT source-sets must still resolve to existing project paths.
+        if config.format == SourceFormat::Edt && !full_path.exists() {
             return Err(ConfigValidationError::SourceSetPathInvalid {
                 name: ss.name.clone(),
                 path: full_path.display().to_string(),
@@ -458,6 +458,69 @@ mod tests {
         assert!(matches!(
             err,
             ConfigValidationError::EdtRequiresDesignerBuilder
+        ));
+    }
+
+    #[test]
+    fn designer_format_allows_missing_source_set_path() {
+        let base = tempdir().expect("base");
+        let work = tempdir().expect("work");
+        let missing = base.path().join("missing-src");
+
+        let config = AppConfig {
+            base_path: base.path().to_path_buf(),
+            work_path: work.path().to_path_buf(),
+            format: SourceFormat::Designer,
+            builder: BuilderBackend::Designer,
+            connection: "File=/tmp/ib".to_owned(),
+            credentials: Default::default(),
+            source_sets: vec![SourceSetConfig {
+                name: "main".to_owned(),
+                purpose: SourceSetPurpose::Configuration,
+                path: missing
+                    .strip_prefix(base.path())
+                    .expect("relative")
+                    .to_path_buf(),
+            }],
+            build: BuildConfig::default(),
+            tools: ToolsConfig::default(),
+            tests: TestsConfig::default(),
+        };
+
+        validate(&config).expect("designer config should allow missing dump target path");
+    }
+
+    #[test]
+    fn edt_format_rejects_missing_source_set_path() {
+        let base = tempdir().expect("base");
+        let work = tempdir().expect("work");
+        let missing = base.path().join("missing-project");
+
+        let config = AppConfig {
+            base_path: base.path().to_path_buf(),
+            work_path: work.path().to_path_buf(),
+            format: SourceFormat::Edt,
+            builder: BuilderBackend::Designer,
+            connection: "File=/tmp/ib".to_owned(),
+            credentials: Default::default(),
+            source_sets: vec![SourceSetConfig {
+                name: "main".to_owned(),
+                purpose: SourceSetPurpose::Configuration,
+                path: missing
+                    .strip_prefix(base.path())
+                    .expect("relative")
+                    .to_path_buf(),
+            }],
+            build: BuildConfig::default(),
+            tools: ToolsConfig::default(),
+            tests: TestsConfig::default(),
+        };
+
+        let err = validate(&config).expect_err("expected missing edt source-set path");
+
+        assert!(matches!(
+            err,
+            ConfigValidationError::SourceSetPathInvalid { name, .. } if name == "main"
         ));
     }
 

@@ -226,7 +226,7 @@ fn run_dump(config: &AppConfig, args: &DumpArgs) -> Result<DumpResult, DumpExecu
         });
     }
 
-    let result = match (mode, config.builder) {
+    let result = match (&mode, &config.builder) {
         (DumpMode::Incremental, BuilderBackend::Designer) => run_incremental_dump_designer(
             config,
             &resolved,
@@ -251,7 +251,7 @@ fn run_dump(config: &AppConfig, args: &DumpArgs) -> Result<DumpResult, DumpExecu
             location.path.as_path(),
             utilities.runner_for(UtilityType::Ibcmd),
         ),
-        DumpMode::Partial => unreachable!("partial is handled earlier"),
+        (DumpMode::Partial, _) => unreachable!("partial is handled earlier"),
     };
     drop(lock_guard);
 

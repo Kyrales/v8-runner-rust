@@ -23,9 +23,8 @@
 
 Ограничения волны 1:
 
-- только `DESIGNER` backend;
+- `DESIGNER` backend, плюс `IBCMD` для build/dump;
 - без поддержки `EDT`;
-- без `IBCMD`;
 - без фоновых процессов уровня приложения;
 - без совместимости с MCP DTO один в один, но со структурированным CLI output.
 
@@ -37,7 +36,6 @@
 - интерактивная `1cedtcli`-сессия внутри CLI-процесса;
 - `syntax edt`;
 - двухстадийный `EDT -> Designer -> build`;
-- `IBCMD` backend для build/dump;
 - выравнивание структуры output под будущую возможную адаптацию к MCP.
 
 ## 2. Рекомендуемая структура Rust-проекта
@@ -121,7 +119,7 @@ src/
 ```text
 tests/
   cli_build.rs
-  cli_tests.rs
+  cli_test.rs
   cli_dump.rs
   fixtures/
     junit/
@@ -196,7 +194,7 @@ v8-test-runner build --format edt [--full-rebuild]
 Примечания по API:
 
 - `test all` и `test module` должны всегда вызывать `build` до запуска тестов;
-- `dump --mode partial` должен требовать минимум один `--object`;
+- `dump --mode partial` пока не реализован (планируется требование минимум одного `--object`);
 - `syntax edt` должен работать по именам EDT-проектов;
 - `build --full-rebuild` должен сбрасывать state cache, а не менять platform commands.
 
