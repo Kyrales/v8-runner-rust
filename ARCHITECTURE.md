@@ -55,7 +55,7 @@ The future MCP adapter no longer needs to talk to `cli::execute` or to reuse dom
 - `mcp::service::McpService` maps those requests into `use_cases::request::*` and attaches per-call MCP transport metadata.
 - `mcp::response` defines MCP-specific response DTOs, including nested step/test/issue structs that are decoupled from domain serialization details.
 - `mcp::error` splits failures into `McpBusinessFailure<T>` for structured tool responses and `McpInternalError` for adapter/runtime misuse that must not be surfaced as business payloads.
-- Provisional MCP defaults and alias handling live only inside the service-layer mapper helpers and are marked with `TODO(mcp-normalization-stage)`.
+- MCP normalization is finalized in the service layer: dump-mode defaulting, launch alias mapping, `allExtensions` tri-state inference, and MCP-only pre-validation for syntax flag dependencies all live there instead of leaking into transport-neutral use cases.
 
 ## Backend Dispatch
 

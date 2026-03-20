@@ -307,6 +307,12 @@ where
     ) -> McpServiceResult<McpSyntaxCheckResponse> {
         let context = execution_context(call_context, CommandName::Syntax)
             .map_err(McpServiceError::Internal)?;
+        validate_extended_modules_dependencies(
+            request.extended_modules_check,
+            request.check_use_synchronous_calls,
+            request.check_use_modality,
+        )
+        .map_err(invalid_syntax_request)?;
         let use_case_request = SyntaxRequest {
             target: SyntaxTargetRequest::DesignerConfig(map_designer_config_request(request)),
         };
@@ -413,10 +419,15 @@ fn normalize_optional_string(value: Option<&str>) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NormalizedExtensionScope {
+    extension: Option<String>,
+    all_extensions: bool,
+}
+
 fn dump_mode_from_raw(raw: Option<&str>) -> Result<DumpModeRequest, McpBusinessError> {
     match normalize_optional_string(raw) {
-        // TODO(mcp-normalization-stage): switch MCP null/blank default from FULL to INCREMENTAL.
-        None => Ok(DumpModeRequest::Full),
+        None => Ok(DumpModeRequest::Incremental),
         Some(mode) => match mode.to_ascii_uppercase().as_str() {
             "FULL" => Ok(DumpModeRequest::Full),
             "INCREMENTAL" => Ok(DumpModeRequest::Incremental),
@@ -425,6 +436,19 @@ fn dump_mode_from_raw(raw: Option<&str>) -> Result<DumpModeRequest, McpBusinessE
                 "unsupported dump mode: {mode}"
             ))),
         },
+    }
+}
+
+fn normalize_extension_scope(
+    extension: Option<&str>,
+    all_extensions: Option<bool>,
+) -> NormalizedExtensionScope {
+    let extension = normalize_optional_string(extension);
+    let all_extensions = all_extensions.unwrap_or(extension.is_none());
+
+    NormalizedExtensionScope {
+        extension,
+        all_extensions,
     }
 }
 
@@ -438,17 +462,51 @@ fn launch_mode_from_raw(raw: &str) -> Result<LaunchModeRequest, McpBusinessError
         "thick" | "thick_client" | "толстый клиент" | "толстый" => {
             Ok(LaunchModeRequest::Thick)
         }
-        // TODO(mcp-normalization-stage): extend alias coverage only if the Kotlin surface grows further.
         _ => Err(McpBusinessError::unsupported_value(format!(
             "unsupported launch utility_type: {raw}"
         ))),
     }
 }
 
+fn validate_extended_modules_dependencies(
+    extended_modules_check: Option<bool>,
+    check_use_synchronous_calls: Option<bool>,
+    check_use_modality: Option<bool>,
+) -> Result<(), McpBusinessError> {
+    if extended_modules_check == Some(false) && check_use_synchronous_calls == Some(true) {
+        return Err(McpBusinessError::invalid_argument(
+            "checkUseSynchronousCalls requires extendedModulesCheck=true".to_owned(),
+        ));
+    }
+
+    if extended_modules_check == Some(false) && check_use_modality == Some(true) {
+        return Err(McpBusinessError::invalid_argument(
+            "checkUseModality requires extendedModulesCheck=true".to_owned(),
+        ));
+    }
+
+    Ok(())
+}
+
+fn invalid_syntax_request(error: McpBusinessError) -> McpServiceError<McpSyntaxCheckResponse> {
+    let message = error.message.clone();
+    McpServiceError::Business(McpBusinessFailure::new(
+        error,
+        McpSyntaxCheckResponse {
+            success: false,
+            message: message.clone(),
+            check_result: None,
+            errors: Some(vec![message]),
+            issues: None,
+            duration_ms: None,
+        },
+    ))
+}
+
 fn map_designer_config_request(
     request: &McpCheckSyntaxDesignerConfigRequest,
 ) -> DesignerConfigSyntaxRequest {
-    let extension = normalize_optional_string(request.extension.as_deref());
+    let scope = normalize_extension_scope(request.extension.as_deref(), request.all_extensions);
     DesignerConfigSyntaxRequest {
         config_log_integrity: request.config_log_integrity == Some(true),
         incorrect_references: request.incorrect_references == Some(true),
@@ -475,16 +533,15 @@ fn map_designer_config_request(
         check_use_synchronous_calls: request.check_use_synchronous_calls == Some(true),
         check_use_modality: request.check_use_modality == Some(true),
         unsupported_functional: request.unsupported_functional == Some(true),
-        extension: extension.clone(),
-        // TODO(mcp-normalization-stage): replace this provisional bool fallback with tri-state handling.
-        all_extensions: request.all_extensions.unwrap_or(extension.is_none()),
+        extension: scope.extension,
+        all_extensions: scope.all_extensions,
     }
 }
 
 fn map_designer_modules_request(
     request: &McpCheckSyntaxDesignerModulesRequest,
 ) -> DesignerModulesSyntaxRequest {
-    let extension = normalize_optional_string(request.extension.as_deref());
+    let scope = normalize_extension_scope(request.extension.as_deref(), request.all_extensions);
     DesignerModulesSyntaxRequest {
         thin_client: request.thin_client != Some(false),
         web_client: request.web_client == Some(true),
@@ -495,9 +552,8 @@ fn map_designer_modules_request(
         mobile_app_server: request.mobile_app_server == Some(true),
         mobile_client: request.mobile_client == Some(true),
         extended_modules_check: request.extended_modules_check != Some(false),
-        extension: extension.clone(),
-        // TODO(mcp-normalization-stage): replace this provisional bool fallback with tri-state handling.
-        all_extensions: request.all_extensions.unwrap_or(extension.is_none()),
+        extension: scope.extension,
+        all_extensions: scope.all_extensions,
     }
 }
 
@@ -757,7 +813,7 @@ mod tests {
 
     use serde_json::json;
 
-    use super::McpService;
+    use super::{normalize_extension_scope, McpService, NormalizedExtensionScope};
     use crate::config::model::{
         AppConfig, BuildConfig, BuilderBackend, PlatformToolConfig, SourceFormat, SourceSetConfig,
         SourceSetPurpose, TestsConfig, ToolsConfig,
@@ -1108,12 +1164,12 @@ mod tests {
     }
 
     #[test]
-    fn dump_config_maps_success_and_provisional_default_mode() {
+    fn dump_config_maps_success_and_incremental_default_mode() {
         let port = StubPort::with_dump_result(Ok(DumpResult {
             ok: true,
             source_set: Some("main".to_owned()),
             extension: None,
-            mode: DumpMode::Full,
+            mode: DumpMode::Incremental,
             target_path: PathBuf::from("/tmp/out"),
             platform_log_path: None,
             duration_ms: 33,
@@ -1134,11 +1190,90 @@ mod tests {
             .expect("success");
 
         assert_eq!(response.success, true);
-        assert_eq!(response.mode, "FULL");
+        assert_eq!(response.mode, "INCREMENTAL");
         let requests = service.port.dump_requests.borrow();
-        assert_eq!(requests[0].1.mode, DumpModeRequest::Full);
+        assert_eq!(requests[0].1.mode, DumpModeRequest::Incremental);
         assert_eq!(requests[0].1.extension, None);
         assert_eq!(requests[0].1.objects, vec!["Catalog.Item".to_owned()]);
+    }
+
+    #[test]
+    fn dump_config_failure_with_missing_mode_keeps_incremental_request_and_payload_mode() {
+        let config = sample_config();
+        let service = McpService::with_port(
+            &config,
+            StubPort::with_dump_result(Err(UseCaseFailure::with_payload(
+                UseCaseError::new(UseCaseErrorKind::Runtime, "dump failed"),
+                DumpResult {
+                    ok: false,
+                    source_set: Some("main".to_owned()),
+                    extension: None,
+                    mode: DumpMode::Incremental,
+                    target_path: PathBuf::from("/tmp/out"),
+                    platform_log_path: None,
+                    duration_ms: 3,
+                    message: Some("dump failed".to_owned()),
+                },
+            ))),
+        );
+
+        let error = service
+            .dump_config(
+                McpCallContext::stdio(),
+                &McpDumpConfigRequest {
+                    mode: None,
+                    extension: None,
+                    objects: vec![],
+                },
+            )
+            .expect_err("expected failure");
+
+        let requests = service.port.dump_requests.borrow();
+        assert_eq!(requests[0].1.mode, DumpModeRequest::Incremental);
+        match error {
+            McpServiceError::Business(failure) => {
+                assert_eq!(failure.response.mode, "INCREMENTAL");
+                assert_eq!(failure.response.message, "dump failed");
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dump_config_failure_with_blank_mode_uses_incremental_fallback_response() {
+        let config = sample_config();
+        let service = McpService::with_port(
+            &config,
+            StubPort::with_dump_result(Err(UseCaseFailure::without_payload(UseCaseError::new(
+                UseCaseErrorKind::Validation,
+                "dump failed",
+            )))),
+        );
+
+        let error = service
+            .dump_config(
+                McpCallContext::stdio(),
+                &McpDumpConfigRequest {
+                    mode: Some("   ".to_owned()),
+                    extension: None,
+                    objects: vec![],
+                },
+            )
+            .expect_err("expected failure");
+
+        let requests = service.port.dump_requests.borrow();
+        assert_eq!(requests[0].1.mode, DumpModeRequest::Incremental);
+        match error {
+            McpServiceError::Business(failure) => {
+                assert_eq!(failure.response.mode, "INCREMENTAL");
+                assert_eq!(failure.response.message, "dump failed");
+                assert_eq!(
+                    failure.response.errors,
+                    Some(vec!["dump failed".to_owned()])
+                );
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
     }
 
     #[test]
@@ -1184,29 +1319,61 @@ mod tests {
 
     #[test]
     fn launch_app_maps_supported_aliases() {
-        let port = StubPort::with_launch_result(Ok(LaunchResult {
-            ok: true,
-            mode: LaunchMode::Thin,
-            pid: Some(42),
-            binary: PathBuf::from("/opt/1cv8c"),
-            message: None,
-        }));
-        let config = sample_config();
-        let service = McpService::with_port(&config, port);
+        let cases = [
+            (
+                "designer",
+                LaunchMode::Designer,
+                LaunchModeRequest::Designer,
+            ),
+            (" 1CV8 ", LaunchMode::Designer, LaunchModeRequest::Designer),
+            (
+                "конфигуратор",
+                LaunchMode::Designer,
+                LaunchModeRequest::Designer,
+            ),
+            ("thin", LaunchMode::Thin, LaunchModeRequest::Thin),
+            ("THIN_CLIENT", LaunchMode::Thin, LaunchModeRequest::Thin),
+            ("1cv8c", LaunchMode::Thin, LaunchModeRequest::Thin),
+            (
+                "  тонкий клиент  ",
+                LaunchMode::Thin,
+                LaunchModeRequest::Thin,
+            ),
+            ("тонкий", LaunchMode::Thin, LaunchModeRequest::Thin),
+            ("thick", LaunchMode::Thick, LaunchModeRequest::Thick),
+            ("THICK_CLIENT", LaunchMode::Thick, LaunchModeRequest::Thick),
+            (
+                " толстый клиент ",
+                LaunchMode::Thick,
+                LaunchModeRequest::Thick,
+            ),
+            ("толстый", LaunchMode::Thick, LaunchModeRequest::Thick),
+        ];
 
-        let response = service
-            .launch_app(
-                McpCallContext::http(),
-                &McpLaunchAppRequest {
-                    utility_type: "тонкий".to_owned(),
-                },
-            )
-            .expect("success");
+        for (alias, result_mode, request_mode) in cases {
+            let port = StubPort::with_launch_result(Ok(LaunchResult {
+                ok: true,
+                mode: result_mode,
+                pid: Some(42),
+                binary: PathBuf::from("/opt/1cv8"),
+                message: None,
+            }));
+            let config = sample_config();
+            let service = McpService::with_port(&config, port);
 
-        assert_eq!(response.success, true);
-        assert_eq!(response.message, "Launched thin client successfully");
-        let requests = service.port.launch_requests.borrow();
-        assert_eq!(requests[0].1.mode, LaunchModeRequest::Thin);
+            let response = service
+                .launch_app(
+                    McpCallContext::http(),
+                    &McpLaunchAppRequest {
+                        utility_type: alias.to_owned(),
+                    },
+                )
+                .expect("success");
+
+            assert_eq!(response.success, true, "alias {alias}");
+            let requests = service.port.launch_requests.borrow();
+            assert_eq!(requests[0].1.mode, request_mode, "alias {alias}");
+        }
     }
 
     #[test]
@@ -1329,7 +1496,76 @@ mod tests {
     }
 
     #[test]
-    fn check_syntax_designer_config_maps_provisional_defaults() {
+    fn normalize_extension_scope_covers_tri_state_matrix() {
+        let cases = [
+            (
+                None,
+                None,
+                NormalizedExtensionScope {
+                    extension: None,
+                    all_extensions: true,
+                },
+            ),
+            (
+                None,
+                Some(false),
+                NormalizedExtensionScope {
+                    extension: None,
+                    all_extensions: false,
+                },
+            ),
+            (
+                None,
+                Some(true),
+                NormalizedExtensionScope {
+                    extension: None,
+                    all_extensions: true,
+                },
+            ),
+            (
+                Some(" Ext "),
+                None,
+                NormalizedExtensionScope {
+                    extension: Some("Ext".to_owned()),
+                    all_extensions: false,
+                },
+            ),
+            (
+                Some(" Ext "),
+                Some(false),
+                NormalizedExtensionScope {
+                    extension: Some("Ext".to_owned()),
+                    all_extensions: false,
+                },
+            ),
+            (
+                Some(" Ext "),
+                Some(true),
+                NormalizedExtensionScope {
+                    extension: Some("Ext".to_owned()),
+                    all_extensions: true,
+                },
+            ),
+            (
+                Some(" "),
+                None,
+                NormalizedExtensionScope {
+                    extension: None,
+                    all_extensions: true,
+                },
+            ),
+        ];
+
+        for (extension, all_extensions, expected) in cases {
+            assert_eq!(
+                normalize_extension_scope(extension, all_extensions),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn check_syntax_designer_config_maps_normalized_defaults() {
         let port = StubPort::with_syntax_result(Ok(sample_syntax_result(SyntaxCheckStatus::Clean)));
         let config = sample_config();
         let service = McpService::with_port(&config, port);
@@ -1354,6 +1590,105 @@ mod tests {
                 assert_eq!(request.all_extensions, true);
             }
             other => panic!("unexpected target: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn check_syntax_designer_config_uses_extension_scope_helper() {
+        let port = StubPort::with_syntax_result(Ok(sample_syntax_result(SyntaxCheckStatus::Clean)));
+        let config = sample_config();
+        let service = McpService::with_port(&config, port);
+
+        service
+            .check_syntax_designer_config(
+                McpCallContext::http(),
+                &McpCheckSyntaxDesignerConfigRequest {
+                    extension: Some(" Ext ".to_owned()),
+                    all_extensions: Some(true),
+                    ..McpCheckSyntaxDesignerConfigRequest::default()
+                },
+            )
+            .expect("success");
+
+        let requests = service.port.syntax_requests.borrow();
+        match &requests[0].1.target {
+            SyntaxTargetRequest::DesignerConfig(request) => {
+                assert_eq!(request.extension.as_deref(), Some("Ext"));
+                assert_eq!(request.all_extensions, true);
+            }
+            other => panic!("unexpected target: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn check_syntax_designer_config_rejects_sync_dependency_without_calling_use_case() {
+        let port = StubPort::with_syntax_result(Ok(sample_syntax_result(SyntaxCheckStatus::Clean)));
+        let config = sample_config();
+        let service = McpService::with_port(&config, port);
+
+        let error = service
+            .check_syntax_designer_config(
+                McpCallContext::stdio(),
+                &McpCheckSyntaxDesignerConfigRequest {
+                    extended_modules_check: Some(false),
+                    check_use_synchronous_calls: Some(true),
+                    ..McpCheckSyntaxDesignerConfigRequest::default()
+                },
+            )
+            .expect_err("expected failure");
+
+        assert!(service.port.syntax_requests.borrow().is_empty());
+        match error {
+            McpServiceError::Business(failure) => {
+                assert_eq!(failure.error.code, McpErrorCode::InvalidArgument);
+                assert_eq!(
+                    failure.response.message,
+                    "checkUseSynchronousCalls requires extendedModulesCheck=true"
+                );
+                assert_eq!(
+                    failure.response.errors,
+                    Some(vec![
+                        "checkUseSynchronousCalls requires extendedModulesCheck=true".to_owned()
+                    ])
+                );
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn check_syntax_designer_config_rejects_modality_dependency_without_calling_use_case() {
+        let port = StubPort::with_syntax_result(Ok(sample_syntax_result(SyntaxCheckStatus::Clean)));
+        let config = sample_config();
+        let service = McpService::with_port(&config, port);
+
+        let error = service
+            .check_syntax_designer_config(
+                McpCallContext::stdio(),
+                &McpCheckSyntaxDesignerConfigRequest {
+                    extended_modules_check: Some(false),
+                    check_use_modality: Some(true),
+                    ..McpCheckSyntaxDesignerConfigRequest::default()
+                },
+            )
+            .expect_err("expected failure");
+
+        assert!(service.port.syntax_requests.borrow().is_empty());
+        match error {
+            McpServiceError::Business(failure) => {
+                assert_eq!(failure.error.code, McpErrorCode::InvalidArgument);
+                assert_eq!(
+                    failure.response.message,
+                    "checkUseModality requires extendedModulesCheck=true"
+                );
+                assert_eq!(
+                    failure.response.errors,
+                    Some(vec![
+                        "checkUseModality requires extendedModulesCheck=true".to_owned()
+                    ])
+                );
+            }
+            other => panic!("unexpected error: {other:?}"),
         }
     }
 
@@ -1418,6 +1753,33 @@ mod tests {
                 assert_eq!(request.server, true);
                 assert_eq!(request.extension.as_deref(), Some("Ext"));
                 assert_eq!(request.all_extensions, false);
+            }
+            other => panic!("unexpected target: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn check_syntax_designer_modules_uses_extension_scope_helper() {
+        let port = StubPort::with_syntax_result(Ok(sample_syntax_result(SyntaxCheckStatus::Clean)));
+        let config = sample_config();
+        let service = McpService::with_port(&config, port);
+
+        service
+            .check_syntax_designer_modules(
+                McpCallContext::http(),
+                &McpCheckSyntaxDesignerModulesRequest {
+                    extension: Some(" ".to_owned()),
+                    all_extensions: None,
+                    ..McpCheckSyntaxDesignerModulesRequest::default()
+                },
+            )
+            .expect("success");
+
+        let requests = service.port.syntax_requests.borrow();
+        match &requests[0].1.target {
+            SyntaxTargetRequest::DesignerModules(request) => {
+                assert_eq!(request.extension, None);
+                assert_eq!(request.all_extensions, true);
             }
             other => panic!("unexpected target: {other:?}"),
         }

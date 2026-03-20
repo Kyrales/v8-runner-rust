@@ -22,11 +22,11 @@
   - Добавлены typed config-секции `mcp.http` и `mcp.execution` с defaults `127.0.0.1:3000`, `/mcp`, `stateful_sessions=true`, `max_sessions=64`, `idle_ttl_secs=900`, `max_concurrent_calls=1`, `shutdown_grace_period_secs=30`.
   - `tools.edt_cli` теперь поддерживает `startup_timeout_ms` и `command_timeout_ms` с default `300_000 ms`; сохранена совместимость с `startup-timeout-ms` и `command-timeout-ms`.
   - Добавлена pre-runtime validation для bind address, MCP HTTP path, positive session/concurrency/grace/timeout limits и обновлены example/docs.
-- Реализовать contract normalization:
-  - tri-state для `allExtensions`
-  - pre-validation для `checkUseSynchronousCalls` и `checkUseModality`
-  - полный alias set для `launch_app`, включая `тонкий` и `толстый`
-  - явное product-расхождение: `dump_config(mode=null)` в MCP трактуется как `INCREMENTAL`
+- [x] 2026-03-20: Реализовать contract normalization в MCP service layer.
+  - Зафиксирован tri-state для `allExtensions`: blank `extension` трактуется как отсутствие значения, default зависит от наличия `extension`, явный `allExtensions=true` сохраняется как Kotlin-compatible behavior.
+  - Добавлен pre-validation для `checkUseSynchronousCalls` и `checkUseModality`: при `extendedModulesCheck=false` MCP boundary возвращает `InvalidArgument` до вызова use case.
+  - Зафиксирован alias set для `launch_app`, включая Kotlin aliases и ранее принятые `thin` / `thick`; trim + lowercase normalization сохранены.
+  - Осознанное product-расхождение теперь задокументировано и покрыто тестами: `dump_config(mode=null|blank)` в MCP трактуется как `INCREMENTAL`.
 - Закрыть functional gap: `dump_config(PARTIAL)` для `DESIGNER`; для `IBCMD` сделать degraded fallback с warning и сохранением requested mode `PARTIAL`.
 
 ## Stage 2. MCP stdio MVP

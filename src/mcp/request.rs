@@ -24,7 +24,7 @@ pub struct McpRunModuleTestsRequest {
 /// MCP request for `dump_config`.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct McpDumpConfigRequest {
-    /// Optional raw dump mode. Temporary defaulting is isolated in service mappers.
+    /// Optional raw dump mode. Null/blank defaults to `INCREMENTAL` in service mappers.
     pub mode: Option<String>,
     /// Optional extension name.
     pub extension: Option<String>,
@@ -72,7 +72,10 @@ pub struct McpCheckSyntaxDesignerConfigRequest {
     pub check_use_synchronous_calls: Option<bool>,
     pub check_use_modality: Option<bool>,
     pub unsupported_functional: Option<bool>,
+    /// Optional extension selector. Blank values are treated as absent.
     pub extension: Option<String>,
+    /// Optional tri-state all-extensions flag. When omitted, service mappers infer the default
+    /// from `extension`.
     pub all_extensions: Option<bool>,
 }
 
@@ -88,6 +91,9 @@ pub struct McpCheckSyntaxDesignerModulesRequest {
     pub mobile_app_server: Option<bool>,
     pub mobile_client: Option<bool>,
     pub extended_modules_check: Option<bool>,
+    /// Optional extension selector. Blank values are treated as absent.
     pub extension: Option<String>,
+    /// Optional tri-state all-extensions flag. When omitted, service mappers infer the default
+    /// from `extension`.
     pub all_extensions: Option<bool>,
 }

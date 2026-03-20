@@ -48,7 +48,12 @@ The CLI now uses a transport-neutral use-case contract internally:
 - `cli::execute` maps parsed CLI args into request DTOs and renders the final text/json output.
 - `use_cases` no longer depend on `clap`, `Presenter`, or `Envelope`.
 - `mcp` now adds a separate internal service boundary with MCP-specific request/response DTOs and explicit business-vs-internal failure split.
-- Raw MCP defaults and alias normalization are isolated in the service layer instead of leaking into use cases.
+- MCP request normalization is isolated in the service layer instead of leaking into use cases.
+- MCP now fixes these transport-level semantics explicitly:
+  - `dump_config(mode=null|blank)` resolves to `INCREMENTAL` starting on `2026-03-20`.
+  - `launch_app` accepts the Kotlin alias set plus the already supported `thin` / `thick` aliases, with trim + lowercase normalization.
+  - `allExtensions` is treated as tri-state in MCP request mapping, with the default inferred from whether `extension` is present.
+  - `checkUseSynchronousCalls` and `checkUseModality` are rejected at the MCP boundary when `extendedModulesCheck=false`.
 - This remains preparatory work for the upcoming MCP adapters without changing the public CLI surface.
 
 ## MCP Configuration Prep
