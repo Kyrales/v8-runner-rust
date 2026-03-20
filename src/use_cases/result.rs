@@ -82,26 +82,23 @@ impl From<AppError> for UseCaseError {
 #[derive(Debug, Clone)]
 pub struct UseCaseFailure<T> {
     pub error: UseCaseError,
-    pub result: T,
-    pub emits_payload: bool,
+    pub payload: Option<T>,
 }
 
 impl<T> UseCaseFailure<T> {
     /// Creates a failure that should still be rendered as a structured command payload.
-    pub fn with_payload(error: impl Into<UseCaseError>, result: T) -> Self {
+    pub fn with_payload(error: impl Into<UseCaseError>, payload: T) -> Self {
         Self {
             error: error.into(),
-            result,
-            emits_payload: true,
+            payload: Some(payload),
         }
     }
 
     /// Creates a failure that should not emit a structured command payload.
-    pub fn without_payload(error: impl Into<UseCaseError>, result: T) -> Self {
+    pub fn without_payload(error: impl Into<UseCaseError>) -> Self {
         Self {
             error: error.into(),
-            result,
-            emits_payload: false,
+            payload: None,
         }
     }
 }

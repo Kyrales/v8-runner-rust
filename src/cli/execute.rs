@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 use crate::cli::args::{
     BuildArgs, Command, DesignerConfigSyntaxArgs, DesignerModulesSyntaxArgs, DumpArgs, LaunchArgs,
     SyntaxArgs, SyntaxTarget, TestArgs, TestScope,
@@ -16,10 +18,11 @@ use crate::use_cases::context::{CommandName, ExecutionContext};
 use crate::use_cases::dump_config;
 use crate::use_cases::launch_app;
 use crate::use_cases::request::{
-    BuildRequest, DesignerConfigSyntaxRequest, DesignerModulesSyntaxRequest, DumpRequest,
-    LaunchRequest, SyntaxRequest, SyntaxTargetRequest, TestRequest, TestScopeRequest,
+    BuildRequest, DesignerConfigSyntaxRequest, DesignerModulesSyntaxRequest, DumpModeRequest,
+    DumpRequest, LaunchModeRequest, LaunchRequest, SyntaxRequest, SyntaxTargetRequest,
+    TestRequest, TestScopeRequest,
 };
-use crate::use_cases::result::UseCaseError;
+use crate::use_cases::result::{UseCaseError, UseCaseErrorKind};
 use crate::use_cases::run_tests;
 
 /// Executes a parsed CLI command by mapping it into transport-neutral requests and
@@ -59,28 +62,30 @@ fn execute_build(
     match build_project::execute(&context, config, &request) {
         Ok(result) => {
             if presenter.is_json() {
-                presenter.print_envelope(&Envelope::ok(CommandName::Build.as_str(), result.duration_ms, result));
+                presenter
+                    .print_envelope(&Envelope::ok(CommandName::Build.as_str(), result.duration_ms, result));
             } else {
                 render_build_text(&result, presenter, true);
             }
             Ok(())
         }
         Err(failure) => {
+            let error = failure.error;
             if presenter.is_json() {
-                if failure.emits_payload {
+                if let Some(result) = failure.payload {
                     presenter.print_envelope(&Envelope::err(
                         CommandName::Build.as_str(),
-                        failure.result.duration_ms,
-                        failure.result.clone(),
+                        result.duration_ms,
+                        result,
                     ));
                 }
             } else {
-                if failure.emits_payload {
-                    render_build_text(&failure.result, presenter, false);
+                if let Some(result) = failure.payload.as_ref() {
+                    render_build_text(result, presenter, false);
                 }
-                presenter.print_error(&failure.error.to_string());
+                presenter.print_error(&error.to_string());
             }
-            Err(failure.error)
+            Err(error)
         }
     }
 }
@@ -95,24 +100,25 @@ fn execute_test(
     match run_tests::execute(&context, config, &request) {
         Ok(result) => {
             if presenter.is_json() {
-                presenter.print_envelope(&build_test_envelope(result.clone(), true));
+                presenter.print_envelope(&build_test_envelope(result, true));
             } else {
                 render_test_text(&result, presenter);
             }
             Ok(())
         }
         Err(failure) => {
+            let error = failure.error;
             if presenter.is_json() {
-                if failure.emits_payload {
-                    presenter.print_envelope(&build_test_envelope(failure.result.clone(), false));
+                if let Some(result) = failure.payload {
+                    presenter.print_envelope(&build_test_envelope(result, false));
                 }
             } else {
-                if failure.emits_payload {
-                    render_test_text(&failure.result, presenter);
+                if let Some(result) = failure.payload.as_ref() {
+                    render_test_text(result, presenter);
                 }
-                presenter.print_error(&failure.error.to_string());
+                presenter.print_error(&error.to_string());
             }
-            Err(failure.error)
+            Err(error)
         }
     }
 }
@@ -122,33 +128,35 @@ fn execute_dump(
     args: &DumpArgs,
     presenter: &Presenter,
 ) -> Result<(), UseCaseError> {
-    let request = map_dump_request(args);
+    let request = map_dump_request(args)?;
     let context = ExecutionContext::cli(CommandName::Dump);
     match dump_config::execute(&context, config, &request) {
         Ok(result) => {
             if presenter.is_json() {
-                presenter.print_envelope(&Envelope::ok(CommandName::Dump.as_str(), result.duration_ms, result));
+                presenter
+                    .print_envelope(&Envelope::ok(CommandName::Dump.as_str(), result.duration_ms, result));
             } else {
                 render_dump_text(&result, presenter, true);
             }
             Ok(())
         }
         Err(failure) => {
+            let error = failure.error;
             if presenter.is_json() {
-                if failure.emits_payload {
+                if let Some(result) = failure.payload {
                     presenter.print_envelope(&Envelope::err(
                         CommandName::Dump.as_str(),
-                        failure.result.duration_ms,
-                        failure.result.clone(),
+                        result.duration_ms,
+                        result,
                     ));
                 }
             } else {
-                if failure.emits_payload {
-                    render_dump_text(&failure.result, presenter, false);
+                if let Some(result) = failure.payload.as_ref() {
+                    render_dump_text(result, presenter, false);
                 }
-                presenter.print_error(&failure.error.to_string());
+                presenter.print_error(&error.to_string());
             }
-            Err(failure.error)
+            Err(error)
         }
     }
 }
@@ -174,21 +182,22 @@ fn execute_syntax(
             Ok(())
         }
         Err(failure) => {
+            let error = failure.error;
             if presenter.is_json() {
-                if failure.emits_payload {
+                if let Some(result) = failure.payload {
                     presenter.print_envelope(&Envelope::err(
                         CommandName::Syntax.as_str(),
-                        failure.result.duration_ms,
-                        failure.result.clone(),
+                        result.duration_ms,
+                        result,
                     ));
                 }
             } else {
-                if failure.emits_payload {
-                    render_syntax_text(&failure.result, presenter);
+                if let Some(result) = failure.payload.as_ref() {
+                    render_syntax_text(result, presenter);
                 }
-                presenter.print_error(&failure.error.to_string());
+                presenter.print_error(&error.to_string());
             }
-            Err(failure.error)
+            Err(error)
         }
     }
 }
@@ -198,15 +207,16 @@ fn execute_launch(
     args: &LaunchArgs,
     presenter: &Presenter,
 ) -> Result<(), UseCaseError> {
-    let request = map_launch_request(args);
+    let request = map_launch_request(args)?;
     let context = ExecutionContext::cli(CommandName::Launch);
+    let started = Instant::now();
     match launch_app::execute(&context, config, &request) {
         Ok(result) => {
             if presenter.is_json() {
                 presenter.print_envelope(&Envelope::ok(
                     CommandName::Launch.as_str(),
-                    result.duration_ms,
-                    result.clone(),
+                    started.elapsed().as_millis() as u64,
+                    result,
                 ));
             } else {
                 presenter.print_ok(
@@ -219,10 +229,11 @@ fn execute_launch(
             Ok(())
         }
         Err(failure) => {
+            let error = failure.error;
             if !presenter.is_json() {
-                presenter.print_error(&failure.error.to_string());
+                presenter.print_error(&error.to_string());
             }
-            Err(failure.error)
+            Err(error)
         }
     }
 }
@@ -243,13 +254,23 @@ fn map_test_request(args: &TestArgs) -> TestRequest {
     }
 }
 
-fn map_dump_request(args: &DumpArgs) -> DumpRequest {
-    DumpRequest {
-        mode: args.mode.clone(),
+fn map_dump_request(args: &DumpArgs) -> Result<DumpRequest, UseCaseError> {
+    Ok(DumpRequest {
+        mode: match args.mode.as_str() {
+            "full" => DumpModeRequest::Full,
+            "incremental" => DumpModeRequest::Incremental,
+            "partial" => DumpModeRequest::Partial,
+            other => {
+                return Err(UseCaseError::new(
+                    UseCaseErrorKind::Validation,
+                    format!("unsupported dump mode: {other}"),
+                ));
+            }
+        },
         source_set: args.source_set.clone(),
         extension: args.extension.clone(),
         objects: args.objects.clone(),
-    }
+    })
 }
 
 fn map_syntax_request(args: &SyntaxArgs) -> SyntaxRequest {
@@ -318,10 +339,20 @@ fn map_designer_modules_request(
     }
 }
 
-fn map_launch_request(args: &LaunchArgs) -> LaunchRequest {
-    LaunchRequest {
-        mode: args.mode.clone(),
-    }
+fn map_launch_request(args: &LaunchArgs) -> Result<LaunchRequest, UseCaseError> {
+    Ok(LaunchRequest {
+        mode: match args.mode.as_str() {
+            "designer" => LaunchModeRequest::Designer,
+            "thin" => LaunchModeRequest::Thin,
+            "thick" => LaunchModeRequest::Thick,
+            other => {
+                return Err(UseCaseError::new(
+                    UseCaseErrorKind::Validation,
+                    format!("unsupported launch mode: {other}"),
+                ));
+            }
+        },
+    })
 }
 
 fn build_test_envelope(result: TestRunResult, ok: bool) -> Envelope<TestRunResult> {
@@ -537,7 +568,10 @@ mod tests {
         LaunchArgs, SyntaxArgs, SyntaxTarget, TestArgs, TestScope,
     };
     use crate::use_cases::context::CommandName;
-    use crate::use_cases::request::{SyntaxTargetRequest, TestScopeRequest};
+    use crate::use_cases::request::{
+        DumpModeRequest, LaunchModeRequest, SyntaxTargetRequest, TestScopeRequest,
+    };
+    use crate::use_cases::result::UseCaseErrorKind;
 
     #[test]
     fn maps_test_module_request() {
@@ -592,6 +626,18 @@ mod tests {
                 extension: Some("Ext".to_owned()),
                 objects: vec!["Catalog.Item".to_owned()],
             })
+            .expect("request")
+            .mode,
+            DumpModeRequest::Incremental
+        );
+        assert_eq!(
+            map_dump_request(&DumpArgs {
+                mode: "incremental".to_owned(),
+                source_set: Some("main".to_owned()),
+                extension: Some("Ext".to_owned()),
+                objects: vec!["Catalog.Item".to_owned()],
+            })
+            .expect("request")
             .source_set
             .as_deref(),
             Some("main")
@@ -600,9 +646,28 @@ mod tests {
             map_launch_request(&LaunchArgs {
                 mode: "thin".to_owned()
             })
+            .expect("request")
             .mode,
-            "thin"
+            LaunchModeRequest::Thin
         );
+    }
+
+    #[test]
+    fn rejects_invalid_mode_mapping() {
+        let dump_error = map_dump_request(&DumpArgs {
+            mode: "garbage".to_owned(),
+            source_set: None,
+            extension: None,
+            objects: vec![],
+        })
+        .expect_err("dump mode should be rejected");
+        let launch_error = map_launch_request(&LaunchArgs {
+            mode: "garbage".to_owned(),
+        })
+        .expect_err("launch mode should be rejected");
+
+        assert_eq!(dump_error.kind(), UseCaseErrorKind::Validation);
+        assert_eq!(launch_error.kind(), UseCaseErrorKind::Validation);
     }
 
     #[test]

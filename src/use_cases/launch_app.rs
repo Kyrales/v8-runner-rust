@@ -1,4 +1,4 @@
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use crate::config::model::AppConfig;
 use crate::domain::launch::{LaunchMode, LaunchResult};
@@ -7,7 +7,7 @@ use crate::platform::process::ProcessRequest;
 use crate::platform::utilities::PlatformUtilities;
 use crate::support::error::AppError;
 use crate::use_cases::context::ExecutionContext;
-use crate::use_cases::request::LaunchRequest as LaunchArgs;
+use crate::use_cases::request::{LaunchModeRequest, LaunchRequest as LaunchArgs};
 use crate::use_cases::result::{UseCaseFailure, UseCaseResult};
 use tracing::info;
 
@@ -21,31 +21,19 @@ pub fn execute(
     info!(
         command = context.command().as_str(),
         transport = ?context.transport(),
-        mode = args.mode.as_str(),
+        mode = ?args.mode,
         "executing launch use case"
     );
-    let started = Instant::now();
-    let (mode, utility, command_mode) = match args.mode.as_str() {
-        "designer" => (LaunchMode::Designer, UtilityType::V8, "DESIGNER"),
-        "thin" => (LaunchMode::Thin, UtilityType::V8C, "ENTERPRISE"),
-        "thick" => (LaunchMode::Thick, UtilityType::V8, "ENTERPRISE"),
-        other => {
-            return Err(UseCaseFailure::without_payload(
-                AppError::Validation(format!("unsupported launch mode: {other}")),
-                failure_result(other, started, None, None),
-            ));
-        }
+    let (mode, utility, command_mode) = match args.mode {
+        LaunchModeRequest::Designer => (LaunchMode::Designer, UtilityType::V8, "DESIGNER"),
+        LaunchModeRequest::Thin => (LaunchMode::Thin, UtilityType::V8C, "ENTERPRISE"),
+        LaunchModeRequest::Thick => (LaunchMode::Thick, UtilityType::V8, "ENTERPRISE"),
     };
 
     let mut utilities = PlatformUtilities::from_config(config);
     let location = utilities
         .locate(utility)
-        .map_err(|e| {
-            UseCaseFailure::without_payload(
-                AppError::Platform(e.to_string()),
-                failure_result(args.mode.as_str(), started, None, None),
-            )
-        })?;
+        .map_err(|e| UseCaseFailure::without_payload(AppError::Platform(e.to_string())))?;
 
     let mut process_args = vec![command_mode.to_owned()];
     process_args.extend(config.v8_connection().args());
@@ -60,12 +48,7 @@ pub fn execute(
             stderr_log_path: None,
             startup_probe: Some(LAUNCH_STARTUP_PROBE),
         })
-        .map_err(|e| {
-            UseCaseFailure::without_payload(
-                AppError::Platform(e.to_string()),
-                failure_result(args.mode.as_str(), started, Some(location.path.clone()), None),
-            )
-        })?;
+        .map_err(|e| UseCaseFailure::without_payload(AppError::Platform(e.to_string())))?;
 
     let result = LaunchResult {
         ok: true,
@@ -74,32 +57,18 @@ pub fn execute(
         binary: spawned.binary.clone(),
         message: Some(format!(
             "Launched {} via {} (pid {})",
-            args.mode,
+            mode_label(args.mode),
             spawned.binary.display(),
             spawned.pid
         )),
-        duration_ms: started.elapsed().as_millis() as u64,
     };
     Ok(result)
 }
 
-fn failure_result(
-    mode: &str,
-    started: Instant,
-    binary: Option<std::path::PathBuf>,
-    message: Option<String>,
-) -> LaunchResult {
-    let mode = match mode {
-        "thin" => LaunchMode::Thin,
-        "thick" => LaunchMode::Thick,
-        _ => LaunchMode::Designer,
-    };
-    LaunchResult {
-        ok: false,
-        mode,
-        pid: None,
-        binary: binary.unwrap_or_default(),
-        message,
-        duration_ms: started.elapsed().as_millis() as u64,
+fn mode_label(mode: LaunchModeRequest) -> &'static str {
+    match mode {
+        LaunchModeRequest::Designer => "designer",
+        LaunchModeRequest::Thin => "thin",
+        LaunchModeRequest::Thick => "thick",
     }
 }

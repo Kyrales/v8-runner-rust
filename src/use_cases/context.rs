@@ -24,8 +24,11 @@ impl CommandName {
 /// Describes the transport that invoked the use case.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExecutionTransport {
+    /// Invocation from the existing CLI surface.
     Cli,
+    /// Invocation from MCP over stdio.
     McpStdio,
+    /// Invocation from MCP over HTTP.
     McpHttp,
 }
 
@@ -37,12 +40,24 @@ pub struct ExecutionContext {
 }
 
 impl ExecutionContext {
+    /// Creates an execution context for the specified command and transport.
+    pub const fn new(command: CommandName, transport: ExecutionTransport) -> Self {
+        Self { command, transport }
+    }
+
     /// Creates a CLI execution context for the specified command.
     pub const fn cli(command: CommandName) -> Self {
-        Self {
-            command,
-            transport: ExecutionTransport::Cli,
-        }
+        Self::new(command, ExecutionTransport::Cli)
+    }
+
+    /// Creates an MCP stdio execution context for the specified command.
+    pub const fn mcp_stdio(command: CommandName) -> Self {
+        Self::new(command, ExecutionTransport::McpStdio)
+    }
+
+    /// Creates an MCP HTTP execution context for the specified command.
+    pub const fn mcp_http(command: CommandName) -> Self {
+        Self::new(command, ExecutionTransport::McpHttp)
     }
 
     /// Returns the command being executed.
@@ -53,5 +68,21 @@ impl ExecutionContext {
     /// Returns the transport that initiated this execution.
     pub const fn transport(self) -> ExecutionTransport {
         self.transport
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CommandName, ExecutionContext, ExecutionTransport};
+
+    #[test]
+    fn constructs_mcp_contexts() {
+        let stdio = ExecutionContext::mcp_stdio(CommandName::Build);
+        let http = ExecutionContext::mcp_http(CommandName::Test);
+
+        assert_eq!(stdio.command(), CommandName::Build);
+        assert_eq!(stdio.transport(), ExecutionTransport::McpStdio);
+        assert_eq!(http.command(), CommandName::Test);
+        assert_eq!(http.transport(), ExecutionTransport::McpHttp);
     }
 }

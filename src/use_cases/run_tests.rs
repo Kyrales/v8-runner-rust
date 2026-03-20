@@ -132,18 +132,23 @@ fn run_tests(
     ) {
         Ok(result) => result,
         Err(failure) => {
+            let summary = failure
+                .payload
+                .as_ref()
+                .map(build_summary)
+                .unwrap_or_else(|| failure.error.to_string());
             steps.push(StepResult {
                 name: "build".to_owned(),
                 ok: false,
                 duration_ms: build_started.elapsed().as_millis() as u64,
-                message: Some(build_summary(&failure.result)),
+                message: Some(summary.clone()),
             });
             let result = TestRunResult {
                 ok: false,
                 target,
                 mode,
                 error_kind: Some(TestErrorKind::BuildFailed),
-                diagnostics: vec![build_summary(&failure.result)],
+                diagnostics: vec![summary],
                 retained_paths: None,
                 report: None,
                 warnings,

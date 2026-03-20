@@ -23,7 +23,7 @@ use crate::support::fs::{
 };
 use crate::support::temp::platform_logs_dir;
 use crate::use_cases::context::ExecutionContext;
-use crate::use_cases::request::DumpRequest as DumpArgs;
+use crate::use_cases::request::{DumpModeRequest, DumpRequest as DumpArgs};
 use crate::use_cases::result::{UseCaseFailure, UseCaseResult};
 use tracing::info;
 
@@ -64,7 +64,11 @@ struct ResolvedDumpTarget {
 
 fn run_dump(config: &AppConfig, args: &DumpArgs) -> UseCaseResult<DumpResult> {
     let started = Instant::now();
-    let mode = parse_mode(&args.mode);
+    let mode = match args.mode {
+        DumpModeRequest::Full => DumpMode::Full,
+        DumpModeRequest::Incremental => DumpMode::Incremental,
+        DumpModeRequest::Partial => DumpMode::Partial,
+    };
     info!(
         mode = ?mode,
         source_set = args.source_set.as_deref().unwrap_or("<auto>"),
@@ -589,15 +593,6 @@ fn validate_supported_matrix(config: &AppConfig) -> Option<AppError> {
     }
 }
 
-fn parse_mode(value: &str) -> DumpMode {
-    match value {
-        "full" => DumpMode::Full,
-        "incremental" => DumpMode::Incremental,
-        "partial" => DumpMode::Partial,
-        _ => DumpMode::Partial,
-    }
-}
-
 fn validate_publish_target(resolved: &ResolvedDumpTarget) -> Result<(), AppError> {
     if resolved.canonical_target_path
         != nearest_existing_canonical_path(&resolved.target_path).map_err(|error| {
@@ -861,7 +856,7 @@ mod tests {
     use crate::support::fs::{
         acquire_advisory_lock, read_temp_dir_metadata, write_temp_dir_metadata, TempDirKind,
     };
-    use crate::use_cases::request::DumpRequest as DumpArgs;
+    use crate::use_cases::request::{DumpModeRequest, DumpRequest as DumpArgs};
     use crate::use_cases::result::UseCaseErrorKind;
     use std::fs;
     use std::os::unix::fs::{symlink, PermissionsExt};
@@ -1015,7 +1010,7 @@ mod tests {
         let failure = run_dump(
             &config,
             &DumpArgs {
-                mode: "full".to_owned(),
+                mode: DumpModeRequest::Full,
                 source_set: None,
                 extension: None,
                 objects: vec![],
@@ -1049,7 +1044,7 @@ mod tests {
         let failure = run_dump(
             &config,
             &DumpArgs {
-                mode: "partial".to_owned(),
+                mode: DumpModeRequest::Partial,
                 source_set: None,
                 extension: None,
                 objects: vec![],
@@ -1072,7 +1067,7 @@ mod tests {
         let failure = run_dump(
             &config,
             &DumpArgs {
-                mode: "incremental".to_owned(),
+                mode: DumpModeRequest::Incremental,
                 source_set: None,
                 extension: None,
                 objects: vec!["Catalog:Items".to_owned()],
@@ -1099,7 +1094,7 @@ mod tests {
         let error = resolve_target(
             &config,
             &DumpArgs {
-                mode: "full".to_owned(),
+                mode: DumpModeRequest::Full,
                 source_set: None,
                 extension: None,
                 objects: vec![],
@@ -1121,7 +1116,7 @@ mod tests {
         let error = resolve_target(
             &config,
             &DumpArgs {
-                mode: "full".to_owned(),
+                mode: DumpModeRequest::Full,
                 source_set: Some("main".to_owned()),
                 extension: Some("ext".to_owned()),
                 objects: vec![],
@@ -1150,7 +1145,7 @@ mod tests {
         let resolved = resolve_target(
             &config,
             &DumpArgs {
-                mode: "full".to_owned(),
+                mode: DumpModeRequest::Full,
                 source_set: Some("main".to_owned()),
                 extension: None,
                 objects: vec![],
@@ -1275,7 +1270,7 @@ mod tests {
         let result = run_dump(
             &config,
             &DumpArgs {
-                mode: "incremental".to_owned(),
+                mode: DumpModeRequest::Incremental,
                 source_set: Some("main".to_owned()),
                 extension: None,
                 objects: vec![],
@@ -1304,7 +1299,7 @@ mod tests {
         let failure = run_dump(
             &config,
             &DumpArgs {
-                mode: "full".to_owned(),
+                mode: DumpModeRequest::Full,
                 source_set: Some("main".to_owned()),
                 extension: None,
                 objects: vec![],
@@ -1334,7 +1329,7 @@ mod tests {
         let result = run_dump(
             &config,
             &DumpArgs {
-                mode: "full".to_owned(),
+                mode: DumpModeRequest::Full,
                 source_set: Some("main".to_owned()),
                 extension: None,
                 objects: vec![],
@@ -1361,7 +1356,7 @@ mod tests {
         let result = run_dump(
             &config,
             &DumpArgs {
-                mode: "full".to_owned(),
+                mode: DumpModeRequest::Full,
                 source_set: Some("main".to_owned()),
                 extension: None,
                 objects: vec![],
@@ -1391,7 +1386,7 @@ mod tests {
         let failure = run_dump(
             &config,
             &DumpArgs {
-                mode: "full".to_owned(),
+                mode: DumpModeRequest::Full,
                 source_set: Some("main".to_owned()),
                 extension: None,
                 objects: vec![],
@@ -1421,7 +1416,7 @@ mod tests {
         let result = run_dump(
             &config,
             &DumpArgs {
-                mode: "incremental".to_owned(),
+                mode: DumpModeRequest::Incremental,
                 source_set: Some("main".to_owned()),
                 extension: None,
                 objects: vec![],
@@ -1475,7 +1470,7 @@ mod tests {
         let resolved_real = resolve_target(
             &config_real,
             &DumpArgs {
-                mode: "full".to_owned(),
+                mode: DumpModeRequest::Full,
                 source_set: Some("main".to_owned()),
                 extension: None,
                 objects: vec![],
@@ -1485,7 +1480,7 @@ mod tests {
         let resolved_link = resolve_target(
             &config_link,
             &DumpArgs {
-                mode: "full".to_owned(),
+                mode: DumpModeRequest::Full,
                 source_set: Some("main".to_owned()),
                 extension: None,
                 objects: vec![],

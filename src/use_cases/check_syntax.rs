@@ -1011,12 +1011,13 @@ mod tests {
         let config = sample_config(dir.path(), dir.path(), dir.path());
 
         let error = run_syntax(&config, &args).expect_err("expected failure");
+        let message = error.error.to_string();
+        let result = error
+            .payload
+            .expect("syntax validation failures should preserve a structured payload");
 
-        assert!(error
-            .error
-            .to_string()
-            .contains("requires at least one mode"));
-        assert!(error.result.issues.is_empty());
+        assert!(message.contains("requires at least one mode"));
+        assert!(result.issues.is_empty());
     }
 
     #[test]
@@ -1029,9 +1030,13 @@ mod tests {
         };
 
         let error = run_syntax(&config, &args).expect_err("expected failure");
+        let kind = error.error.kind();
+        let result = error
+            .payload
+            .expect("syntax validation failures should preserve a structured payload");
 
-        assert_eq!(error.error.kind(), UseCaseErrorKind::Validation);
-        assert!(error.result.issues.is_empty());
+        assert_eq!(kind, UseCaseErrorKind::Validation);
+        assert!(result.issues.is_empty());
     }
 
     #[test]
@@ -1077,11 +1082,14 @@ mod tests {
         };
 
         let failure = run_syntax(&config, &args).expect_err("expected validation failure");
+        let result = failure
+            .payload
+            .expect("syntax validation failures should preserve a structured payload");
 
-        assert_eq!(failure.result.status, SyntaxCheckStatus::IssuesFound);
-        assert_eq!(failure.result.exit_code, 101);
-        assert_eq!(failure.result.issues.len(), 1);
-        match &failure.result.issues[0] {
+        assert_eq!(result.status, SyntaxCheckStatus::IssuesFound);
+        assert_eq!(result.exit_code, 101);
+        assert_eq!(result.issues.len(), 1);
+        match &result.issues[0] {
             Issue::Module(issue) => assert_eq!(issue.path, "CommonModules.TestModule"),
             _ => panic!("expected module issue"),
         }
@@ -1105,12 +1113,14 @@ mod tests {
         };
 
         let failure = run_syntax(&config, &args).expect_err("expected tool failure");
+        let result = failure
+            .payload
+            .expect("syntax tool failures should preserve a structured payload");
 
-        assert_eq!(failure.result.status, SyntaxCheckStatus::ToolFailed);
-        assert_eq!(failure.result.exit_code, 1);
-        assert_eq!(failure.result.issues.len(), 1);
-        assert!(failure
-            .result
+        assert_eq!(result.status, SyntaxCheckStatus::ToolFailed);
+        assert_eq!(result.exit_code, 1);
+        assert_eq!(result.issues.len(), 1);
+        assert!(result
             .stderr
             .as_deref()
             .expect("stderr")
@@ -1135,10 +1145,13 @@ mod tests {
         };
 
         let failure = run_syntax(&config, &args).expect_err("expected failure");
+        let result = failure
+            .payload
+            .expect("syntax failures should preserve a structured payload");
 
-        assert_eq!(failure.result.status, SyntaxCheckStatus::IssuesFound);
-        assert!(failure.result.log_read_warning.is_some());
-        assert_eq!(failure.result.issues.len(), 1);
+        assert_eq!(result.status, SyntaxCheckStatus::IssuesFound);
+        assert!(result.log_read_warning.is_some());
+        assert_eq!(result.issues.len(), 1);
     }
 
     #[test]
@@ -1164,11 +1177,14 @@ mod tests {
         };
 
         let failure = run_syntax(&config, &args).expect_err("expected issues");
+        let result = failure
+            .payload
+            .expect("syntax EDT failures should preserve a structured payload");
 
-        assert_eq!(failure.result.check_name, "edt");
-        assert_eq!(failure.result.status, SyntaxCheckStatus::IssuesFound);
-        assert_eq!(failure.result.summary.errors, 2);
-        assert!(failure.result.platform_log_path.is_none());
+        assert_eq!(result.check_name, "edt");
+        assert_eq!(result.status, SyntaxCheckStatus::IssuesFound);
+        assert_eq!(result.summary.errors, 2);
+        assert!(result.platform_log_path.is_none());
     }
 
     #[test]
@@ -1220,9 +1236,12 @@ mod tests {
         };
 
         let failure = run_syntax(&config, &args).expect_err("expected failure");
+        let result = failure
+            .payload
+            .expect("syntax EDT failures should preserve a structured payload");
 
-        assert_eq!(failure.result.status, SyntaxCheckStatus::ToolFailed);
-        assert_eq!(failure.result.exit_code, 17);
+        assert_eq!(result.status, SyntaxCheckStatus::ToolFailed);
+        assert_eq!(result.exit_code, 17);
     }
 
     #[test]
@@ -1240,12 +1259,13 @@ mod tests {
         };
 
         let failure = run_syntax(&config, &args).expect_err("expected failure");
+        let message = failure.error.to_string();
+        let result = failure
+            .payload
+            .expect("syntax failures should preserve a structured payload");
 
-        assert_eq!(failure.result.status, SyntaxCheckStatus::ToolFailed);
-        assert!(failure
-            .error
-            .to_string()
-            .contains("failed to prepare syntax platform logs directory"));
+        assert_eq!(result.status, SyntaxCheckStatus::ToolFailed);
+        assert!(message.contains("failed to prepare syntax platform logs directory"));
     }
 
     fn default_config_args() -> DesignerConfigSyntaxArgs {

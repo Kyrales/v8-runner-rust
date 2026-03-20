@@ -1,13 +1,16 @@
 /// Transport-neutral request for the `build` use case.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BuildRequest {
+    /// Forces a full rebuild instead of change-based execution.
     pub full_rebuild: bool,
 }
 
 /// Transport-neutral request for the `test` use case.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TestRequest {
+    /// When `true`, the use case may request a full build before test execution.
     pub full: bool,
+    /// Selected test scope. Module targets require a non-empty module name.
     pub scope: TestScopeRequest,
 }
 
@@ -15,21 +18,35 @@ pub struct TestRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TestScopeRequest {
     All,
+    /// Runs a single module test target.
     Module { name: String },
+}
+
+/// Transport-neutral dump mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DumpModeRequest {
+    Full,
+    Incremental,
+    Partial,
 }
 
 /// Transport-neutral request for the `dump` use case.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DumpRequest {
-    pub mode: String,
+    /// Requested dump mode. `Partial` remains reserved for a later stage.
+    pub mode: DumpModeRequest,
+    /// Optional source-set selector. Required when multiple candidates are available.
     pub source_set: Option<String>,
+    /// Optional extension selector for extension dumps.
     pub extension: Option<String>,
+    /// Requested object filters. This stage accepts only an empty list.
     pub objects: Vec<String>,
 }
 
 /// Transport-neutral request for the `syntax` use case.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SyntaxRequest {
+    /// Selected syntax target and validation flags.
     pub target: SyntaxTargetRequest,
 }
 
@@ -38,12 +55,14 @@ pub struct SyntaxRequest {
 pub enum SyntaxTargetRequest {
     DesignerConfig(DesignerConfigSyntaxRequest),
     DesignerModules(DesignerModulesSyntaxRequest),
+    /// Runs EDT validation for selected projects or all EDT projects when empty.
     Edt { projects: Vec<String> },
 }
 
 /// Transport-neutral request for Designer configuration checks.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DesignerConfigSyntaxRequest {
+    /// Enables Designer config-log integrity checks.
     pub config_log_integrity: bool,
     pub incorrect_references: bool,
     pub thin_client: bool,
@@ -87,8 +106,17 @@ pub struct DesignerModulesSyntaxRequest {
     pub all_extensions: bool,
 }
 
+/// Transport-neutral launch mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LaunchModeRequest {
+    Designer,
+    Thin,
+    Thick,
+}
+
 /// Transport-neutral request for the `launch` use case.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LaunchRequest {
-    pub mode: String,
+    /// Requested launch target.
+    pub mode: LaunchModeRequest,
 }

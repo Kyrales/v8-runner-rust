@@ -1572,8 +1572,11 @@ mod tests {
             },
         )
         .expect_err("expected failure");
+        let result = failure
+            .payload
+            .expect("build failures should preserve a structured payload");
 
-        assert!(!failure.result.ok);
+        assert!(!result.ok);
         assert_eq!(generation_before, storage_generation(&config, "main"));
     }
 
@@ -1654,10 +1657,13 @@ mod tests {
             },
         )
         .expect_err("expected failure");
+        let result = failure
+            .payload
+            .expect("build failures should preserve a structured payload");
 
-        assert!(!failure.result.ok);
-        assert!(matches!(failure.result.steps[0].mode, BuildMode::EdtExport));
-        assert!(!failure.result.steps[0].ok);
+        assert!(!result.ok);
+        assert!(matches!(result.steps[0].mode, BuildMode::EdtExport));
+        assert!(!result.steps[0].ok);
         assert!(!designer_calls.exists());
     }
 
@@ -1909,11 +1915,14 @@ mod tests {
             },
         )
         .expect_err("failure");
+        let result = failure
+            .payload
+            .expect("build failures should preserve a structured payload");
         let calls_text = fs::read_to_string(&calls).expect("calls");
 
-        assert!(failure.result.steps[0].ok);
-        assert!(!failure.result.steps[1].ok);
-        assert!(failure.result.steps[1]
+        assert!(result.steps[0].ok);
+        assert!(!result.steps[1].ok);
+        assert!(result.steps[1]
             .message
             .as_deref()
             .expect("message")
