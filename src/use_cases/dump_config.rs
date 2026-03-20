@@ -1272,6 +1272,31 @@ mod tests {
     }
 
     #[test]
+    fn partial_rejects_leading_or_trailing_control_characters_after_trim() {
+        let dir = tempdir().expect("tempdir");
+        let script = dir.path().join("1cv8");
+        create_source_tree(dir.path());
+        write_script(&script, "exit 0");
+        let config = build_config(dir.path(), &dir.path().join("work"), &script);
+
+        for object in ["\nCatalog.Items".to_owned(), "Catalog.Items\t".to_owned()] {
+            let failure = run_dump(
+                &config,
+                &DumpArgs {
+                    mode: DumpModeRequest::Partial,
+                    source_set: None,
+                    extension: None,
+                    objects: vec![object],
+                },
+            )
+            .expect_err("failure");
+
+            assert_eq!(failure.error.kind(), UseCaseErrorKind::Validation);
+            assert_eq!(failure.error.message(), PARTIAL_OBJECT_CONTROL_ERROR);
+        }
+    }
+
+    #[test]
     fn rejects_objects_for_incremental() {
         let dir = tempdir().expect("tempdir");
         let script = dir.path().join("1cv8");
