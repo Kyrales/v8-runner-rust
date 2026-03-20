@@ -60,13 +60,12 @@
   - Добавлен `src/platform/interactive.rs` с prompt-delimited executor, который стартует отдельный process group, ждёт `1C:EDT>` на `stdout` или `stderr`, посылает команды в `stdin` и читает ответ до следующего prompt.
   - Зафиксирован lifecycle contract: startup/command timeout убивает process group и poison-ит executor, mid-command child exit возвращается сразу как `ProcessExited`, graceful shutdown закрывает `stdin` и эскалирует в forced kill при таймауте.
   - Добавлены unit tests на startup prompt, stderr prompt, split prompt, prompt с завершающим newline, repeated command reuse, timeout/poison semantics, prompt-then-exit detection, stdio disconnect cleanup, shutdown escalation и process-group kill для дочерних процессов.
-- Добавить `EdtSessionManager` как single shared actor для MCP mode:
-  - single-flight startup
-  - FIFO queue
-  - bounded admission
-  - per-command deadline
-  - restart-on-timeout или hang
-  - explicit error model для queued и cancelled requests
+- [x] 2026-03-20: Добавить `EdtSessionManager` как single shared actor для MCP mode.
+  - Добавлен `src/mcp/edt_session.rs` с async facade над выделенным worker thread, который лениво поднимает один `InteractiveProcessExecutor` и тем самым обеспечивает single-flight startup и FIFO execution.
+  - Bounded admission привязан к уже валидируемому `mcp.execution.max_concurrent_calls`; queue wait и execution делят один absolute deadline от enqueue-time, queued cancel/timeout физически удаляет запись из внутренней очереди, а running cancellation остаётся cooperative early-return без прерывания уже стартовавшей команды.
+  - Зафиксирован typed error model: `queue_full`, queued/running `cancelled`, queued/running `timeout`, `startup_failed`, `session_failed`, `drained_by_restart_or_shutdown`, `internal_failure`.
+  - Timeout/hang и другие fatal session errors poison/restart-ят shared session: текущий запрос получает typed failure, pending queue drain-ится единым `drained_by_restart_or_shutdown(reason=restart)`, а lazy restart происходит только на следующем запросе.
+  - Добавлены unit tests на single-flight startup, FIFO, bounded admission, queued/running cancel+timeout, startup/session failure restart, non-retry semantics и shutdown drain behavior.
 - Перед каждой EDT-командой делать baseline/reset check, чтобы не было межсессионной утечки интерактивного состояния.
 - Во время shutdown или restart queued jobs отменять сразу единым business error.
 - MCP path переключить на shared EDT actor; CLI path оставить без изменений.

@@ -24,6 +24,7 @@ The platform layer is intentionally split so responsibilities do not bleed into 
 - `platform::designer` is the low-level batch DSL for `1cv8 DESIGNER`, returning `PlatformCommandResult` so `/Out` logs stay separate from runner-captured stdio.
 - `platform::ibcmd` is the low-level DSL for `ibcmd`, returning `PlatformCommandResult` with stdout/stderr diagnostics (no `/Out` log).
 - `platform::interactive` now contains the low-level `InteractiveProcessExecutor` for `1cedtcli`: it starts one child in its own process group, waits for the `1C:EDT>` prompt on stdout or stderr, executes prompt-delimited commands, kills/poisons the session on timeout, and supports graceful shutdown with forced-kill escalation.
+- `mcp::edt_session` now contains the Stage 3 shared EDT actor reserved for MCP transports: it owns one lazy interactive session, enforces admission with the existing MCP execution limit, removes queued cancellations/timeouts from the internal FIFO, uses enqueue-time absolute deadlines, drains queued work on restart/shutdown, and keeps running cancellation cooperative.
 
 This boundary is designed so Wave 2 can add an EDT-specific interactive runner without replacing the locator API or the standard execution path.
 
@@ -62,10 +63,11 @@ The MCP adapter no longer needs to talk to `cli::execute` or to reuse domain ser
 - The stdio adapter now enforces an absolute deadline for bounded Stage 2 EDT syntax calls: queue wait and execution both consume the same `tools.edt_cli.command_timeout_ms` budget.
 - Client cancellation returns early for queued and running MCP requests, but already-started blocking work is detached rather than killed; the detached task retains the semaphore permit until it completes, so a hung one-shot subprocess can keep capacity occupied until shutdown.
 - MCP normalization is finalized in the service layer: dump-mode defaulting, launch alias mapping, `allExtensions` tri-state inference, and MCP-only pre-validation for syntax flag dependencies all live there instead of leaking into transport-neutral use cases.
+- `mcp::edt_session::EdtSessionManager` is implemented but intentionally not wired into live tool execution yet. Its typed contract freezes the future shared-session semantics before the later baseline/reset and MCP-path switch tasks land.
 
 Important staging note:
 
-- The new interactive EDT executor is intentionally not wired into `EdtDsl`, `PlatformUtilities`, or the MCP server yet. Current runtime behavior for EDT syntax/build remains on the existing one-shot path until `EdtSessionManager` lands in the next Stage 3 tasks.
+- The new interactive EDT executor and the new `EdtSessionManager` are intentionally not wired into `EdtDsl`, `PlatformUtilities`, or the live MCP tool path yet. Current runtime behavior for EDT syntax/build remains on the existing one-shot path until the remaining Stage 3 baseline/reset and MCP switch tasks land.
 
 ## Backend Dispatch
 

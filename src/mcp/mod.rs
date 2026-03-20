@@ -1,5 +1,7 @@
 /// Per-call MCP service context.
 pub mod context;
+/// Shared EDT actor reserved for MCP transports.
+pub mod edt_session;
 /// MCP-facing error and result contracts.
 pub mod error;
 /// Thin port used by the MCP service layer to call use cases.
