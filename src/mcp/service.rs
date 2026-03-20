@@ -24,8 +24,8 @@ use crate::mcp::response::{
 use crate::use_cases::context::{CommandName, ExecutionContext, ExecutionTransport};
 use crate::use_cases::request::{
     BuildRequest, DesignerConfigSyntaxRequest, DesignerModulesSyntaxRequest, DumpModeRequest,
-    DumpRequest, LaunchModeRequest, LaunchRequest, SyntaxRequest, SyntaxTargetRequest,
-    TestRequest, TestScopeRequest,
+    DumpRequest, LaunchModeRequest, LaunchRequest, SyntaxRequest, SyntaxTargetRequest, TestRequest,
+    TestScopeRequest,
 };
 use crate::use_cases::result::{UseCaseError, UseCaseFailure};
 
@@ -69,16 +69,14 @@ where
             .build_project(&context, self.config, &use_case_request)
         {
             Ok(result) => Ok(map_build_response(result)),
-            Err(failure) => Err(map_use_case_failure(
-                failure,
-                map_build_response,
-                |error| McpBuildResponse {
+            Err(failure) => Err(map_use_case_failure(failure, map_build_response, |error| {
+                McpBuildResponse {
                     success: false,
                     message: error.message().to_owned(),
                     build_time_ms: None,
                     steps: None,
-                },
-            )),
+                }
+            })),
         }
     }
 
@@ -95,12 +93,13 @@ where
             scope: TestScopeRequest::All,
         };
 
-        match self.port.run_tests(&context, self.config, &use_case_request) {
+        match self
+            .port
+            .run_tests(&context, self.config, &use_case_request)
+        {
             Ok(result) => Ok(map_test_response(result)),
-            Err(failure) => Err(map_use_case_failure(
-                failure,
-                map_test_response,
-                |error| McpTestResponse {
+            Err(failure) => Err(map_use_case_failure(failure, map_test_response, |error| {
+                McpTestResponse {
                     success: false,
                     message: error.message().to_owned(),
                     total_tests: None,
@@ -112,8 +111,8 @@ where
                     test_detail: None,
                     steps: None,
                     errors: Some(vec![error.message().to_owned()]),
-                },
-            )),
+                }
+            })),
         }
     }
 
@@ -127,34 +126,35 @@ where
             .map_err(McpServiceError::Internal)?;
         let module_name =
             normalize_required_string(&request.module_name, "module_name").map_err(|error| {
-            McpServiceError::Business(McpBusinessFailure::new(
-                error,
-                McpTestResponse {
-                    success: false,
-                    message: "module_name must not be blank".to_owned(),
-                    total_tests: None,
-                    passed_tests: None,
-                    failed_tests: None,
-                    execution_time_ms: None,
-                    enterprise_log_path: None,
-                    log_file: None,
-                    test_detail: None,
-                    steps: None,
-                    errors: Some(vec!["module_name must not be blank".to_owned()]),
-                },
-            ))
-        })?;
+                McpServiceError::Business(McpBusinessFailure::new(
+                    error,
+                    McpTestResponse {
+                        success: false,
+                        message: "module_name must not be blank".to_owned(),
+                        total_tests: None,
+                        passed_tests: None,
+                        failed_tests: None,
+                        execution_time_ms: None,
+                        enterprise_log_path: None,
+                        log_file: None,
+                        test_detail: None,
+                        steps: None,
+                        errors: Some(vec!["module_name must not be blank".to_owned()]),
+                    },
+                ))
+            })?;
         let use_case_request = TestRequest {
             full: request.full.unwrap_or(false),
             scope: TestScopeRequest::Module { name: module_name },
         };
 
-        match self.port.run_tests(&context, self.config, &use_case_request) {
+        match self
+            .port
+            .run_tests(&context, self.config, &use_case_request)
+        {
             Ok(result) => Ok(map_test_response(result)),
-            Err(failure) => Err(map_use_case_failure(
-                failure,
-                map_test_response,
-                |error| McpTestResponse {
+            Err(failure) => Err(map_use_case_failure(failure, map_test_response, |error| {
+                McpTestResponse {
                     success: false,
                     message: error.message().to_owned(),
                     total_tests: None,
@@ -166,8 +166,8 @@ where
                     test_detail: None,
                     steps: None,
                     errors: Some(vec![error.message().to_owned()]),
-                },
-            )),
+                }
+            })),
         }
     }
 
@@ -186,13 +186,10 @@ where
                     error,
                     McpDumpResponse {
                         success: false,
-                        message: request
-                            .mode
-                            .as_deref()
-                            .map_or_else(
-                                || "dump mode is invalid".to_owned(),
-                                |value| format!("unsupported dump mode: {value}"),
-                            ),
+                        message: request.mode.as_deref().map_or_else(
+                            || "dump mode is invalid".to_owned(),
+                            |value| format!("unsupported dump mode: {value}"),
+                        ),
                         mode: request
                             .mode
                             .as_deref()
@@ -212,12 +209,13 @@ where
             objects: request.objects.clone(),
         };
 
-        match self.port.dump_config(&context, self.config, &use_case_request) {
+        match self
+            .port
+            .dump_config(&context, self.config, &use_case_request)
+        {
             Ok(result) => Ok(map_dump_response(result)),
-            Err(failure) => Err(map_use_case_failure(
-                failure,
-                map_dump_response,
-                |error| McpDumpResponse {
+            Err(failure) => Err(map_use_case_failure(failure, map_dump_response, |error| {
+                McpDumpResponse {
                     success: false,
                     message: error.message().to_owned(),
                     mode: render_dump_mode(use_case_request.mode).to_owned(),
@@ -225,8 +223,8 @@ where
                     dumped_objects: None,
                     errors: Some(vec![error.message().to_owned()]),
                     steps: None,
-                },
-            )),
+                }
+            })),
         }
     }
 
@@ -251,7 +249,10 @@ where
             })?,
         };
 
-        match self.port.launch_app(&context, self.config, &use_case_request) {
+        match self
+            .port
+            .launch_app(&context, self.config, &use_case_request)
+        {
             Ok(result) => Ok(map_launch_response(result)),
             Err(failure) => Err(map_use_case_failure(
                 failure,
@@ -278,7 +279,10 @@ where
             target: SyntaxTargetRequest::Edt { projects },
         };
 
-        match self.port.check_syntax(&context, self.config, &use_case_request) {
+        match self
+            .port
+            .check_syntax(&context, self.config, &use_case_request)
+        {
             Ok(result) => Ok(map_syntax_response(result)),
             Err(failure) => Err(map_use_case_failure(
                 failure,
@@ -307,7 +311,10 @@ where
             target: SyntaxTargetRequest::DesignerConfig(map_designer_config_request(request)),
         };
 
-        match self.port.check_syntax(&context, self.config, &use_case_request) {
+        match self
+            .port
+            .check_syntax(&context, self.config, &use_case_request)
+        {
             Ok(result) => Ok(map_syntax_response(result)),
             Err(failure) => Err(map_use_case_failure(
                 failure,
@@ -336,7 +343,10 @@ where
             target: SyntaxTargetRequest::DesignerModules(map_designer_modules_request(request)),
         };
 
-        match self.port.check_syntax(&context, self.config, &use_case_request) {
+        match self
+            .port
+            .check_syntax(&context, self.config, &use_case_request)
+        {
             Ok(result) => Ok(map_syntax_response(result)),
             Err(failure) => Err(map_use_case_failure(
                 failure,
@@ -391,8 +401,9 @@ fn normalize_required_string(
     value: &str,
     field_name: &'static str,
 ) -> Result<String, McpBusinessError> {
-    normalize_optional_string(Some(value))
-        .ok_or_else(|| McpBusinessError::invalid_argument(format!("{field_name} must not be blank")))
+    normalize_optional_string(Some(value)).ok_or_else(|| {
+        McpBusinessError::invalid_argument(format!("{field_name} must not be blank"))
+    })
 }
 
 fn normalize_optional_string(value: Option<&str>) -> Option<String> {
@@ -453,8 +464,7 @@ fn map_designer_config_request(
         thick_client_server_managed_application: request.thick_client_server_managed_application
             == Some(true),
         thick_client_ordinary_application: request.thick_client_ordinary_application == Some(true),
-        thick_client_server_ordinary_application: request
-            .thick_client_server_ordinary_application
+        thick_client_server_ordinary_application: request.thick_client_server_ordinary_application
             == Some(true),
         mobile_client_digi_sign: request.mobile_client_digi_sign == Some(true),
         distributive_modules: request.distributive_modules == Some(true),
@@ -573,9 +583,7 @@ fn map_launch_response(result: LaunchResult) -> McpLaunchResponse {
 
     McpLaunchResponse {
         success: result.ok,
-        message: result
-            .message
-            .unwrap_or_else(|| default_message.to_owned()),
+        message: result.message.unwrap_or_else(|| default_message.to_owned()),
     }
 }
 
@@ -613,7 +621,8 @@ fn map_syntax_response(result: SyntaxCheckResult) -> McpSyntaxCheckResponse {
 }
 
 fn map_build_steps(steps: Vec<BuildStep>) -> Vec<McpBuildStep> {
-    steps.into_iter()
+    steps
+        .into_iter()
         .map(|step| McpBuildStep {
             source_set: step.source_set,
             mode: match step.mode {
@@ -630,7 +639,8 @@ fn map_build_steps(steps: Vec<BuildStep>) -> Vec<McpBuildStep> {
 }
 
 fn map_step_results(steps: Vec<StepResult>) -> Vec<McpStepResult> {
-    steps.into_iter()
+    steps
+        .into_iter()
         .map(|step| McpStepResult {
             name: step.name,
             ok: step.ok,
@@ -839,7 +849,9 @@ mod tests {
             _config: &AppConfig,
             request: &BuildRequest,
         ) -> UseCaseResult<BuildResult> {
-            self.build_requests.borrow_mut().push((*context, request.clone()));
+            self.build_requests
+                .borrow_mut()
+                .push((*context, request.clone()));
             self.build_result
                 .borrow_mut()
                 .take()
@@ -852,7 +864,9 @@ mod tests {
             _config: &AppConfig,
             request: &TestRequest,
         ) -> UseCaseResult<TestRunResult> {
-            self.test_requests.borrow_mut().push((*context, request.clone()));
+            self.test_requests
+                .borrow_mut()
+                .push((*context, request.clone()));
             self.test_result
                 .borrow_mut()
                 .take()
@@ -865,7 +879,9 @@ mod tests {
             _config: &AppConfig,
             request: &DumpRequest,
         ) -> UseCaseResult<DumpResult> {
-            self.dump_requests.borrow_mut().push((*context, request.clone()));
+            self.dump_requests
+                .borrow_mut()
+                .push((*context, request.clone()));
             self.dump_result
                 .borrow_mut()
                 .take()
@@ -878,7 +894,9 @@ mod tests {
             _config: &AppConfig,
             request: &LaunchRequest,
         ) -> UseCaseResult<LaunchResult> {
-            self.launch_requests.borrow_mut().push((*context, request.clone()));
+            self.launch_requests
+                .borrow_mut()
+                .push((*context, request.clone()));
             self.launch_result
                 .borrow_mut()
                 .take()
@@ -891,7 +909,9 @@ mod tests {
             _config: &AppConfig,
             request: &SyntaxRequest,
         ) -> UseCaseResult<SyntaxCheckResult> {
-            self.syntax_requests.borrow_mut().push((*context, request.clone()));
+            self.syntax_requests
+                .borrow_mut()
+                .push((*context, request.clone()));
             self.syntax_result
                 .borrow_mut()
                 .take()
@@ -1005,7 +1025,9 @@ mod tests {
     #[test]
     fn run_all_tests_maps_failure_payload_into_business_failure() {
         let mut result = sample_test_result(false);
-        result.diagnostics.push("enterprise exited non-zero".to_owned());
+        result
+            .diagnostics
+            .push("enterprise exited non-zero".to_owned());
         let port = StubPort::with_test_result(Err(UseCaseFailure::with_payload(
             UseCaseError::new(UseCaseErrorKind::Runtime, "tests failed"),
             result,
@@ -1287,7 +1309,10 @@ mod tests {
         let service = McpService::with_port(&config, port);
 
         let error = service
-            .check_syntax_edt(McpCallContext::stdio(), &McpCheckSyntaxEdtRequest::default())
+            .check_syntax_edt(
+                McpCallContext::stdio(),
+                &McpCheckSyntaxEdtRequest::default(),
+            )
             .expect_err("expected failure");
 
         match error {
@@ -1351,10 +1376,16 @@ mod tests {
         match error {
             McpServiceError::Business(failure) => {
                 assert_eq!(failure.error.code, McpErrorCode::PlatformFailure);
-                assert_eq!(failure.response.check_result.as_deref(), Some("tool_failed"));
+                assert_eq!(
+                    failure.response.check_result.as_deref(),
+                    Some("tool_failed")
+                );
                 assert_eq!(
                     failure.response.errors,
-                    Some(vec!["designer stderr".to_owned(), "log truncated".to_owned()])
+                    Some(vec![
+                        "designer stderr".to_owned(),
+                        "log truncated".to_owned()
+                    ])
                 );
             }
             other => panic!("unexpected error: {other:?}"),
@@ -1363,7 +1394,8 @@ mod tests {
 
     #[test]
     fn check_syntax_designer_modules_maps_success_request() {
-        let port = StubPort::with_syntax_result(Ok(sample_syntax_result(SyntaxCheckStatus::IssuesFound)));
+        let port =
+            StubPort::with_syntax_result(Ok(sample_syntax_result(SyntaxCheckStatus::IssuesFound)));
         let config = sample_config();
         let service = McpService::with_port(&config, port);
 
@@ -1598,6 +1630,7 @@ mod tests {
                 platform: PlatformToolConfig::default(),
                 edt_cli: Default::default(),
             },
+            mcp: Default::default(),
             tests: TestsConfig::default(),
         }
     }
@@ -1647,7 +1680,9 @@ mod tests {
                     ],
                     duration_ms: 21,
                 }],
-                extracted_errors: (!ok).then_some(vec!["assert".to_owned()]).unwrap_or_default(),
+                extracted_errors: (!ok)
+                    .then_some(vec!["assert".to_owned()])
+                    .unwrap_or_default(),
             }),
             warnings: vec![],
             steps: if ok {

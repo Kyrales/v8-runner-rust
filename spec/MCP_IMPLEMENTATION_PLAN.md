@@ -18,16 +18,10 @@
   - MCP boundary теперь возвращает либо typed success payload, либо `McpBusinessFailure<T>` с machine-readable error code, либо отдельный `McpInternalError`.
   - Raw MCP defaults и alias normalization изолированы в service-layer mapper-ах с явными `TODO(mcp-normalization-stage)`.
   - MCP response structs отвязаны от domain nested DTO, чтобы будущий transport adapter не зависел от внутренних сериализационных деталей.
-- Расширить config:
-  - `mcp.http.bind_address`
-  - `mcp.http.path`
-  - `mcp.http.stateful_sessions`
-  - `mcp.http.max_sessions`
-  - `mcp.http.idle_ttl_secs`
-  - `mcp.execution.max_concurrent_calls`
-  - `mcp.execution.shutdown_grace_period_secs`
-  - `tools.edt_cli.startup_timeout_ms`
-  - `tools.edt_cli.command_timeout_ms`
+- [x] 2026-03-20: Расширить config для MCP transport defaults и EDT timeout knobs.
+  - Добавлены typed config-секции `mcp.http` и `mcp.execution` с defaults `127.0.0.1:3000`, `/mcp`, `stateful_sessions=true`, `max_sessions=64`, `idle_ttl_secs=900`, `max_concurrent_calls=1`, `shutdown_grace_period_secs=30`.
+  - `tools.edt_cli` теперь поддерживает `startup_timeout_ms` и `command_timeout_ms` с default `300_000 ms`; сохранена совместимость с `startup-timeout-ms` и `command-timeout-ms`.
+  - Добавлена pre-runtime validation для bind address, MCP HTTP path, positive session/concurrency/grace/timeout limits и обновлены example/docs.
 - Реализовать contract normalization:
   - tri-state для `allExtensions`
   - pre-validation для `checkUseSynchronousCalls` и `checkUseModality`

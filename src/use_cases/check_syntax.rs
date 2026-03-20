@@ -66,10 +66,7 @@ impl DesignerCommandKind {
     }
 }
 
-fn run_syntax(
-    config: &AppConfig,
-    args: &SyntaxArgs,
-) -> UseCaseResult<SyntaxCheckResult> {
+fn run_syntax(config: &AppConfig, args: &SyntaxArgs) -> UseCaseResult<SyntaxCheckResult> {
     let started = Instant::now();
     if let SyntaxTarget::Edt { projects } = &args.target {
         return run_edt_syntax(config, projects, started);
@@ -935,6 +932,7 @@ mod tests {
                 },
                 edt_cli: Default::default(),
             },
+            mcp: Default::default(),
             tests: TestsConfig::default(),
         }
     }
@@ -965,8 +963,10 @@ mod tests {
                 edt_cli: crate::config::model::EdtCliConfig {
                     path: Some(edt_cli_path.to_path_buf()),
                     auto_start: false,
+                    ..Default::default()
                 },
             },
+            mcp: Default::default(),
             tests: TestsConfig::default(),
         }
     }

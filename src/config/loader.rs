@@ -145,4 +145,90 @@ mod tests {
 
         assert_eq!(config.tests.execution_timeout_seconds, 17);
     }
+
+    #[test]
+    fn load_config_reads_mcp_sections_and_edt_timeouts() {
+        let dir = tempdir().expect("tempdir");
+        let base = dir.path().join("base");
+        let work = dir.path().join("work");
+        let src = base.join("src");
+        std::fs::create_dir_all(&src).expect("src dir");
+        let config_path = dir.path().join("application.yaml");
+        std::fs::write(
+            &config_path,
+            format!(
+                "basePath: {}\nworkPath: {}\nformat: DESIGNER\nbuilder: DESIGNER\nconnection: \"File=/tmp/ib\"\nmcp:\n  http:\n    bind_address: 127.0.0.1:4000\n    path: /custom-mcp\n    stateful_sessions: false\n    max_sessions: 12\n    idle_ttl_secs: 45\n  execution:\n    max_concurrent_calls: 3\n    shutdown_grace_period_secs: 9\ntools:\n  edt_cli:\n    startup_timeout_ms: 1234\n    command_timeout_ms: 5678\nsource-set:\n  - name: main\n    purpose: CONFIGURATION\n    path: src\n",
+                base.display(),
+                work.display()
+            ),
+        )
+        .expect("write config");
+
+        let config = load_config(config_path.to_str(), None).expect("load config");
+
+        assert_eq!(config.mcp.http.bind_address, "127.0.0.1:4000");
+        assert_eq!(config.mcp.http.path, "/custom-mcp");
+        assert!(!config.mcp.http.stateful_sessions);
+        assert_eq!(config.mcp.http.max_sessions, 12);
+        assert_eq!(config.mcp.http.idle_ttl_secs, 45);
+        assert_eq!(config.mcp.execution.max_concurrent_calls, 3);
+        assert_eq!(config.mcp.execution.shutdown_grace_period_secs, 9);
+        assert_eq!(config.tools.edt_cli.startup_timeout_ms, 1234);
+        assert_eq!(config.tools.edt_cli.command_timeout_ms, 5678);
+    }
+
+    #[test]
+    fn load_config_uses_mcp_and_edt_timeout_defaults_when_sections_are_omitted() {
+        let dir = tempdir().expect("tempdir");
+        let base = dir.path().join("base");
+        let work = dir.path().join("work");
+        let src = base.join("src");
+        std::fs::create_dir_all(&src).expect("src dir");
+        let config_path = dir.path().join("application.yaml");
+        std::fs::write(
+            &config_path,
+            format!(
+                "basePath: {}\nworkPath: {}\nformat: DESIGNER\nbuilder: DESIGNER\nconnection: \"File=/tmp/ib\"\nsource-set:\n  - name: main\n    purpose: CONFIGURATION\n    path: src\n",
+                base.display(),
+                work.display()
+            ),
+        )
+        .expect("write config");
+
+        let config = load_config(config_path.to_str(), None).expect("load config");
+
+        assert_eq!(config.mcp.http.bind_address, "127.0.0.1:3000");
+        assert_eq!(config.mcp.http.path, "/mcp");
+        assert!(config.mcp.http.stateful_sessions);
+        assert_eq!(config.mcp.http.max_sessions, 64);
+        assert_eq!(config.mcp.http.idle_ttl_secs, 900);
+        assert_eq!(config.mcp.execution.max_concurrent_calls, 1);
+        assert_eq!(config.mcp.execution.shutdown_grace_period_secs, 30);
+        assert_eq!(config.tools.edt_cli.startup_timeout_ms, 300_000);
+        assert_eq!(config.tools.edt_cli.command_timeout_ms, 300_000);
+    }
+
+    #[test]
+    fn load_config_accepts_kebab_case_edt_timeout_aliases() {
+        let dir = tempdir().expect("tempdir");
+        let base = dir.path().join("base");
+        let work = dir.path().join("work");
+        let src = base.join("src");
+        std::fs::create_dir_all(&src).expect("src dir");
+        let config_path = dir.path().join("application.yaml");
+        std::fs::write(
+            &config_path,
+            format!(
+                "basePath: {}\nworkPath: {}\nformat: DESIGNER\nbuilder: DESIGNER\nconnection: \"File=/tmp/ib\"\ntools:\n  edt-cli:\n    startup-timeout-ms: 2222\n    command-timeout-ms: 3333\nsource-set:\n  - name: main\n    purpose: CONFIGURATION\n    path: src\n",
+                base.display(),
+                work.display()
+            ),
+        )
+        .expect("write config");
+
+        let config = load_config(config_path.to_str(), None).expect("load config");
+
+        assert_eq!(config.tools.edt_cli.startup_timeout_ms, 2222);
+        assert_eq!(config.tools.edt_cli.command_timeout_ms, 3333);
+    }
 }

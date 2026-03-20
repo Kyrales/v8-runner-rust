@@ -120,6 +120,7 @@ mod tests {
             }],
             build: BuildConfig::default(),
             tools: ToolsConfig::default(),
+            mcp: Default::default(),
             tests: TestsConfig::default(),
         };
 

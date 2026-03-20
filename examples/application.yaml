@@ -44,6 +44,20 @@ tools:
     # Exact platform version for auto-discovery:
     version: "8.3.25.1234"
 
-  edt-cli:
+  edt_cli:
     # path: /opt/1C/1CE/components/1c-edt-2025.1.0+656-x86_64/1cedt/1cedtcli
     auto-start: false
+    startup_timeout_ms: 300000
+    command_timeout_ms: 300000
+
+# MCP transport defaults (parsed and validated now; transport wiring comes later)
+mcp:
+  http:
+    bind_address: 127.0.0.1:3000
+    path: /mcp
+    stateful_sessions: true
+    max_sessions: 64
+    idle_ttl_secs: 900
+  execution:
+    max_concurrent_calls: 1
+    shutdown_grace_period_secs: 30

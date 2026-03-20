@@ -39,6 +39,10 @@ pub struct AppConfig {
     #[serde(default)]
     pub tools: ToolsConfig,
 
+    /// MCP transport configuration
+    #[serde(default)]
+    pub mcp: McpConfig,
+
     /// Test pipeline configuration
     #[serde(default)]
     pub tests: TestsConfig,
@@ -123,8 +127,80 @@ pub struct ToolsConfig {
     #[serde(default)]
     pub platform: PlatformToolConfig,
 
-    #[serde(rename = "edt-cli", default)]
+    #[serde(rename = "edt_cli", alias = "edt-cli", default)]
     pub edt_cli: EdtCliConfig,
+}
+
+/// MCP transport-neutral runtime configuration.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default, rename_all = "snake_case")]
+pub struct McpConfig {
+    /// HTTP transport settings for the future MCP server.
+    pub http: McpHttpConfig,
+
+    /// Shared execution limits for MCP calls.
+    pub execution: McpExecutionConfig,
+}
+
+impl Default for McpConfig {
+    fn default() -> Self {
+        Self {
+            http: McpHttpConfig::default(),
+            execution: McpExecutionConfig::default(),
+        }
+    }
+}
+
+/// HTTP-specific MCP configuration.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default, rename_all = "snake_case")]
+pub struct McpHttpConfig {
+    /// Socket address for the future HTTP transport listener.
+    pub bind_address: String,
+
+    /// URL path that serves MCP HTTP requests.
+    pub path: String,
+
+    /// Whether MCP HTTP sessions keep state across requests.
+    pub stateful_sessions: bool,
+
+    /// Maximum number of tracked HTTP sessions.
+    pub max_sessions: usize,
+
+    /// Idle session eviction timeout in seconds.
+    pub idle_ttl_secs: u64,
+}
+
+impl Default for McpHttpConfig {
+    fn default() -> Self {
+        Self {
+            bind_address: default_mcp_http_bind_address(),
+            path: default_mcp_http_path(),
+            stateful_sessions: default_mcp_http_stateful_sessions(),
+            max_sessions: default_mcp_http_max_sessions(),
+            idle_ttl_secs: default_mcp_http_idle_ttl_secs(),
+        }
+    }
+}
+
+/// Execution guardrails for MCP requests.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default, rename_all = "snake_case")]
+pub struct McpExecutionConfig {
+    /// Maximum number of MCP calls allowed to execute concurrently.
+    pub max_concurrent_calls: usize,
+
+    /// Grace period for shutdown drain in seconds.
+    pub shutdown_grace_period_secs: u64,
+}
+
+impl Default for McpExecutionConfig {
+    fn default() -> Self {
+        Self {
+            max_concurrent_calls: default_mcp_execution_max_concurrent_calls(),
+            shutdown_grace_period_secs: default_mcp_execution_shutdown_grace_period_secs(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -157,7 +233,7 @@ pub struct PlatformToolConfig {
     pub version: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct EdtCliConfig {
     /// Path to 1cedtcli binary
@@ -166,4 +242,67 @@ pub struct EdtCliConfig {
     /// Auto-start interactive EDT session on startup
     #[serde(default)]
     pub auto_start: bool,
+
+    /// Time limit for EDT startup until the prompt is ready.
+    #[serde(
+        default = "default_edt_cli_startup_timeout_ms",
+        rename = "startup_timeout_ms",
+        alias = "startup-timeout-ms"
+    )]
+    pub startup_timeout_ms: u64,
+
+    /// Default timeout for interactive EDT commands.
+    #[serde(
+        default = "default_edt_cli_command_timeout_ms",
+        rename = "command_timeout_ms",
+        alias = "command-timeout-ms"
+    )]
+    pub command_timeout_ms: u64,
+}
+
+impl Default for EdtCliConfig {
+    fn default() -> Self {
+        Self {
+            path: None,
+            auto_start: false,
+            startup_timeout_ms: default_edt_cli_startup_timeout_ms(),
+            command_timeout_ms: default_edt_cli_command_timeout_ms(),
+        }
+    }
+}
+
+fn default_mcp_http_bind_address() -> String {
+    "127.0.0.1:3000".to_owned()
+}
+
+fn default_mcp_http_path() -> String {
+    "/mcp".to_owned()
+}
+
+const fn default_mcp_http_stateful_sessions() -> bool {
+    true
+}
+
+const fn default_mcp_http_max_sessions() -> usize {
+    64
+}
+
+const fn default_mcp_http_idle_ttl_secs() -> u64 {
+    900
+}
+
+const fn default_mcp_execution_max_concurrent_calls() -> usize {
+    1
+}
+
+const fn default_mcp_execution_shutdown_grace_period_secs() -> u64 {
+    30
+}
+
+const fn default_edt_cli_startup_timeout_ms() -> u64 {
+    300_000
+}
+
+const fn default_edt_cli_command_timeout_ms() -> u64 {
+    300_000
 }

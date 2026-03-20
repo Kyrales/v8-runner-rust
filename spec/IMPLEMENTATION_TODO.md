@@ -137,6 +137,7 @@
 
 ## Подготовка к следующему этапу
 
+- [x] Расширить config-модель новыми `mcp.*` и `tools.edt_cli.*` настройками для MCP stage
 - [ ] Нормализовать result types для build/test/dump/syntax/launch
 - [x] Добавить `steps` в output envelope
 - [x] Добавить `warnings` в output envelope

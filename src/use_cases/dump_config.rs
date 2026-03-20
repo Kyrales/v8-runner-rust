@@ -973,6 +973,7 @@ mod tests {
                 },
                 ..ToolsConfig::default()
             },
+            mcp: Default::default(),
             tests: TestsConfig::default(),
         }
     }

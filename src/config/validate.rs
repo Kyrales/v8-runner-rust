@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::net::SocketAddr;
 use std::path::Path;
 use thiserror::Error;
 
@@ -62,6 +63,30 @@ pub enum ConfigValidationError {
 
     #[error("tests.execution_timeout_seconds must be between 1 and 86400 seconds")]
     InvalidTestExecutionTimeout,
+
+    #[error("mcp.http.bind_address must be a valid socket address: {0}")]
+    InvalidMcpBindAddress(String),
+
+    #[error("mcp.http.path must be a non-empty absolute path starting with '/': {0}")]
+    InvalidMcpHttpPath(String),
+
+    #[error("mcp.http.max_sessions must be greater than or equal to 1")]
+    InvalidMcpMaxSessions,
+
+    #[error("mcp.http.idle_ttl_secs must be greater than or equal to 1")]
+    InvalidMcpIdleTtlSecs,
+
+    #[error("mcp.execution.max_concurrent_calls must be greater than or equal to 1")]
+    InvalidMcpMaxConcurrentCalls,
+
+    #[error("mcp.execution.shutdown_grace_period_secs must be greater than or equal to 1")]
+    InvalidMcpShutdownGracePeriodSecs,
+
+    #[error("tools.edt_cli.startup_timeout_ms must be greater than or equal to 1")]
+    InvalidEdtCliStartupTimeoutMs,
+
+    #[error("tools.edt_cli.command_timeout_ms must be greater than or equal to 1")]
+    InvalidEdtCliCommandTimeoutMs,
 }
 
 /// Validate high-level application configuration consistency and filesystem references.
@@ -74,6 +99,8 @@ pub fn validate(config: &AppConfig) -> Result<(), ConfigValidationError> {
     validate_platform_version(config)?;
     validate_build_config(config)?;
     validate_test_config(config)?;
+    validate_mcp_config(config)?;
+    validate_edt_cli_config(config)?;
     Ok(())
 }
 
@@ -255,6 +282,50 @@ fn validate_test_config(config: &AppConfig) -> Result<(), ConfigValidationError>
     Ok(())
 }
 
+fn validate_mcp_config(config: &AppConfig) -> Result<(), ConfigValidationError> {
+    if config.mcp.http.bind_address.parse::<SocketAddr>().is_err() {
+        return Err(ConfigValidationError::InvalidMcpBindAddress(
+            config.mcp.http.bind_address.clone(),
+        ));
+    }
+
+    if config.mcp.http.path.trim().is_empty() || !config.mcp.http.path.starts_with('/') {
+        return Err(ConfigValidationError::InvalidMcpHttpPath(
+            config.mcp.http.path.clone(),
+        ));
+    }
+
+    if config.mcp.http.max_sessions == 0 {
+        return Err(ConfigValidationError::InvalidMcpMaxSessions);
+    }
+
+    if config.mcp.http.idle_ttl_secs == 0 {
+        return Err(ConfigValidationError::InvalidMcpIdleTtlSecs);
+    }
+
+    if config.mcp.execution.max_concurrent_calls == 0 {
+        return Err(ConfigValidationError::InvalidMcpMaxConcurrentCalls);
+    }
+
+    if config.mcp.execution.shutdown_grace_period_secs == 0 {
+        return Err(ConfigValidationError::InvalidMcpShutdownGracePeriodSecs);
+    }
+
+    Ok(())
+}
+
+fn validate_edt_cli_config(config: &AppConfig) -> Result<(), ConfigValidationError> {
+    if config.tools.edt_cli.startup_timeout_ms == 0 {
+        return Err(ConfigValidationError::InvalidEdtCliStartupTimeoutMs);
+    }
+
+    if config.tools.edt_cli.command_timeout_ms == 0 {
+        return Err(ConfigValidationError::InvalidEdtCliCommandTimeoutMs);
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{validate, ConfigValidationError};
@@ -294,6 +365,7 @@ mod tests {
                 },
                 ..ToolsConfig::default()
             },
+            mcp: Default::default(),
             tests: TestsConfig::default(),
         };
 
@@ -328,6 +400,7 @@ mod tests {
             }],
             build: BuildConfig::default(),
             tools: ToolsConfig::default(),
+            mcp: Default::default(),
             tests: TestsConfig::default(),
         };
 
@@ -362,6 +435,7 @@ mod tests {
             }],
             build: BuildConfig::default(),
             tools: ToolsConfig::default(),
+            mcp: Default::default(),
             tests: TestsConfig::default(),
         };
 
@@ -396,6 +470,7 @@ mod tests {
             }],
             build: BuildConfig::default(),
             tools: ToolsConfig::default(),
+            mcp: Default::default(),
             tests: TestsConfig::default(),
         };
 
@@ -428,6 +503,7 @@ mod tests {
                 partial_load_threshold: 0,
             },
             tools: ToolsConfig::default(),
+            mcp: Default::default(),
             tests: TestsConfig::default(),
         };
 
@@ -462,6 +538,7 @@ mod tests {
             }],
             build: BuildConfig::default(),
             tools: ToolsConfig::default(),
+            mcp: Default::default(),
             tests: TestsConfig::default(),
         };
         config.tests.execution_timeout_seconds = 0;
@@ -497,6 +574,7 @@ mod tests {
             }],
             build: BuildConfig::default(),
             tools: ToolsConfig::default(),
+            mcp: Default::default(),
             tests: TestsConfig::default(),
         };
 
@@ -530,6 +608,7 @@ mod tests {
             }],
             build: BuildConfig::default(),
             tools: ToolsConfig::default(),
+            mcp: Default::default(),
             tests: TestsConfig::default(),
         };
 
@@ -560,6 +639,7 @@ mod tests {
             }],
             build: BuildConfig::default(),
             tools: ToolsConfig::default(),
+            mcp: Default::default(),
             tests: TestsConfig::default(),
         };
 
@@ -589,6 +669,7 @@ mod tests {
             }],
             build: BuildConfig::default(),
             tools: ToolsConfig::default(),
+            mcp: Default::default(),
             tests: TestsConfig::default(),
         };
 
@@ -615,6 +696,7 @@ mod tests {
             source_sets: vec![],
             build: BuildConfig::default(),
             tools: ToolsConfig::default(),
+            mcp: Default::default(),
             tests: TestsConfig::default(),
         };
 
@@ -642,6 +724,7 @@ mod tests {
             }],
             build: BuildConfig::default(),
             tools: ToolsConfig::default(),
+            mcp: Default::default(),
             tests: TestsConfig::default(),
         };
 
@@ -680,6 +763,7 @@ mod tests {
             }],
             build: BuildConfig::default(),
             tools: ToolsConfig::default(),
+            mcp: Default::default(),
             tests: TestsConfig::default(),
         };
 
@@ -714,6 +798,7 @@ mod tests {
             }],
             build: BuildConfig::default(),
             tools: ToolsConfig::default(),
+            mcp: Default::default(),
             tests: TestsConfig::default(),
         };
 
@@ -748,6 +833,7 @@ mod tests {
             }],
             build: BuildConfig::default(),
             tools: ToolsConfig::default(),
+            mcp: Default::default(),
             tests: TestsConfig::default(),
         };
 
@@ -777,6 +863,7 @@ mod tests {
             }],
             build: BuildConfig::default(),
             tools: ToolsConfig::default(),
+            mcp: Default::default(),
             tests: TestsConfig::default(),
         };
 
@@ -784,6 +871,135 @@ mod tests {
         assert!(matches!(
             err,
             ConfigValidationError::EdtRequiresDesignerBuilder
+        ));
+    }
+
+    #[test]
+    fn rejects_invalid_mcp_bind_address() {
+        let base = tempdir().expect("base");
+        let work = tempdir().expect("work");
+        let source_dir = base.path().join("src");
+        std::fs::create_dir_all(&source_dir).expect("source dir");
+
+        let mut config = AppConfig {
+            base_path: base.path().to_path_buf(),
+            work_path: work.path().to_path_buf(),
+            format: SourceFormat::Designer,
+            builder: BuilderBackend::Designer,
+            connection: "File=/tmp/ib".to_owned(),
+            credentials: Default::default(),
+            source_sets: vec![SourceSetConfig {
+                name: "main".to_owned(),
+                purpose: SourceSetPurpose::Configuration,
+                path: source_dir
+                    .strip_prefix(base.path())
+                    .expect("relative")
+                    .to_path_buf(),
+            }],
+            build: BuildConfig::default(),
+            tools: ToolsConfig::default(),
+            mcp: Default::default(),
+            tests: TestsConfig::default(),
+        };
+        config.mcp.http.bind_address = "localhost".to_owned();
+
+        let err = validate(&config).expect_err("expected invalid MCP bind address");
+        assert!(matches!(
+            err,
+            ConfigValidationError::InvalidMcpBindAddress(value) if value == "localhost"
+        ));
+    }
+
+    #[test]
+    fn rejects_invalid_mcp_http_limits() {
+        let base = tempdir().expect("base");
+        let work = tempdir().expect("work");
+        let source_dir = base.path().join("src");
+        std::fs::create_dir_all(&source_dir).expect("source dir");
+
+        let mut config = AppConfig {
+            base_path: base.path().to_path_buf(),
+            work_path: work.path().to_path_buf(),
+            format: SourceFormat::Designer,
+            builder: BuilderBackend::Designer,
+            connection: "File=/tmp/ib".to_owned(),
+            credentials: Default::default(),
+            source_sets: vec![SourceSetConfig {
+                name: "main".to_owned(),
+                purpose: SourceSetPurpose::Configuration,
+                path: source_dir
+                    .strip_prefix(base.path())
+                    .expect("relative")
+                    .to_path_buf(),
+            }],
+            build: BuildConfig::default(),
+            tools: ToolsConfig::default(),
+            mcp: Default::default(),
+            tests: TestsConfig::default(),
+        };
+
+        config.mcp.http.path = "mcp".to_owned();
+        let err = validate(&config).expect_err("expected invalid MCP path");
+        assert!(matches!(
+            err,
+            ConfigValidationError::InvalidMcpHttpPath(value) if value == "mcp"
+        ));
+
+        config.mcp.http.path = "/mcp".to_owned();
+        config.mcp.http.max_sessions = 0;
+        let err = validate(&config).expect_err("expected invalid MCP max sessions");
+        assert!(matches!(err, ConfigValidationError::InvalidMcpMaxSessions));
+
+        config.mcp.http.max_sessions = 64;
+        config.mcp.execution.max_concurrent_calls = 0;
+        let err = validate(&config).expect_err("expected invalid MCP concurrency");
+        assert!(matches!(
+            err,
+            ConfigValidationError::InvalidMcpMaxConcurrentCalls
+        ));
+    }
+
+    #[test]
+    fn rejects_zero_edt_cli_timeouts() {
+        let base = tempdir().expect("base");
+        let work = tempdir().expect("work");
+        let source_dir = base.path().join("src");
+        std::fs::create_dir_all(&source_dir).expect("source dir");
+
+        let mut config = AppConfig {
+            base_path: base.path().to_path_buf(),
+            work_path: work.path().to_path_buf(),
+            format: SourceFormat::Designer,
+            builder: BuilderBackend::Designer,
+            connection: "File=/tmp/ib".to_owned(),
+            credentials: Default::default(),
+            source_sets: vec![SourceSetConfig {
+                name: "main".to_owned(),
+                purpose: SourceSetPurpose::Configuration,
+                path: source_dir
+                    .strip_prefix(base.path())
+                    .expect("relative")
+                    .to_path_buf(),
+            }],
+            build: BuildConfig::default(),
+            tools: ToolsConfig::default(),
+            mcp: Default::default(),
+            tests: TestsConfig::default(),
+        };
+
+        config.tools.edt_cli.startup_timeout_ms = 0;
+        let err = validate(&config).expect_err("expected invalid EDT startup timeout");
+        assert!(matches!(
+            err,
+            ConfigValidationError::InvalidEdtCliStartupTimeoutMs
+        ));
+
+        config.tools.edt_cli.startup_timeout_ms = 300_000;
+        config.tools.edt_cli.command_timeout_ms = 0;
+        let err = validate(&config).expect_err("expected invalid EDT command timeout");
+        assert!(matches!(
+            err,
+            ConfigValidationError::InvalidEdtCliCommandTimeoutMs
         ));
     }
 }

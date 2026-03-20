@@ -65,10 +65,7 @@ enum StepPlan {
     },
 }
 
-pub(crate) fn run_build(
-    config: &AppConfig,
-    args: &BuildArgs,
-) -> UseCaseResult<BuildResult> {
+pub(crate) fn run_build(config: &AppConfig, args: &BuildArgs) -> UseCaseResult<BuildResult> {
     if config.format == SourceFormat::Edt {
         return run_build_edt(config, args);
     }
@@ -1365,6 +1362,7 @@ mod tests {
                 },
                 ..ToolsConfig::default()
             },
+            mcp: Default::default(),
             tests: TestsConfig::default(),
         }
     }
@@ -1405,8 +1403,10 @@ mod tests {
                 edt_cli: crate::config::model::EdtCliConfig {
                     path: Some(edt_cli_path.to_path_buf()),
                     auto_start: false,
+                    ..Default::default()
                 },
             },
+            mcp: Default::default(),
             tests: TestsConfig::default(),
         }
     }

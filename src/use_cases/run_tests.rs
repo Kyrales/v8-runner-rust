@@ -8,10 +8,10 @@ use serde::Serialize;
 use uuid::Uuid;
 
 use crate::config::model::AppConfig;
+use crate::domain::execution::StepResult;
 use crate::domain::test::{
     RetainedPaths, TestErrorKind, TestOutputMode, TestReport, TestRunResult, TestStatus, TestTarget,
 };
-use crate::domain::execution::StepResult;
 use crate::parsers::junit::{self, JunitError};
 use crate::parsers::yaxunit_log;
 use crate::platform::enterprise::{EnterpriseDsl, EnterpriseError};
@@ -81,10 +81,7 @@ struct RunArtifacts {
 
 type TestExecutionFailure = UseCaseFailure<TestRunResult>;
 
-fn run_tests(
-    config: &AppConfig,
-    args: &TestArgs,
-) -> UseCaseResult<TestRunResult> {
+fn run_tests(config: &AppConfig, args: &TestArgs) -> UseCaseResult<TestRunResult> {
     let started = Instant::now();
     info!(full = args.full, scope = ?args.scope, "starting test run");
     let mode = if args.full {
@@ -298,7 +295,10 @@ fn run_tests(
                 steps,
                 duration_ms: started.elapsed().as_millis() as u64,
             };
-            return Err(TestExecutionFailure::with_payload(AppError::Runtime(message), result));
+            return Err(TestExecutionFailure::with_payload(
+                AppError::Runtime(message),
+                result,
+            ));
         }
     };
 
@@ -737,6 +737,7 @@ mod tests {
                 platform: PlatformToolConfig::default(),
                 ..ToolsConfig::default()
             },
+            mcp: Default::default(),
             tests: TestsConfig::default(),
         }
     }

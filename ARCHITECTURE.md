@@ -37,6 +37,16 @@ The CLI/runtime boundary is now split explicitly:
 
 This keeps current CLI behavior intact while reserving a stable internal API for MCP stdio/HTTP adapters.
 
+## Configuration Surface
+
+The typed config model already reserves the MCP knobs needed by the upcoming transports:
+
+- `mcp.http` defines listener/session defaults (`bind_address`, `path`, `stateful_sessions`, `max_sessions`, `idle_ttl_secs`).
+- `mcp.execution` defines runtime guardrails (`max_concurrent_calls`, `shutdown_grace_period_secs`).
+- `tools.edt_cli` now also carries `startup_timeout_ms` and `command_timeout_ms`, which are validated even before the interactive EDT executor exists.
+
+These settings are intentionally inert for now: Stage 1 only loads, validates, and documents them so later MCP stdio/HTTP work can wire them in without reshaping `AppConfig`.
+
 ## MCP Boundary
 
 The future MCP adapter no longer needs to talk to `cli::execute` or to reuse domain serialization directly.
