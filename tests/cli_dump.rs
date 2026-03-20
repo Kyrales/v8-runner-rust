@@ -140,23 +140,71 @@ fn dump_ibcmd_incremental_json_success() {
 }
 
 #[test]
-fn dump_ibcmd_partial_remains_unsupported() {
-    let (_dir, config_path, _binary_path, _work_path, _base_path, _calls_log) = setup_project();
+fn dump_ibcmd_partial_json_success_uses_degraded_fallback() {
+    let (_dir, config_path, _binary_path, _work_path, _base_path, calls_log) = setup_project();
 
     let output = std::process::Command::cargo_bin("v8-test-runner")
         .expect("binary")
         .args([
             "--config",
             &config_path.display().to_string(),
+            "--output",
+            "json",
             "dump",
             "--mode",
             "partial",
             "--source-set",
             "main",
+            "--object",
+            "Catalog.Items",
+        ])
+        .output()
+        .expect("run command");
+
+    assert!(output.status.success());
+    let payload: Value = serde_json::from_slice(&output.stdout).expect("json");
+    let data = &payload["data"];
+    assert_eq!(payload["ok"], true);
+    assert_eq!(data["mode"], "PARTIAL");
+    assert!(data["message"]
+        .as_str()
+        .expect("message")
+        .contains("IBCMD does not support object-scoped partial dump"));
+    let calls = fs::read_to_string(calls_log).expect("calls");
+    assert!(calls.contains("--sync"));
+}
+
+#[test]
+fn dump_ibcmd_partial_failure_keeps_partial_mode_and_warning() {
+    let (_dir, config_path, binary_path, _work_path, _base_path, calls_log) = setup_project();
+    write_ibcmd_script(&binary_path, &calls_log, Some("--sync"));
+
+    let output = std::process::Command::cargo_bin("v8-test-runner")
+        .expect("binary")
+        .args([
+            "--config",
+            &config_path.display().to_string(),
+            "--output",
+            "json",
+            "dump",
+            "--mode",
+            "partial",
+            "--source-set",
+            "main",
+            "--object",
+            "Catalog.Items",
         ])
         .output()
         .expect("run command");
 
     assert!(!output.status.success());
-    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(output.status.code(), Some(4));
+    let payload: Value = serde_json::from_slice(&output.stdout).expect("json");
+    let data = &payload["data"];
+    assert_eq!(payload["ok"], false);
+    assert_eq!(data["mode"], "PARTIAL");
+    assert!(data["message"]
+        .as_str()
+        .expect("message")
+        .contains("IBCMD does not support object-scoped partial dump"));
 }

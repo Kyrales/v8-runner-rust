@@ -67,7 +67,10 @@ The future MCP adapter no longer needs to talk to `cli::execute` or to reuse dom
 Constraints to keep in mind:
 
 - IBCMD requires file-based infobase connections.
-- Object-level partial dump is not supported for the IBCMD backend.
+- `builder=DESIGNER` supports object-level partial dump via `/DumpConfigToFiles -partial -listFile`.
+- `builder=IBCMD` does not support object-scoped partial dump directly; `PARTIAL` degrades to
+  incremental export for the resolved target and returns a warning while preserving the requested
+  mode in the result payload.
 
 ## Output Flow
 
@@ -83,7 +86,7 @@ Use cases now return transport-neutral payloads or structured failures.
 `workPath` is the root for runtime artifacts:
 
 - `workPath/logs/platform/` stores platform log files.
-- `workPath/temp/partial-lists/` stores partial load list files.
+- `workPath/temp/partial-lists/` stores partial load and partial dump list files.
 - `workPath/temp/yaxunit/` stores temporary YaXUnit config files.
 - `workPath/hash-storages/` remains reserved for change detection state.
 - `workPath/<sourceSetName>/` is reserved for the future EDT export flow and is not created yet.

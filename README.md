@@ -21,6 +21,20 @@ build:
 - `partialLoadThreshold` controls when partial load falls back to full load.
 - `Configuration.xml` changes and deletions always force a full load.
 
+## Dump
+
+Current `dump` support is limited to `format=DESIGNER` with either `builder=DESIGNER` or
+`builder=IBCMD`.
+
+- `v8-test-runner dump --mode full` performs a full export.
+- `v8-test-runner dump --mode incremental` exports only changes according to backend semantics.
+- `v8-test-runner dump --mode partial --object <OBJECT>` performs object-scoped partial dump for
+  `builder=DESIGNER`.
+- `v8-test-runner dump --mode partial --object <OBJECT>` on `builder=IBCMD` degrades to
+  incremental export for the resolved configuration/extension target and returns a warning while
+  keeping the requested mode as `PARTIAL`.
+- `partial` requires at least one `--object`; blank values and control characters are rejected.
+
 ## Tests
 
 Current `test` support is limited to `builder=DESIGNER` and `format=DESIGNER`.

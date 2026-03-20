@@ -79,8 +79,8 @@
 
 - [x] Реализовать `dump --mode full`
 - [x] Реализовать `dump --mode incremental`
-- [ ] Реализовать `dump --mode partial`
-- [ ] Валидировать, что `partial` требует минимум один `--object`
+- [x] Реализовать `dump --mode partial`
+- [x] Валидировать, что `partial` требует минимум один `--object`
 - [x] Поддержать выбор `source-set`
 - [x] Поддержать выбор `extension`
 

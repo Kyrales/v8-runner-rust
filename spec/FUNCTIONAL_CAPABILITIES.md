@@ -241,6 +241,13 @@ METR (`mcp-onec-test-runner`) это MCP-сервер, который дает A
 - `INCREMENTAL` — только изменения относительно `ConfigDumpInfo.xml` или эквивалентной логики backend;
 - `PARTIAL` — точечная выгрузка объектов по списку.
 
+Дополнение по backend semantics:
+
+- для `DESIGNER` `PARTIAL` использует `DumpConfigToFiles -partial -listFile`;
+- для `IBCMD` объектная partial-выгрузка напрямую не поддержана, поэтому `PARTIAL`
+  деградирует в incremental export по resolved target с warning, но в ответе сохраняется
+  requested mode `PARTIAL`.
+
 ### 4.7. Порядок работы синтаксических проверок
 
 ### `check_syntax_edt`
@@ -356,7 +363,8 @@ METR (`mcp-onec-test-runner`) это MCP-сервер, который дает A
 
 - `FULL` реализован честно через `--force`;
 - `INCREMENTAL` идет через `--sync`;
-- `PARTIAL` по списку объектов напрямую не поддержан и по сути сводится к экспортным обходным сценариям.
+- `PARTIAL` по списку объектов напрямую не поддержан и сейчас деградирует в `--sync`
+  для resolved configuration/extension target с явным warning.
 
 Если переписывать на другой стек, надо заранее решить:
 

@@ -27,7 +27,10 @@
   - Добавлен pre-validation для `checkUseSynchronousCalls` и `checkUseModality`: при `extendedModulesCheck=false` MCP boundary возвращает `InvalidArgument` до вызова use case.
   - Зафиксирован alias set для `launch_app`, включая Kotlin aliases и ранее принятые `thin` / `thick`; trim + lowercase normalization сохранены.
   - Осознанное product-расхождение теперь задокументировано и покрыто тестами: `dump_config(mode=null|blank)` в MCP трактуется как `INCREMENTAL`.
-- Закрыть functional gap: `dump_config(PARTIAL)` для `DESIGNER`; для `IBCMD` сделать degraded fallback с warning и сохранением requested mode `PARTIAL`.
+- [x] 2026-03-20: Закрыть functional gap: `dump_config(PARTIAL)` для `DESIGNER`; для `IBCMD` сделать degraded fallback с warning и сохранением requested mode `PARTIAL`.
+  - `DESIGNER` partial dump теперь использует `DumpConfigToFiles -partial -listFile ... -updateConfigDumpInfo` для configuration и extension targets.
+  - `IBCMD` partial dump теперь валидирует тот же object list contract, затем деградирует в incremental export (`--sync`) по resolved target и возвращает warning, сохраняя `mode=PARTIAL` в use-case/MCP payload.
+  - Добавлены regression tests на object normalization, temp-list cleanup, missing-target creation и `IBCMD` success/failure fallback semantics.
 
 ## Stage 2. MCP stdio MVP
 

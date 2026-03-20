@@ -19,7 +19,9 @@ pub struct TestRequest {
 pub enum TestScopeRequest {
     All,
     /// Runs a single module test target.
-    Module { name: String },
+    Module {
+        name: String,
+    },
 }
 
 /// Transport-neutral dump mode.
@@ -33,13 +35,13 @@ pub enum DumpModeRequest {
 /// Transport-neutral request for the `dump` use case.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DumpRequest {
-    /// Requested dump mode. `Partial` remains reserved for a later stage.
+    /// Requested dump mode. `Partial` requires at least one object selector.
     pub mode: DumpModeRequest,
     /// Optional source-set selector. Required when multiple candidates are available.
     pub source_set: Option<String>,
     /// Optional extension selector for extension dumps.
     pub extension: Option<String>,
-    /// Requested object filters. This stage accepts only an empty list.
+    /// Requested object filters for `Partial` dump mode.
     pub objects: Vec<String>,
 }
 
@@ -56,7 +58,9 @@ pub enum SyntaxTargetRequest {
     DesignerConfig(DesignerConfigSyntaxRequest),
     DesignerModules(DesignerModulesSyntaxRequest),
     /// Runs EDT validation for selected projects or all EDT projects when empty.
-    Edt { projects: Vec<String> },
+    Edt {
+        projects: Vec<String>,
+    },
 }
 
 /// Transport-neutral request for Designer configuration checks.

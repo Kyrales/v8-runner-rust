@@ -1,8 +1,10 @@
 use std::collections::HashMap;
+use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use sha2::{Digest, Sha256};
+use tempfile::NamedTempFile;
 
 use crate::change_detection::source_sets::SourceSetsService;
 use crate::config::model::{
@@ -21,7 +23,7 @@ use crate::support::fs::{
     acquire_advisory_lock, ensure_dir, metadata_sidecar_path, read_temp_dir_metadata,
     remove_path_if_exists, replace_dir_atomically, write_temp_dir_metadata, TempDirKind,
 };
-use crate::support::temp::platform_logs_dir;
+use crate::support::temp::{dump_object_list_file, platform_logs_dir};
 use crate::use_cases::context::ExecutionContext;
 use crate::use_cases::request::{DumpModeRequest, DumpRequest as DumpArgs};
 use crate::use_cases::result::{UseCaseFailure, UseCaseResult};
@@ -31,8 +33,11 @@ use tracing::info;
 const DUMP_COMMAND: &str = crate::use_cases::context::CommandName::Dump.as_str();
 const SUPPORTED_DUMP_ERROR: &str =
     "dump currently supports only builder=DESIGNER or IBCMD with format=DESIGNER";
-const PARTIAL_DEFERRED_ERROR: &str =
-    "dump mode 'partial' is deferred to a later stage and is not implemented yet";
+const PARTIAL_OBJECTS_REQUIRED_ERROR: &str = "partial dump requires at least one object";
+const PARTIAL_OBJECT_BLANK_ERROR: &str = "partial dump objects must not be blank";
+const PARTIAL_OBJECT_CONTROL_ERROR: &str =
+    "partial dump objects must not contain control characters";
+const NON_PARTIAL_OBJECTS_ERROR: &str = "dump objects are supported only for mode 'partial'";
 const ORPHAN_TTL: Duration = Duration::from_secs(24 * 60 * 60);
 
 pub fn execute(
@@ -90,33 +95,23 @@ fn run_dump(config: &AppConfig, args: &DumpArgs) -> UseCaseResult<DumpResult> {
         ));
     }
 
-    if !args.objects.is_empty() {
-        return Err(DumpExecutionFailure::with_payload(
-            AppError::Validation("dump objects are not supported in this stage".to_owned()),
-            empty_result(
-                mode,
-                started,
-                None,
-                args.extension.clone(),
-                None,
-                Some("objects are not supported for dump in this stage".to_owned()),
-            ),
-        ));
-    }
-
-    if mode == DumpMode::Partial {
-        return Err(DumpExecutionFailure::with_payload(
-            AppError::Validation(PARTIAL_DEFERRED_ERROR.to_owned()),
-            empty_result(
-                mode,
-                started,
-                args.source_set.clone(),
-                args.extension.clone(),
-                None,
-                Some(PARTIAL_DEFERRED_ERROR.to_owned()),
-            ),
-        ));
-    }
+    let partial_objects = match validate_dump_objects(&mode, &args.objects) {
+        Ok(objects) => objects,
+        Err(error) => {
+            let message = error.to_string();
+            return Err(DumpExecutionFailure::with_payload(
+                error,
+                empty_result(
+                    mode,
+                    started,
+                    args.source_set.clone(),
+                    args.extension.clone(),
+                    None,
+                    Some(message),
+                ),
+            ));
+        }
+    };
 
     let resolved = match resolve_target(config, args) {
         Ok(resolved) => resolved,
@@ -213,32 +208,49 @@ fn run_dump(config: &AppConfig, args: &DumpArgs) -> UseCaseResult<DumpResult> {
         ));
     }
 
-    let result = match (&mode, &config.builder) {
-        (DumpMode::Incremental, BuilderBackend::Designer) => run_incremental_dump_designer(
+    let partial_objects = partial_objects.as_deref();
+    let result = match (&mode, &config.builder, partial_objects) {
+        (DumpMode::Incremental, BuilderBackend::Designer, _) => run_incremental_dump_designer(
             config,
             &resolved,
             location.path.as_path(),
             utilities.runner_for(UtilityType::V8),
         ),
-        (DumpMode::Incremental, BuilderBackend::Ibcmd) => run_incremental_dump_ibcmd(
+        (DumpMode::Incremental, BuilderBackend::Ibcmd, _) => run_incremental_dump_ibcmd(
             config,
             &resolved,
             location.path.as_path(),
             utilities.runner_for(UtilityType::Ibcmd),
         ),
-        (DumpMode::Full, BuilderBackend::Designer) => run_full_dump_designer(
+        (DumpMode::Full, BuilderBackend::Designer, _) => run_full_dump_designer(
             config,
             &resolved,
             location.path.as_path(),
             utilities.runner_for(UtilityType::V8),
         ),
-        (DumpMode::Full, BuilderBackend::Ibcmd) => run_full_dump_ibcmd(
+        (DumpMode::Full, BuilderBackend::Ibcmd, _) => run_full_dump_ibcmd(
             config,
             &resolved,
             location.path.as_path(),
             utilities.runner_for(UtilityType::Ibcmd),
         ),
-        (DumpMode::Partial, _) => unreachable!("partial is handled earlier"),
+        (DumpMode::Partial, BuilderBackend::Designer, Some(objects)) => run_partial_dump_designer(
+            config,
+            &resolved,
+            location.path.as_path(),
+            utilities.runner_for(UtilityType::V8),
+            objects,
+        ),
+        (DumpMode::Partial, BuilderBackend::Ibcmd, Some(objects)) => run_partial_dump_ibcmd(
+            config,
+            &resolved,
+            location.path.as_path(),
+            utilities.runner_for(UtilityType::Ibcmd),
+            objects,
+        ),
+        (DumpMode::Partial, _, None) => Err(AppError::Runtime(
+            "partial dump objects were not validated before execution".to_owned(),
+        )),
     };
     drop(lock_guard);
 
@@ -449,6 +461,49 @@ fn run_full_dump_ibcmd(
     info!(target = %resolved.target_path.display(), "published staged dump");
 
     Ok((dump_result, publish_outcome.cleanup_warning))
+}
+
+fn run_partial_dump_designer(
+    config: &AppConfig,
+    resolved: &ResolvedDumpTarget,
+    binary: &Path,
+    runner: &dyn ProcessRunner,
+    objects: &[String],
+) -> Result<(PlatformCommandResult, Option<String>), AppError> {
+    info!(
+        source_set = resolved.source_set_name.as_str(),
+        target = %resolved.target_path.display(),
+        object_count = objects.len(),
+        "running partial designer dump"
+    );
+    ensure_dir(&resolved.target_path)
+        .map_err(|error| AppError::Runtime(format!("failed to create target dir: {error}")))?;
+
+    let list_file = create_dump_object_list_file(&config.work_path, objects)?;
+    let dump_result =
+        build_designer_dsl(config, binary, runner, &resolved.source_set_name, "partial")?
+            .dump_config_to_files_partial(
+                &resolved.target_path,
+                list_file.path(),
+                resolved.extension.as_deref(),
+            )
+            .map_err(|error| AppError::Platform(error.to_string()))?;
+    ensure_platform_success("dump", resolved, &dump_result)?;
+    Ok((dump_result, None))
+}
+
+fn run_partial_dump_ibcmd(
+    config: &AppConfig,
+    resolved: &ResolvedDumpTarget,
+    binary: &Path,
+    runner: &dyn ProcessRunner,
+    _objects: &[String],
+) -> Result<(PlatformCommandResult, Option<String>), AppError> {
+    let warning = ibcmd_partial_warning(resolved);
+    match run_incremental_dump_ibcmd(config, resolved, binary, runner) {
+        Ok((dump_result, _)) => Ok((dump_result, Some(warning))),
+        Err(error) => Err(decorate_ibcmd_partial_error(error, &warning)),
+    }
 }
 
 fn cleanup_staging_on_platform_failure(staging_dir: &Path, error: AppError) -> AppError {
@@ -780,6 +835,104 @@ fn map_ibcmd_error(error: IbcmdError) -> AppError {
     }
 }
 
+fn validate_dump_objects(
+    mode: &DumpMode,
+    objects: &[String],
+) -> Result<Option<Vec<String>>, AppError> {
+    match mode {
+        DumpMode::Partial => normalize_partial_objects(objects).map(Some),
+        _ if !objects.is_empty() => Err(AppError::Validation(NON_PARTIAL_OBJECTS_ERROR.to_owned())),
+        _ => Ok(None),
+    }
+}
+
+fn normalize_partial_objects(objects: &[String]) -> Result<Vec<String>, AppError> {
+    if objects.is_empty() {
+        return Err(AppError::Validation(
+            PARTIAL_OBJECTS_REQUIRED_ERROR.to_owned(),
+        ));
+    }
+
+    let mut normalized = Vec::with_capacity(objects.len());
+    for object in objects {
+        if object.chars().any(char::is_control) {
+            return Err(AppError::Validation(
+                PARTIAL_OBJECT_CONTROL_ERROR.to_owned(),
+            ));
+        }
+        let object = object.trim();
+        if object.is_empty() {
+            return Err(AppError::Validation(PARTIAL_OBJECT_BLANK_ERROR.to_owned()));
+        }
+        normalized.push(object.to_owned());
+    }
+
+    if normalized.is_empty() {
+        return Err(AppError::Validation(
+            PARTIAL_OBJECTS_REQUIRED_ERROR.to_owned(),
+        ));
+    }
+
+    Ok(normalized)
+}
+
+fn create_dump_object_list_file(
+    work_path: &Path,
+    objects: &[String],
+) -> Result<NamedTempFile, AppError> {
+    create_dump_object_list_file_with(work_path, objects, write_partial_object_list)
+}
+
+fn create_dump_object_list_file_with<F>(
+    work_path: &Path,
+    objects: &[String],
+    write_list: F,
+) -> Result<NamedTempFile, AppError>
+where
+    F: FnOnce(&mut NamedTempFile, &[String]) -> std::io::Result<()>,
+{
+    let mut list_file = dump_object_list_file(work_path).map_err(|error| {
+        AppError::Runtime(format!("failed to create partial dump list: {error}"))
+    })?;
+    write_list(&mut list_file, objects).map_err(|error| {
+        AppError::Runtime(format!("failed to write partial dump list: {error}"))
+    })?;
+    Ok(list_file)
+}
+
+fn write_partial_object_list(
+    list_file: &mut NamedTempFile,
+    objects: &[String],
+) -> std::io::Result<()> {
+    let writer = list_file.as_file_mut();
+    writer.set_len(0)?;
+    for object in objects {
+        writeln!(writer, "{object}")?;
+    }
+    writer.flush()
+}
+
+fn ibcmd_partial_warning(resolved: &ResolvedDumpTarget) -> String {
+    match resolved.extension.as_deref() {
+        Some(extension) => format!(
+            "IBCMD does not support object-scoped partial dump; ran incremental export for extension '{extension}' instead"
+        ),
+        None => format!(
+            "IBCMD does not support object-scoped partial dump; ran incremental export for source-set '{}' instead",
+            resolved.source_set_name
+        ),
+    }
+}
+
+fn decorate_ibcmd_partial_error(error: AppError, warning: &str) -> AppError {
+    match error {
+        AppError::Validation(message) => AppError::Validation(format!("{warning}; {message}")),
+        AppError::Runtime(message) => AppError::Runtime(format!("{warning}; {message}")),
+        AppError::Platform(message) => AppError::Platform(format!("{warning}; {message}")),
+        AppError::Config(error) => AppError::Runtime(format!("{warning}; {error}")),
+    }
+}
+
 fn ensure_platform_success(
     action: &str,
     resolved: &ResolvedDumpTarget,
@@ -841,10 +994,11 @@ fn make_run_id() -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_designer_dsl, cleanup_orphan_dirs, hash_path, metadata_sidecar_path,
-        nearest_existing_canonical_path, resolve_target, run_dump, validate_publish_target,
-        validate_supported_matrix, DUMP_COMMAND, ORPHAN_TTL, PARTIAL_DEFERRED_ERROR,
-        SUPPORTED_DUMP_ERROR,
+        build_designer_dsl, cleanup_orphan_dirs, create_dump_object_list_file_with, hash_path,
+        metadata_sidecar_path, nearest_existing_canonical_path, resolve_target, run_dump,
+        validate_publish_target, validate_supported_matrix, DUMP_COMMAND,
+        NON_PARTIAL_OBJECTS_ERROR, ORPHAN_TTL, PARTIAL_OBJECTS_REQUIRED_ERROR,
+        PARTIAL_OBJECT_BLANK_ERROR, PARTIAL_OBJECT_CONTROL_ERROR, SUPPORTED_DUMP_ERROR,
     };
     use crate::config::model::{
         AppConfig, BuildConfig, BuilderBackend, PlatformToolConfig, SourceFormat, SourceSetConfig,
@@ -999,6 +1153,20 @@ mod tests {
         .expect("ext bsl");
     }
 
+    fn partial_list_paths(work_path: &Path) -> Vec<PathBuf> {
+        let partial_dir = work_path.join("temp").join("partial-lists");
+        if !partial_dir.is_dir() {
+            return Vec::new();
+        }
+
+        let mut paths = fs::read_dir(partial_dir)
+            .expect("partial lists dir")
+            .map(|entry| entry.expect("entry").path())
+            .collect::<Vec<_>>();
+        paths.sort();
+        paths
+    }
+
     #[test]
     fn rejects_unsupported_matrix() {
         let dir = tempdir().expect("tempdir");
@@ -1035,7 +1203,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_partial_mode() {
+    fn partial_requires_at_least_one_object() {
         let dir = tempdir().expect("tempdir");
         let script = dir.path().join("1cv8");
         create_source_tree(dir.path());
@@ -1054,7 +1222,53 @@ mod tests {
         .expect_err("failure");
 
         assert_eq!(failure.error.kind(), UseCaseErrorKind::Validation);
-        assert_eq!(failure.error.message(), PARTIAL_DEFERRED_ERROR);
+        assert_eq!(failure.error.message(), PARTIAL_OBJECTS_REQUIRED_ERROR);
+    }
+
+    #[test]
+    fn partial_rejects_blank_objects() {
+        let dir = tempdir().expect("tempdir");
+        let script = dir.path().join("1cv8");
+        create_source_tree(dir.path());
+        write_script(&script, "exit 0");
+        let config = build_config(dir.path(), &dir.path().join("work"), &script);
+
+        let failure = run_dump(
+            &config,
+            &DumpArgs {
+                mode: DumpModeRequest::Partial,
+                source_set: None,
+                extension: None,
+                objects: vec!["   ".to_owned()],
+            },
+        )
+        .expect_err("failure");
+
+        assert_eq!(failure.error.kind(), UseCaseErrorKind::Validation);
+        assert_eq!(failure.error.message(), PARTIAL_OBJECT_BLANK_ERROR);
+    }
+
+    #[test]
+    fn partial_rejects_control_characters_in_objects() {
+        let dir = tempdir().expect("tempdir");
+        let script = dir.path().join("1cv8");
+        create_source_tree(dir.path());
+        write_script(&script, "exit 0");
+        let config = build_config(dir.path(), &dir.path().join("work"), &script);
+
+        let failure = run_dump(
+            &config,
+            &DumpArgs {
+                mode: DumpModeRequest::Partial,
+                source_set: None,
+                extension: None,
+                objects: vec!["Catalog.Items\nLine".to_owned()],
+            },
+        )
+        .expect_err("failure");
+
+        assert_eq!(failure.error.kind(), UseCaseErrorKind::Validation);
+        assert_eq!(failure.error.message(), PARTIAL_OBJECT_CONTROL_ERROR);
     }
 
     #[test]
@@ -1077,6 +1291,30 @@ mod tests {
         .expect_err("failure");
 
         assert_eq!(failure.error.kind(), UseCaseErrorKind::Validation);
+        assert_eq!(failure.error.message(), NON_PARTIAL_OBJECTS_ERROR);
+    }
+
+    #[test]
+    fn rejects_objects_for_full() {
+        let dir = tempdir().expect("tempdir");
+        let script = dir.path().join("1cv8");
+        create_source_tree(dir.path());
+        write_script(&script, "exit 0");
+        let config = build_config(dir.path(), &dir.path().join("work"), &script);
+
+        let failure = run_dump(
+            &config,
+            &DumpArgs {
+                mode: DumpModeRequest::Full,
+                source_set: None,
+                extension: None,
+                objects: vec!["Catalog:Items".to_owned()],
+            },
+        )
+        .expect_err("failure");
+
+        assert_eq!(failure.error.kind(), UseCaseErrorKind::Validation);
+        assert_eq!(failure.error.message(), NON_PARTIAL_OBJECTS_ERROR);
     }
 
     #[test]
@@ -1283,6 +1521,273 @@ mod tests {
         assert!(base.join("main").exists());
         let calls = fs::read_to_string(calls).expect("calls");
         assert!(calls.contains("/DumpConfigToFiles"));
+    }
+
+    #[test]
+    fn partial_validation_is_shared_with_ibcmd() {
+        let dir = tempdir().expect("tempdir");
+        let script = dir.path().join("ibcmd");
+        create_source_tree(dir.path());
+        write_script(&script, "exit 0");
+        let config = build_config_with_builder(
+            dir.path(),
+            &dir.path().join("work"),
+            &script,
+            BuilderBackend::Ibcmd,
+        );
+
+        let failure = run_dump(
+            &config,
+            &DumpArgs {
+                mode: DumpModeRequest::Partial,
+                source_set: Some("main".to_owned()),
+                extension: None,
+                objects: vec!["Catalog\nItem".to_owned()],
+            },
+        )
+        .expect_err("failure");
+
+        assert_eq!(failure.error.kind(), UseCaseErrorKind::Validation);
+        assert_eq!(failure.error.message(), PARTIAL_OBJECT_CONTROL_ERROR);
+    }
+
+    #[test]
+    fn partial_dump_write_failure_cleans_up_temp_file() {
+        let dir = tempdir().expect("tempdir");
+        let work = dir.path().join("work");
+        let partial_root = work.join("temp");
+        fs::create_dir_all(&partial_root).expect("temp");
+        fs::write(partial_root.join("partial-lists"), "not a dir").expect("sentinel");
+
+        let error = create_dump_object_list_file_with(
+            &work,
+            &["Catalog.Items".to_owned()],
+            |_file, _objects| Ok(()),
+        )
+        .expect_err("expected failure");
+
+        assert!(matches!(error, AppError::Runtime(_)));
+        assert!(partial_list_paths(&work).is_empty());
+    }
+
+    #[test]
+    fn partial_dump_writer_failure_does_not_leave_temp_file() {
+        let dir = tempdir().expect("tempdir");
+        let work = dir.path().join("work");
+
+        let error = create_dump_object_list_file_with(
+            &work,
+            &["Catalog.Items".to_owned()],
+            |_file, _objects| Err(std::io::Error::other("boom")),
+        )
+        .expect_err("expected failure");
+
+        assert!(matches!(error, AppError::Runtime(_)));
+        assert!(partial_list_paths(&work).is_empty());
+    }
+
+    #[test]
+    fn dump_partial_designer_creates_missing_target_dir_and_writes_normalized_list() {
+        let dir = tempdir().expect("tempdir");
+        let base = dir.path().join("base");
+        let work = dir.path().join("work");
+        let script = dir.path().join("1cv8");
+        let calls = dir.path().join("calls.log");
+        let captured_list = dir.path().join("captured-list.txt");
+        create_source_tree(&base);
+        write_script(
+            &script,
+            &format!(
+                "args=\"$*\"\nout=\"\"\nlist=\"\"\nprev=\"\"\nfor arg in \"$@\"; do\n  if [ \"$prev\" = \"/Out\" ]; then out=\"$arg\"; fi\n  if [ \"$prev\" = \"-listFile\" ]; then list=\"$arg\"; fi\n  prev=\"$arg\"\ndone\nif [ -n \"$out\" ]; then printf 'designer log for %s\\n' \"$args\" > \"$out\"; fi\nif [ -n \"$list\" ]; then cp \"$list\" \"{}\"; fi\nprintf '%s\\n' \"$args\" >> \"{}\"\nexit 0",
+                captured_list.display(),
+                calls.display(),
+            ),
+        );
+        let config = build_config(&base, &work, &script);
+        fs::remove_dir_all(base.join("main")).expect("remove target");
+
+        let result = run_dump(
+            &config,
+            &DumpArgs {
+                mode: DumpModeRequest::Partial,
+                source_set: Some("main".to_owned()),
+                extension: None,
+                objects: vec!["  Catalog.Items  ".to_owned(), "Document.Order".to_owned()],
+            },
+        )
+        .expect("dump");
+
+        assert!(result.ok);
+        assert_eq!(result.mode, DumpMode::Partial);
+        assert!(base.join("main").exists());
+        let calls = fs::read_to_string(calls).expect("calls");
+        assert!(calls.contains("/DumpConfigToFiles"));
+        assert!(calls.contains("-partial"));
+        assert!(calls.contains("-listFile"));
+        assert_eq!(
+            fs::read_to_string(captured_list).expect("captured list"),
+            "Catalog.Items\nDocument.Order\n"
+        );
+        assert!(partial_list_paths(&work).is_empty());
+    }
+
+    #[test]
+    fn dump_partial_designer_extension_uses_extension_flag() {
+        let dir = tempdir().expect("tempdir");
+        let base = dir.path().join("base");
+        let work = dir.path().join("work");
+        let script = dir.path().join("1cv8");
+        let calls = dir.path().join("calls.log");
+        create_source_tree(&base);
+        write_dump_script(&script, &calls, None, 0);
+        let config = build_config(&base, &work, &script);
+
+        let result = run_dump(
+            &config,
+            &DumpArgs {
+                mode: DumpModeRequest::Partial,
+                source_set: Some("ext".to_owned()),
+                extension: Some("ext".to_owned()),
+                objects: vec!["CommonModule.Module".to_owned()],
+            },
+        )
+        .expect("dump");
+
+        assert!(result.ok);
+        let calls = fs::read_to_string(calls).expect("calls");
+        assert!(calls.contains("-Extension"));
+        assert!(calls.contains("ext"));
+        assert!(partial_list_paths(&work).is_empty());
+    }
+
+    #[test]
+    fn dump_partial_designer_failure_cleans_up_temp_file_and_keeps_partial_mode() {
+        let dir = tempdir().expect("tempdir");
+        let base = dir.path().join("base");
+        let work = dir.path().join("work");
+        let script = dir.path().join("1cv8");
+        let calls = dir.path().join("calls.log");
+        create_source_tree(&base);
+        write_dump_script(&script, &calls, Some("-partial"), 0);
+        let config = build_config(&base, &work, &script);
+
+        let failure = run_dump(
+            &config,
+            &DumpArgs {
+                mode: DumpModeRequest::Partial,
+                source_set: Some("main".to_owned()),
+                extension: None,
+                objects: vec!["Catalog.Items".to_owned()],
+            },
+        )
+        .expect_err("failure");
+
+        assert_eq!(failure.error.kind(), UseCaseErrorKind::Platform);
+        assert_eq!(failure.payload.expect("payload").mode, DumpMode::Partial);
+        assert!(partial_list_paths(&work).is_empty());
+    }
+
+    #[test]
+    fn dump_partial_ibcmd_uses_sync_and_returns_warning() {
+        let dir = tempdir().expect("tempdir");
+        let base = dir.path().join("base");
+        let work = dir.path().join("work");
+        let script = dir.path().join("ibcmd");
+        let calls = dir.path().join("calls.log");
+        create_source_tree(&base);
+        write_ibcmd_dump_script(&script, &calls, None, 0);
+        let config = build_config_with_builder(&base, &work, &script, BuilderBackend::Ibcmd);
+
+        let result = run_dump(
+            &config,
+            &DumpArgs {
+                mode: DumpModeRequest::Partial,
+                source_set: Some("main".to_owned()),
+                extension: None,
+                objects: vec!["Catalog.Items".to_owned()],
+            },
+        )
+        .expect("dump");
+
+        assert!(result.ok);
+        assert_eq!(result.mode, DumpMode::Partial);
+        assert!(result
+            .message
+            .as_deref()
+            .expect("warning")
+            .contains("IBCMD does not support object-scoped partial dump"));
+        let calls = fs::read_to_string(calls).expect("calls");
+        assert!(calls.contains("--sync"));
+    }
+
+    #[test]
+    fn dump_partial_ibcmd_extension_uses_extension_flag() {
+        let dir = tempdir().expect("tempdir");
+        let base = dir.path().join("base");
+        let work = dir.path().join("work");
+        let script = dir.path().join("ibcmd");
+        let calls = dir.path().join("calls.log");
+        create_source_tree(&base);
+        write_ibcmd_dump_script(&script, &calls, None, 0);
+        let config = build_config_with_builder(&base, &work, &script, BuilderBackend::Ibcmd);
+
+        let result = run_dump(
+            &config,
+            &DumpArgs {
+                mode: DumpModeRequest::Partial,
+                source_set: Some("ext".to_owned()),
+                extension: Some("ext".to_owned()),
+                objects: vec!["CommonModule.Module".to_owned()],
+            },
+        )
+        .expect("dump");
+
+        assert!(result.ok);
+        assert_eq!(result.mode, DumpMode::Partial);
+        let calls = fs::read_to_string(calls).expect("calls");
+        assert!(calls.contains("--sync"));
+        assert!(calls.contains("--extension=ext"));
+        assert!(result
+            .message
+            .as_deref()
+            .expect("warning")
+            .contains("extension 'ext'"));
+    }
+
+    #[test]
+    fn dump_partial_ibcmd_failure_keeps_partial_mode_and_warning() {
+        let dir = tempdir().expect("tempdir");
+        let base = dir.path().join("base");
+        let work = dir.path().join("work");
+        let script = dir.path().join("ibcmd");
+        let calls = dir.path().join("calls.log");
+        create_source_tree(&base);
+        write_ibcmd_dump_script(&script, &calls, Some("--sync"), 0);
+        let config = build_config_with_builder(&base, &work, &script, BuilderBackend::Ibcmd);
+
+        let failure = run_dump(
+            &config,
+            &DumpArgs {
+                mode: DumpModeRequest::Partial,
+                source_set: Some("main".to_owned()),
+                extension: None,
+                objects: vec!["Catalog.Items".to_owned()],
+            },
+        )
+        .expect_err("failure");
+
+        assert_eq!(failure.error.kind(), UseCaseErrorKind::Platform);
+        assert!(failure
+            .error
+            .message()
+            .contains("IBCMD does not support object-scoped partial dump"));
+        let payload = failure.payload.expect("payload");
+        assert_eq!(payload.mode, DumpMode::Partial);
+        assert!(payload
+            .message
+            .as_deref()
+            .expect("message")
+            .contains("IBCMD does not support object-scoped partial dump"));
     }
 
     #[test]

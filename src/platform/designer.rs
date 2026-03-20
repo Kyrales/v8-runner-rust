@@ -109,6 +109,28 @@ impl<'a> DesignerDsl<'a> {
         self.run(&args)
     }
 
+    /// `/DumpConfigToFiles <dir> -partial -listFile <list_file> -updateConfigDumpInfo`
+    /// `[-Extension <name>]`
+    pub fn dump_config_to_files_partial(
+        &self,
+        target_dir: &Path,
+        list_file: &Path,
+        extension: Option<&str>,
+    ) -> Result<PlatformCommandResult, DesignerError> {
+        let mut args = self.base_args();
+        args.push("/DumpConfigToFiles".to_owned());
+        args.push(target_dir.display().to_string());
+        args.push("-partial".to_owned());
+        args.push("-listFile".to_owned());
+        args.push(list_file.display().to_string());
+        args.push("-updateConfigDumpInfo".to_owned());
+        if let Some(extension) = extension {
+            args.push("-Extension".to_owned());
+            args.push(extension.to_owned());
+        }
+        self.run(&args)
+    }
+
     /// `/CheckConfig [-ThinClient] [-Server] ...`
     pub fn check_config(&self, flags: &[&str]) -> Result<PlatformCommandResult, DesignerError> {
         let mut args = self.base_args();
@@ -309,5 +331,40 @@ mod tests {
         let args = fs::read_to_string(args_log).expect("args log");
         assert!(args.contains("/DumpConfigToFiles"));
         assert!(args.contains("-updateConfigDumpInfo"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dump_config_to_files_partial_passes_partial_list_args() {
+        let dir = tempdir().expect("tempdir");
+        let script = dir.path().join("1cv8");
+        let args_log = dir.path().join("args.log");
+        write_script(
+            &script,
+            &format!("printf '%s\n' \"$@\" > \"{}\"\nexit 0", args_log.display()),
+        );
+        let runner = ProcessExecutor;
+        let dsl = DesignerDsl::new(
+            script,
+            V8Connection::from_connection_string("File=/tmp/ib"),
+            &runner as &dyn ProcessRunner,
+            None,
+        );
+
+        dsl.dump_config_to_files_partial(
+            dir.path().join("out").as_path(),
+            dir.path().join("objects.txt").as_path(),
+            Some("ExtName"),
+        )
+        .expect("dump config partial");
+
+        let args = fs::read_to_string(args_log).expect("args log");
+        assert!(args.contains("/DumpConfigToFiles"));
+        assert!(args.contains("-partial"));
+        assert!(args.contains("-listFile"));
+        assert!(args.contains("objects.txt"));
+        assert!(args.contains("-updateConfigDumpInfo"));
+        assert!(args.contains("-Extension"));
+        assert!(args.contains("ExtName"));
     }
 }

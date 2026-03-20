@@ -24,7 +24,7 @@ pub fn platform_logs_dir(work_path: &Path) -> std::io::Result<PathBuf> {
     Ok(dir)
 }
 
-/// Return the temp directory for partial load lists inside `work_path`.
+/// Return the temp directory for partial load/dump lists inside `work_path`.
 pub fn partial_lists_dir(work_path: &Path) -> std::io::Result<PathBuf> {
     let dir = temp_root(work_path)?.join("partial-lists");
     std::fs::create_dir_all(&dir)?;
@@ -59,11 +59,20 @@ pub fn partial_list_file(work_path: &Path) -> std::io::Result<NamedTempFile> {
         .tempfile_in(partial_lists_dir(work_path)?)
 }
 
+/// Create a temporary text file for a partial dump object list inside
+/// `work_path/temp/partial-lists`.
+pub fn dump_object_list_file(work_path: &Path) -> std::io::Result<NamedTempFile> {
+    tempfile::Builder::new()
+        .prefix("dump-object-list-")
+        .suffix(".txt")
+        .tempfile_in(partial_lists_dir(work_path)?)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        partial_list_file, partial_lists_dir, platform_logs_dir, reserved_source_set_dir,
-        yaxunit_config_file, yaxunit_dir,
+        dump_object_list_file, partial_list_file, partial_lists_dir, platform_logs_dir,
+        reserved_source_set_dir, yaxunit_config_file, yaxunit_dir,
     };
     use tempfile::tempdir;
 
@@ -85,9 +94,14 @@ mod tests {
         let dir = tempdir().expect("tempdir");
 
         let partial = partial_list_file(dir.path()).expect("partial file");
+        let dump_partial = dump_object_list_file(dir.path()).expect("dump partial file");
         let yaxunit = yaxunit_config_file(dir.path()).expect("yaxunit file");
 
         assert!(partial
+            .path()
+            .to_string_lossy()
+            .contains("temp/partial-lists"));
+        assert!(dump_partial
             .path()
             .to_string_lossy()
             .contains("temp/partial-lists"));

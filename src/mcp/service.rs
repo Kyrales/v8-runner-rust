@@ -1318,6 +1318,94 @@ mod tests {
     }
 
     #[test]
+    fn dump_config_partial_success_preserves_partial_mode_and_warning_message() {
+        let port = StubPort::with_dump_result(Ok(DumpResult {
+            ok: true,
+            source_set: Some("main".to_owned()),
+            extension: None,
+            mode: DumpMode::Partial,
+            target_path: PathBuf::from("/tmp/out"),
+            platform_log_path: None,
+            duration_ms: 14,
+            message: Some(
+                "IBCMD does not support object-scoped partial dump; ran incremental export for source-set 'main' instead"
+                    .to_owned(),
+            ),
+        }));
+        let config = sample_config();
+        let service = McpService::with_port(&config, port);
+
+        let response = service
+            .dump_config(
+                McpCallContext::stdio(),
+                &McpDumpConfigRequest {
+                    mode: Some("PARTIAL".to_owned()),
+                    extension: None,
+                    objects: vec!["  Catalog.Item  ".to_owned()],
+                },
+            )
+            .expect("success");
+
+        assert!(response.success);
+        assert_eq!(response.mode, "PARTIAL");
+        assert!(response
+            .message
+            .contains("IBCMD does not support object-scoped partial dump"));
+        let requests = service.port.dump_requests.borrow();
+        assert_eq!(requests[0].1.mode, DumpModeRequest::Partial);
+        assert_eq!(requests[0].1.objects, vec!["  Catalog.Item  ".to_owned()]);
+    }
+
+    #[test]
+    fn dump_config_partial_failure_payload_preserves_partial_mode_and_warning() {
+        let config = sample_config();
+        let service = McpService::with_port(
+            &config,
+            StubPort::with_dump_result(Err(UseCaseFailure::with_payload(
+                UseCaseError::new(
+                    UseCaseErrorKind::Platform,
+                    "IBCMD does not support object-scoped partial dump; export failed",
+                ),
+                DumpResult {
+                    ok: false,
+                    source_set: Some("main".to_owned()),
+                    extension: None,
+                    mode: DumpMode::Partial,
+                    target_path: PathBuf::from("/tmp/out"),
+                    platform_log_path: None,
+                    duration_ms: 3,
+                    message: Some(
+                        "IBCMD does not support object-scoped partial dump; export failed"
+                            .to_owned(),
+                    ),
+                },
+            ))),
+        );
+
+        let error = service
+            .dump_config(
+                McpCallContext::stdio(),
+                &McpDumpConfigRequest {
+                    mode: Some("PARTIAL".to_owned()),
+                    extension: None,
+                    objects: vec!["Catalog.Item".to_owned()],
+                },
+            )
+            .expect_err("expected failure");
+
+        match error {
+            McpServiceError::Business(failure) => {
+                assert_eq!(failure.response.mode, "PARTIAL");
+                assert!(failure
+                    .response
+                    .message
+                    .contains("IBCMD does not support object-scoped partial dump"));
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
     fn launch_app_maps_supported_aliases() {
         let cases = [
             (
