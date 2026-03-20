@@ -94,8 +94,9 @@ tools:
     command_timeout_ms: 300000
 ```
 
-- `mcp.http.*` and `mcp.execution.*` are parsed and validated now, but they are not wired into a live transport yet.
+- `mcp.http.*` is still reserved for the upcoming HTTP transport, while `mcp.execution.*` already drives stdio admission control and shutdown grace.
 - `tools.edt_cli.startup_timeout_ms` and `tools.edt_cli.command_timeout_ms` default to `300000` ms and also accept legacy `edt-cli` / kebab-case aliases for compatibility.
+- In Stage 2, `tools.edt_cli.command_timeout_ms` is already wired into bounded MCP `check_syntax_edt` calls; `startup_timeout_ms` remains preparatory for the future shared EDT actor.
 
 ## MCP Stdio
 
@@ -107,8 +108,17 @@ The binary now exposes a live stdio MCP transport:
 - MCP requests use the Kotlin-compatible `camelCase` argument surface (`fullRebuild`, `moduleName`, `utilityType`, `projectName`, `allExtensions`, `checkUseSynchronousCalls`, `checkUseModality`, ...).
 - Business failures are returned as structured MCP tool errors; internal adapter/runtime failures stay transport-level.
 - `stdout` is reserved for MCP frames on this path: tracing goes to `workPath/logs/mcp/actions.log`, bootstrap failures go to `stderr`, and spawned platform processes stay captured or null-routed.
+- All MCP tool calls now share a global semaphore governed by `mcp.execution.max_concurrent_calls`.
+- For bounded Stage 2 EDT calls (`check_syntax_edt`), the timeout deadline starts when the request enters the MCP server wrapper, so queue wait and execution time consume the same `tools.edt_cli.command_timeout_ms` budget.
+- Client cancellation now returns early for queued and already-running MCP tool calls. This early return does not kill already-started one-shot work; the detached background job keeps the semaphore slot until it naturally finishes.
+- Transport-level error semantics are fixed as:
+- `queued cancel` => `reason=cancelled`, `stage=queued`, `timeoutMs=null|<budget>`
+- `running cancel` => `reason=cancelled`, `stage=running`, `timeoutMs=null|<budget>`
+- `queued timeout` => bounded calls only, `reason=timeout`, `stage=queued`, `timeoutMs=<budget>`
+- `running timeout` => bounded calls only, `reason=timeout`, `stage=running`, `timeoutMs=<budget>`
+- With `rmcp` cancellable request handles, the client may observe local `ServiceError::Cancelled { reason }` after sending `notifications/cancelled`; the `reason/stage/timeoutMs` matrix above describes the server-side transport error payload shape.
 
 Current limits:
 
 - HTTP transport is not implemented yet.
-- MCP bounded concurrency and per-call timeout/cancel semantics are still pending follow-up work.
+- Stage 2 cancellation is transport-level only: if the underlying blocking process hangs, it can keep the semaphore slot until it exits or the server shuts down.

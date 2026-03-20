@@ -41,12 +41,6 @@ enum McpTool {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RunningInterruptPolicy {
-    AwaitCompletion,
-    ReturnEarly,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ExecutionStage {
     Queued,
     Running,
@@ -62,21 +56,16 @@ enum ErrorReason {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ExecutionPolicy {
     timeout: Option<Duration>,
-    running_interrupt: RunningInterruptPolicy,
 }
 
 impl ExecutionPolicy {
     const fn standard() -> Self {
-        Self {
-            timeout: None,
-            running_interrupt: RunningInterruptPolicy::AwaitCompletion,
-        }
+        Self { timeout: None }
     }
 
     const fn bounded(timeout: Duration) -> Self {
         Self {
             timeout: Some(timeout),
-            running_interrupt: RunningInterruptPolicy::ReturnEarly,
         }
     }
 }
@@ -209,17 +198,8 @@ impl McpStdioServer {
         let mut handle =
             tokio::task::spawn_blocking(move || method(config, port, call_context, request));
 
-        if matches!(
-            policy.running_interrupt,
-            RunningInterruptPolicy::AwaitCompletion
-        ) {
-            let result = handle.await.map_err(|_| {
-                execution_error(ErrorReason::JoinFailure, ExecutionStage::Running, timeout)
-            })?;
-            return map_tool_result(result);
-        }
-
         tokio::select! {
+            biased;
             result = &mut handle => {
                 let result = result
                     .map_err(|_| execution_error(ErrorReason::JoinFailure, ExecutionStage::Running, timeout))?;
@@ -248,6 +228,7 @@ impl McpStdioServer {
         match deadline {
             Some(deadline) => {
                 tokio::select! {
+                    biased;
                     _ = cancellation.cancelled() => {
                         Err(execution_error(ErrorReason::Cancelled, ExecutionStage::Queued, timeout))
                     }
@@ -260,6 +241,7 @@ impl McpStdioServer {
             }
             None => {
                 tokio::select! {
+                    biased;
                     _ = cancellation.cancelled() => {
                         Err(execution_error(ErrorReason::Cancelled, ExecutionStage::Queued, timeout))
                     }
@@ -558,7 +540,7 @@ mod tests {
         ));
         let second = tokio::spawn(run_probe_call(
             server,
-            McpTool::RunAllTests,
+            McpTool::CheckSyntaxEdt,
             active,
             max_active.clone(),
             CancellationToken::new(),
@@ -669,6 +651,136 @@ mod tests {
             )
         );
         assert_eq!(started.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn bounded_queued_cancellation_wins_before_deadline() {
+        let server = McpStdioServer::with_port(
+            Arc::new(test_config_with_edt_timeout(1, 9, 80)),
+            Arc::new(DefaultMcpUseCasePort),
+        );
+
+        let first = tokio::spawn(run_probe_call(
+            server.clone(),
+            McpTool::RunAllTests,
+            Arc::new(AtomicUsize::new(0)),
+            Arc::new(AtomicUsize::new(0)),
+            CancellationToken::new(),
+        ));
+        tokio::time::sleep(Duration::from_millis(10)).await;
+
+        let started = Arc::new(AtomicUsize::new(0));
+        let started_clone = started.clone();
+        let cancellation = CancellationToken::new();
+        let queued_cancellation = cancellation.clone();
+        let second = tokio::spawn(async move {
+            server
+                .execute_tool(
+                    McpTool::CheckSyntaxEdt,
+                    (),
+                    queued_cancellation,
+                    move |_, _, _, ()| {
+                        started_clone.fetch_add(1, Ordering::SeqCst);
+                        Ok(String::from("unexpected"))
+                    },
+                )
+                .await
+                .expect_err("queued bounded call must be cancelled")
+        });
+
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        cancellation.cancel();
+
+        let error = second.await.expect("second task join");
+        first.await.expect("first task join").expect("first call");
+
+        assert_eq!(
+            error,
+            execution_error(
+                ErrorReason::Cancelled,
+                ExecutionStage::Queued,
+                Some(Duration::from_millis(80))
+            )
+        );
+        assert_eq!(started.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn standard_tools_ignore_edt_timeout_budget_when_not_cancelled() {
+        let server = McpStdioServer::with_port(
+            Arc::new(test_config_with_edt_timeout(1, 9, 20)),
+            Arc::new(DefaultMcpUseCasePort),
+        );
+
+        let started = Instant::now();
+        let result = server
+            .execute_tool(
+                McpTool::RunAllTests,
+                (),
+                CancellationToken::new(),
+                move |_, _, _, ()| {
+                    std::thread::sleep(Duration::from_millis(40));
+                    Ok(String::from("ok"))
+                },
+            )
+            .await;
+
+        assert!(result.is_ok(), "standard tool should not time out");
+        assert!(started.elapsed() >= Duration::from_millis(40));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn standard_running_cancellation_returns_early_and_retains_capacity_until_worker_finishes(
+    ) {
+        let server =
+            McpStdioServer::with_port(Arc::new(test_config(1, 9)), Arc::new(DefaultMcpUseCasePort));
+        let active = Arc::new(AtomicUsize::new(0));
+        let max_active = Arc::new(AtomicUsize::new(0));
+        let cancellation = CancellationToken::new();
+
+        let first_server = server.clone();
+        let first_active = active.clone();
+        let first_max = max_active.clone();
+        let first_cancel = cancellation.clone();
+        let started = Instant::now();
+        let first = tokio::spawn(async move {
+            first_server
+                .execute_tool(
+                    McpTool::RunAllTests,
+                    (),
+                    first_cancel,
+                    move |_, _, _, ()| {
+                        let current = first_active.fetch_add(1, Ordering::SeqCst) + 1;
+                        first_max.fetch_max(current, Ordering::SeqCst);
+                        std::thread::sleep(Duration::from_millis(80));
+                        first_active.fetch_sub(1, Ordering::SeqCst);
+                        Ok(String::from("ok"))
+                    },
+                )
+                .await
+                .expect_err("running call must be cancelled")
+        });
+
+        tokio::time::sleep(Duration::from_millis(15)).await;
+        cancellation.cancel();
+        let error = first.await.expect("first task join");
+        assert!(started.elapsed() < Duration::from_millis(80));
+        assert_eq!(
+            error,
+            execution_error(ErrorReason::Cancelled, ExecutionStage::Running, None)
+        );
+
+        run_probe_call(
+            server,
+            McpTool::CheckSyntaxEdt,
+            active,
+            max_active.clone(),
+            CancellationToken::new(),
+        )
+        .await
+        .expect("second call");
+
+        assert_eq!(max_active.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

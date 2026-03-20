@@ -40,13 +40,13 @@ This keeps current CLI behavior intact while reserving a stable internal API for
 
 ## Configuration Surface
 
-The typed config model already reserves the MCP knobs needed by the upcoming transports:
+The typed config model now splits MCP knobs into already-wired stdio guardrails and future HTTP/session settings:
 
-- `mcp.http` defines listener/session defaults (`bind_address`, `path`, `stateful_sessions`, `max_sessions`, `idle_ttl_secs`).
-- `mcp.execution` defines runtime guardrails (`max_concurrent_calls`, `shutdown_grace_period_secs`).
-- `tools.edt_cli` now also carries `startup_timeout_ms` and `command_timeout_ms`, which are validated even before the interactive EDT executor exists.
+- `mcp.http` still defines listener/session defaults reserved for the future HTTP transport (`bind_address`, `path`, `stateful_sessions`, `max_sessions`, `idle_ttl_secs`).
+- `mcp.execution` already defines active stdio guardrails (`max_concurrent_calls`, `shutdown_grace_period_secs`).
+- `tools.edt_cli` now also carries `startup_timeout_ms` and `command_timeout_ms`; Stage 2 already uses `command_timeout_ms` as the bounded MCP deadline for `check_syntax_edt`, while `startup_timeout_ms` remains preparatory for the future interactive EDT executor.
 
-These settings are intentionally inert for now: Stage 1 only loads, validates, and documents them so later MCP stdio/HTTP work can wire them in without reshaping `AppConfig`.
+This keeps the config surface stable while letting Stage 2 stdio semantics ship without waiting for the later shared EDT actor.
 
 ## MCP Boundary
 
@@ -57,7 +57,9 @@ The MCP adapter no longer needs to talk to `cli::execute` or to reuse domain ser
 - `mcp::response` defines MCP-specific response DTOs, including nested step/test/issue structs that are decoupled from domain serialization details.
 - `mcp::error` splits failures into `McpBusinessFailure<T>` for structured tool responses and `McpInternalError` for adapter/runtime misuse that must not be surfaced as business payloads.
 - `mcp::tool_result` defines the structured transport payload returned by MCP tools for success vs business failure outcomes.
-- `mcp::server::McpStdioServer` is the live rmcp stdio adapter. It exposes tools-only capabilities, maps incoming `camelCase` params into MCP DTOs, calls the synchronous `McpService` via `tokio::task::spawn_blocking`, and converts business/internal outcomes into MCP tool results.
+- `mcp::server::McpStdioServer` is the live rmcp stdio adapter. It exposes tools-only capabilities, maps incoming `camelCase` params into MCP DTOs, gates every tool call through a global semaphore, calls the synchronous `McpService` via `tokio::task::spawn_blocking`, and converts business/internal outcomes into MCP tool results.
+- The stdio adapter now enforces an absolute deadline for bounded Stage 2 EDT syntax calls: queue wait and execution both consume the same `tools.edt_cli.command_timeout_ms` budget.
+- Client cancellation returns early for queued and running MCP requests, but already-started blocking work is detached rather than killed; the detached task retains the semaphore permit until it completes, so a hung one-shot subprocess can keep capacity occupied until shutdown.
 - MCP normalization is finalized in the service layer: dump-mode defaulting, launch alias mapping, `allExtensions` tri-state inference, and MCP-only pre-validation for syntax flag dependencies all live there instead of leaking into transport-neutral use cases.
 
 ## Backend Dispatch

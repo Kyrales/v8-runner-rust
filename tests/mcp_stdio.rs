@@ -3,11 +3,13 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::time::Duration;
 
 use assert_cmd::cargo::cargo_bin;
 use rmcp::{
-    model::CallToolRequestParams,
     model::ErrorCode,
+    model::{CallToolRequest, CallToolRequestParams, CancelledNotificationParam, ClientRequest},
+    service::PeerRequestOptions,
     transport::{ConfigureCommandExt, TokioChildProcess},
     ServiceError, ServiceExt,
 };
@@ -24,14 +26,63 @@ fn write_config(path: &Path, base_path: &Path, work_path: &Path, platform_path: 
     fs::write(path, config).expect("config");
 }
 
-fn write_edt_config(path: &Path, base_path: &Path, work_path: &Path, edt_path: &Path) {
+fn write_edt_config_with_options(
+    path: &Path,
+    base_path: &Path,
+    work_path: &Path,
+    edt_path: &Path,
+    command_timeout_ms: u64,
+    max_concurrent_calls: usize,
+) {
     let config = format!(
-        "basePath: '{}'\nworkPath: '{}'\nformat: EDT\nbuilder: DESIGNER\nconnection: 'File=/tmp/ib'\nsource-set:\n  - name: main\n    purpose: CONFIGURATION\n    path: main-edt\ntools:\n  edt_cli:\n    path: '{}'\n    command_timeout_ms: 20\n",
+        "basePath: '{}'\nworkPath: '{}'\nformat: EDT\nbuilder: DESIGNER\nconnection: 'File=/tmp/ib'\nsource-set:\n  - name: main\n    purpose: CONFIGURATION\n    path: main-edt\nmcp:\n  execution:\n    max_concurrent_calls: {}\ntools:\n  edt_cli:\n    path: '{}'\n    command_timeout_ms: {}\n",
         base_path.display(),
         work_path.display(),
+        max_concurrent_calls,
         edt_path.display(),
+        command_timeout_ms,
     );
     fs::write(path, config).expect("edt config");
+}
+
+fn write_designer_config_with_options(
+    path: &Path,
+    base_path: &Path,
+    work_path: &Path,
+    platform_path: &Path,
+    command_timeout_ms: u64,
+    max_concurrent_calls: usize,
+) {
+    let config = format!(
+        "basePath: '{}'\nworkPath: '{}'\nformat: DESIGNER\nbuilder: DESIGNER\nconnection: 'File=/tmp/ib'\nsource-set:\n  - name: main\n    purpose: CONFIGURATION\n    path: .\nmcp:\n  execution:\n    max_concurrent_calls: {}\ntools:\n  platform:\n    path: '{}'\n  edt_cli:\n    command_timeout_ms: {}\n",
+        base_path.display(),
+        work_path.display(),
+        max_concurrent_calls,
+        platform_path.display(),
+        command_timeout_ms,
+    );
+    fs::write(path, config).expect("designer config");
+}
+
+fn write_edt_config_with_platform(
+    path: &Path,
+    base_path: &Path,
+    work_path: &Path,
+    platform_path: &Path,
+    edt_path: &Path,
+    command_timeout_ms: u64,
+    max_concurrent_calls: usize,
+) {
+    let config = format!(
+        "basePath: '{}'\nworkPath: '{}'\nformat: EDT\nbuilder: DESIGNER\nconnection: 'File=/tmp/ib'\nsource-set:\n  - name: main\n    purpose: CONFIGURATION\n    path: main-edt\nmcp:\n  execution:\n    max_concurrent_calls: {}\ntools:\n  platform:\n    path: '{}'\n  edt_cli:\n    path: '{}'\n    command_timeout_ms: {}\n",
+        base_path.display(),
+        work_path.display(),
+        max_concurrent_calls,
+        platform_path.display(),
+        edt_path.display(),
+        command_timeout_ms,
+    );
+    fs::write(path, config).expect("hybrid edt config");
 }
 
 fn setup_project() -> (tempfile::TempDir, PathBuf) {
@@ -50,6 +101,14 @@ fn setup_project() -> (tempfile::TempDir, PathBuf) {
 }
 
 fn setup_edt_project() -> (tempfile::TempDir, PathBuf) {
+    setup_edt_project_with_options("sleep 1\nexit 0", 20, 1)
+}
+
+fn setup_edt_project_with_options(
+    script_body: &str,
+    command_timeout_ms: u64,
+    max_concurrent_calls: usize,
+) -> (tempfile::TempDir, PathBuf) {
     let dir = tempdir().expect("tempdir");
     let base_path = dir.path().join("project");
     let work_path = dir.path().join("work");
@@ -60,8 +119,73 @@ fn setup_edt_project() -> (tempfile::TempDir, PathBuf) {
     fs::create_dir_all(base_path.join("main-edt")).expect("main edt");
     fs::create_dir_all(&work_path).expect("work");
     fs::create_dir_all(&edt_dir).expect("edt dir");
-    write_script(&edt_path, "sleep 1\nexit 0");
-    write_edt_config(&config_path, &base_path, &work_path, &edt_path);
+    write_script(&edt_path, script_body);
+    write_edt_config_with_options(
+        &config_path,
+        &base_path,
+        &work_path,
+        &edt_path,
+        command_timeout_ms,
+        max_concurrent_calls,
+    );
+
+    (dir, config_path)
+}
+
+fn setup_designer_project_with_options(
+    script_body: &str,
+    command_timeout_ms: u64,
+    max_concurrent_calls: usize,
+) -> (tempfile::TempDir, PathBuf) {
+    let dir = tempdir().expect("tempdir");
+    let base_path = dir.path().join("project");
+    let work_path = dir.path().join("work");
+    let platform_dir = dir.path().join("platform");
+    let config_path = dir.path().join("application.yaml");
+
+    fs::create_dir_all(&base_path).expect("base");
+    fs::create_dir_all(&work_path).expect("work");
+    write_script(&platform_dir.join("bin").join("1cv8"), script_body);
+    write_designer_config_with_options(
+        &config_path,
+        &base_path,
+        &work_path,
+        &platform_dir,
+        command_timeout_ms,
+        max_concurrent_calls,
+    );
+
+    (dir, config_path)
+}
+
+fn setup_hybrid_edt_project_with_options(
+    edt_script_body: &str,
+    platform_script_body: &str,
+    command_timeout_ms: u64,
+    max_concurrent_calls: usize,
+) -> (tempfile::TempDir, PathBuf) {
+    let dir = tempdir().expect("tempdir");
+    let base_path = dir.path().join("project");
+    let work_path = dir.path().join("work");
+    let edt_dir = dir.path().join("edt");
+    let edt_path = edt_dir.join("1cedtcli");
+    let platform_dir = dir.path().join("platform");
+    let config_path = dir.path().join("application.yaml");
+
+    fs::create_dir_all(base_path.join("main-edt")).expect("main edt");
+    fs::create_dir_all(&work_path).expect("work");
+    fs::create_dir_all(&edt_dir).expect("edt dir");
+    write_script(&edt_path, edt_script_body);
+    write_script(&platform_dir.join("bin").join("1cv8"), platform_script_body);
+    write_edt_config_with_platform(
+        &config_path,
+        &base_path,
+        &work_path,
+        &platform_dir,
+        &edt_path,
+        command_timeout_ms,
+        max_concurrent_calls,
+    );
 
     (dir, config_path)
 }
@@ -82,6 +206,27 @@ fn write_script(path: &Path, body: &str) {
     }
     fs::write(path, format!("#!/bin/sh\n{body}\n")).expect("write script");
     make_executable(path);
+}
+
+fn read_invocation_count(path: &Path) -> usize {
+    fs::read_to_string(path)
+        .ok()
+        .map(|contents| contents.lines().count())
+        .unwrap_or(0)
+}
+
+async fn wait_for_invocation_count(path: &Path, expected: usize) {
+    for _ in 0..100 {
+        if read_invocation_count(path) >= expected {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    panic!(
+        "timed out waiting for {expected} invocation(s), current count={}",
+        read_invocation_count(path)
+    );
 }
 
 #[test]
@@ -228,6 +373,13 @@ async fn mcp_stdio_returns_transport_timeout_for_edt_syntax() {
         ServiceError::McpError(error_data) => {
             assert_eq!(error_data.code, ErrorCode::INTERNAL_ERROR);
             assert_eq!(
+                error_data
+                    .data
+                    .as_ref()
+                    .and_then(|data| data.get("timeoutMs")),
+                Some(&json!(20))
+            );
+            assert_eq!(
                 error_data.data.as_ref().and_then(|data| data.get("reason")),
                 Some(&json!("timeout"))
             );
@@ -238,6 +390,189 @@ async fn mcp_stdio_returns_transport_timeout_for_edt_syntax() {
         }
         other => panic!("expected MCP error, got {other:?}"),
     }
+
+    client.cancel().await.expect("cancel client");
+}
+
+#[tokio::test]
+async fn mcp_stdio_cancels_running_standard_tool_and_retains_capacity_until_detached_completion() {
+    let dir = tempdir().expect("tempdir");
+    let starts_log = dir.path().join("designer-starts.log");
+    let script_body = format!(
+        "printf 'start\\n' >> '{}'\nout=\"\"\nprev=\"\"\nfor arg in \"$@\"; do\n  if [ \"$prev\" = \"/Out\" ]; then out=\"$arg\"; fi\n  prev=\"$arg\"\ndone\nif [ -n \"$out\" ]; then printf '' > \"$out\"; fi\nsleep 1\nexit 0",
+        starts_log.display()
+    );
+    let (_project, config_path) = setup_designer_project_with_options(&script_body, 20, 1);
+    let transport = TokioChildProcess::new(
+        tokio::process::Command::new(cargo_bin("v8-test-runner")).configure(|cmd| {
+            cmd.arg("--config")
+                .arg(config_path.as_os_str())
+                .arg("mcp")
+                .arg("serve")
+                .arg("stdio");
+        }),
+    )
+    .expect("spawn stdio transport");
+
+    let client = ().serve(transport).await.expect("connect rmcp client");
+    let handle = client
+        .peer()
+        .send_cancellable_request(
+            ClientRequest::CallToolRequest(CallToolRequest::new(CallToolRequestParams::new(
+                "check_syntax_designer_config",
+            ))),
+            PeerRequestOptions::default(),
+        )
+        .await
+        .expect("send cancellable request");
+
+    wait_for_invocation_count(&starts_log, 1).await;
+    handle
+        .peer
+        .notify_cancelled(CancelledNotificationParam {
+            request_id: handle.id.clone(),
+            reason: Some(String::from("integration-test")),
+        })
+        .await
+        .expect("cancel request");
+
+    let error = handle
+        .await_response()
+        .await
+        .expect_err("cancelled call must return transport error");
+    match error {
+        ServiceError::Cancelled { reason } => {
+            assert_eq!(reason.as_deref(), Some("integration-test"));
+        }
+        other => panic!("expected cancelled request, got {other:?}"),
+    }
+
+    let follow_up = tokio::spawn({
+        let peer = client.peer().clone();
+        async move {
+            peer.call_tool(CallToolRequestParams::new("check_syntax_designer_config"))
+                .await
+        }
+    });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(read_invocation_count(&starts_log), 1);
+
+    follow_up
+        .await
+        .expect("follow-up task join")
+        .expect("capacity must recover after detached work finishes");
+    assert_eq!(read_invocation_count(&starts_log), 2);
+
+    client.cancel().await.expect("cancel client");
+}
+
+#[tokio::test]
+async fn mcp_stdio_queued_timeout_reports_full_payload_for_bounded_tool() {
+    let dir = tempdir().expect("tempdir");
+    let edt_starts_log = dir.path().join("edt-starts.log");
+    let launch_starts_log = dir.path().join("launch-starts.log");
+    let edt_script_body = format!(
+        "printf 'start\\n' >> '{}'\nsleep 1\nexit 0",
+        edt_starts_log.display()
+    );
+    let platform_script_body = format!(
+        "printf 'start\\n' >> '{}'\nsleep 1\nexit 0",
+        launch_starts_log.display()
+    );
+    let (_project, config_path) =
+        setup_hybrid_edt_project_with_options(&edt_script_body, &platform_script_body, 20, 1);
+    let transport = TokioChildProcess::new(
+        tokio::process::Command::new(cargo_bin("v8-test-runner")).configure(|cmd| {
+            cmd.arg("--config")
+                .arg(config_path.as_os_str())
+                .arg("mcp")
+                .arg("serve")
+                .arg("stdio");
+        }),
+    )
+    .expect("spawn stdio transport");
+
+    let client = ().serve(transport).await.expect("connect rmcp client");
+    let first = tokio::spawn({
+        let peer = client.peer().clone();
+        async move {
+            peer.call_tool(CallToolRequestParams::new("launch_app").with_arguments(
+                serde_json::from_value(json!({ "utilityType": "thick" })).expect("arguments"),
+            ))
+            .await
+        }
+    });
+
+    wait_for_invocation_count(&launch_starts_log, 1).await;
+    let error = client
+        .peer()
+        .call_tool(
+            CallToolRequestParams::new("check_syntax_edt").with_arguments(
+                serde_json::from_value(json!({ "projectName": "main" })).expect("arguments"),
+            ),
+        )
+        .await
+        .expect_err("queued bounded call must time out");
+
+    match error {
+        ServiceError::McpError(error_data) => {
+            assert_eq!(error_data.code, ErrorCode::INTERNAL_ERROR);
+            assert_eq!(
+                error_data.data.as_ref().and_then(|data| data.get("reason")),
+                Some(&json!("timeout"))
+            );
+            assert_eq!(
+                error_data.data.as_ref().and_then(|data| data.get("stage")),
+                Some(&json!("queued"))
+            );
+            assert_eq!(
+                error_data
+                    .data
+                    .as_ref()
+                    .and_then(|data| data.get("timeoutMs")),
+                Some(&json!(20))
+            );
+        }
+        other => panic!("expected MCP error, got {other:?}"),
+    }
+
+    let first_result = first.await.expect("first task join");
+    let launch_result = first_result.expect("first launch call");
+    assert_eq!(launch_result.is_error, Some(false));
+    assert_eq!(read_invocation_count(&edt_starts_log), 0);
+
+    client.cancel().await.expect("cancel client");
+}
+
+#[tokio::test]
+async fn mcp_stdio_standard_tools_do_not_inherit_edt_running_timeout() {
+    let (_dir, config_path) = setup_designer_project_with_options(
+        "out=\"\"\nprev=\"\"\nfor arg in \"$@\"; do\n  if [ \"$prev\" = \"/Out\" ]; then out=\"$arg\"; fi\n  prev=\"$arg\"\ndone\nif [ -n \"$out\" ]; then printf '' > \"$out\"; fi\nsleep 1\nexit 0",
+        20,
+        1,
+    );
+    let transport = TokioChildProcess::new(
+        tokio::process::Command::new(cargo_bin("v8-test-runner")).configure(|cmd| {
+            cmd.arg("--config")
+                .arg(config_path.as_os_str())
+                .arg("mcp")
+                .arg("serve")
+                .arg("stdio");
+        }),
+    )
+    .expect("spawn stdio transport");
+
+    let client = ().serve(transport).await.expect("connect rmcp client");
+    let response = client
+        .peer()
+        .call_tool(CallToolRequestParams::new("check_syntax_designer_config"))
+        .await
+        .expect("standard tool should not time out");
+
+    assert_eq!(response.is_error, Some(false));
+    let payload: Value = response.structured_content.expect("structured payload");
+    assert_eq!(payload["status"], "success");
+    assert_eq!(payload["error"], Value::Null);
 
     client.cancel().await.expect("cancel client");
 }

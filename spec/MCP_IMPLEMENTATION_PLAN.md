@@ -46,7 +46,12 @@
 - [x] 2026-03-20: Зафиксировать правило `stdout reserved for MCP`.
   - MCP stdio path инициализирует file-only action logging через `workPath/logs/mcp/actions.log`, не пишет tracing в `stdout` и ставит explicit panic hook в `stderr`.
   - Integration test на реальном stdio transport подтверждает, что initialize/tools-list/tool-call handshake проходит без загрязнения MCP stdout.
-- Добавить bounded execution через semaphore и per-call timeout/cancel semantics для MCP path.
+- [x] 2026-03-20: Добавить bounded execution через semaphore и per-call timeout/cancel semantics для MCP path.
+  - Все MCP tool calls теперь проходят через глобальный semaphore на базе `mcp.execution.max_concurrent_calls`; queued и running client cancellation возвращаются раньше завершения blocking job для всех tools.
+  - Для bounded Stage 2 call-ов дедлайн считается от момента входа запроса в MCP wrapper, поэтому queue wait и execution делят один budget; на этом этапе budget применяется только к `check_syntax_edt` через `tools.edt_cli.command_timeout_ms`.
+  - Transport error contract зафиксирован как `reason=cancelled|timeout`, `stage=queued|running`, `timeoutMs=null|<budget>`; ранний возврат не убивает уже стартовавший one-shot subprocess, а detached worker удерживает permit до фактического завершения.
+  - Для rmcp cancellable request handles клиентский API может завершаться локальным `Cancelled { reason }` после отправки `notifications/cancelled`; зафиксированная выше матрица описывает server-side transport payload.
+  - Добавлены unit и stdio integration tests на mixed-tool admission, queued/running timeout, running cancellation через rmcp cancellable request и regression, что обычные non-EDT tools не получают running timeout от EDT config knob.
 - На этом этапе EDT tools могут работать через текущий one-shot path, но уже через новый MCP adapter.
 
 ## Stage 3. Shared EDT Session For MCP
