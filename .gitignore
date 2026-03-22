@@ -26,3 +26,4 @@
 .DS_Store
 
 kotlin-example/
+*.pyc

@@ -55,6 +55,13 @@ tests:
 
 - `execution_timeout_seconds` controls the hard timeout for the Enterprise test run.
 
+## Test Execution
+
+- `bash scripts/test/ci-rust.sh` runs the current automated Rust baseline (`cargo test --locked`) and is the default local/CI entry point.
+- `bash scripts/test/live-cli.sh` runs live CLI smoke checks against a real 1C environment. Set `V8TR_REAL_CONFIG` explicitly before running it.
+- `python3 scripts/test/live-mcp-http.py` runs a live MCP HTTP smoke flow (`initialize`, `tools/list`, `build_project`, `check_syntax_edt`, `run_module_tests`) against the same real environment. Set `V8TR_REAL_CONFIG` explicitly before running it.
+- The detailed local/self-hosted CI matrix is documented in `spec/REAL_ENV_TEST_PLAN.md`.
+
 ## Internal Boundary
 
 The CLI now uses a transport-neutral use-case contract internally:
