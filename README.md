@@ -91,6 +91,7 @@ source-set:
 ## Карта документации
 
 - [docs/CAPABILITIES.md](docs/CAPABILITIES.md): пользовательский справочник по командам, MCP-инструментам, ключам конфига, матрицам и ограничениям.
+- [docs/CONFIGURATION.md](docs/CONFIGURATION.md): полный справочник по `application.yaml`, включая текущий статус `tools.edt_cli.*` и ограничения `launch`.
 - [docs/DEEP_DIVE.md](docs/DEEP_DIVE.md): более подробное описание того, как именно работает выполнение команд, где лежат артефакты и как устроен MCP-слой.
 - [examples/application.yaml](examples/application.yaml): полный пример конфига с опциональными секциями и значениями по умолчанию.
 - [ARCHITECTURE.md](ARCHITECTURE.md): карта модулей и внутренних границ для контрибьюторов.
