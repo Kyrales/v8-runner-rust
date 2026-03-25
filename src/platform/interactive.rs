@@ -41,18 +41,6 @@ impl InteractiveProcessRequest {
         self.args = args.into_iter().map(Into::into).collect();
         self
     }
-
-    /// Sets the working directory for the child process.
-    pub fn with_workdir(mut self, workdir: impl Into<PathBuf>) -> Self {
-        self.workdir = Some(workdir.into());
-        self
-    }
-
-    /// Overrides the prompt token.
-    pub fn with_prompt(mut self, prompt: impl Into<Vec<u8>>) -> Self {
-        self.prompt = prompt.into();
-        self
-    }
 }
 
 /// Output captured for one prompt-delimited interactive command.

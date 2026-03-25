@@ -42,10 +42,6 @@ impl SourceSetContext {
         &self.path
     }
 
-    pub fn storage_key(&self) -> &str {
-        &self.storage_key
-    }
-
     /// Absolute path to the redb hash-storage file for this context.
     pub fn storage_path(&self, work_path: &Path) -> PathBuf {
         work_path
@@ -65,7 +61,10 @@ mod tests {
             SourceSetContext::new("main", PathBuf::from("/tmp/src-main"), "designer-main");
         assert_eq!(context.name(), "main");
         assert_eq!(context.path(), PathBuf::from("/tmp/src-main").as_path());
-        assert_eq!(context.storage_key(), "designer-main");
+        assert_eq!(
+            context.storage_path(PathBuf::from("/tmp/work").as_path()),
+            PathBuf::from("/tmp/work/hash-storages/designer-main.redb")
+        );
     }
 
     #[test]
@@ -78,7 +77,10 @@ mod tests {
     fn accepts_safe_storage_key() {
         let context =
             SourceSetContext::new("main", PathBuf::from("/tmp/src-main"), "main-config_01");
-        assert_eq!(context.storage_key(), "main-config_01");
+        assert_eq!(
+            context.storage_path(PathBuf::from("/tmp/work").as_path()),
+            PathBuf::from("/tmp/work/hash-storages/main-config_01.redb")
+        );
     }
 
     #[test]

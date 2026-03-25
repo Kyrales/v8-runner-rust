@@ -136,7 +136,7 @@ fn run_build_designer(
                 .cloned()
                 .expect("every source-set must have an analysis result")
             {
-                Ok(AnalysisOutcome::NoChanges { .. }) => {
+                Ok(AnalysisOutcome::NoChanges) => {
                     info!(
                         source_set = source_set.name.as_str(),
                         found_changes = 0,
@@ -399,7 +399,7 @@ fn run_build_ibcmd(
                 .cloned()
                 .expect("every source-set must have an analysis result")
             {
-                Ok(AnalysisOutcome::NoChanges { .. }) => {
+                Ok(AnalysisOutcome::NoChanges) => {
                     info!(
                         source_set = source_set.name.as_str(),
                         found_changes = 0,
@@ -676,7 +676,7 @@ fn run_build_edt(
                 .cloned()
                 .expect("every source-set must have an EDT analysis result")
             {
-                Ok(AnalysisOutcome::NoChanges { .. }) => {
+                Ok(AnalysisOutcome::NoChanges) => {
                     info!(
                         source_set = source_set.name.as_str(),
                         found_changes = 0,

@@ -45,7 +45,6 @@ pub const COARSE_MARGIN_NS: u64 = 2_000_000_000;
 /// One discovered source file (metadata only, no hash).
 #[derive(Debug, Clone)]
 pub struct SeenFile {
-    pub path: PathBuf,
     pub rel_path: String,
     pub mtime_ns: u64,
 }
@@ -126,7 +125,6 @@ pub fn scan(
         })?;
         let rel_path = rel_path(root, path)?;
         let seen = SeenFile {
-            path: path.to_path_buf(),
             rel_path: rel_path.clone(),
             mtime_ns,
         };

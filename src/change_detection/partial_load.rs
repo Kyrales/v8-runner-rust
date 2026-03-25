@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use crate::change_detection::analyzer::{ChangeKind, FileChange};
 
 /// Default maximum number of changed files before forcing a full load.
+#[cfg(test)]
 pub const DEFAULT_PARTIAL_LOAD_THRESHOLD: usize = 20;
 
 /// The name of the root configuration descriptor — if changed, partial load is forbidden.
@@ -318,7 +319,6 @@ mod tests {
             &[FileChange {
                 path: module.clone(),
                 kind: ChangeKind::Modified,
-                new_hash: Some("hash".to_owned()),
             }],
             root,
             DEFAULT_PARTIAL_LOAD_THRESHOLD,
@@ -341,7 +341,6 @@ mod tests {
             &[FileChange {
                 path: config_xml,
                 kind: ChangeKind::Modified,
-                new_hash: Some("hash".to_owned()),
             }],
             root,
             DEFAULT_PARTIAL_LOAD_THRESHOLD,
@@ -360,7 +359,6 @@ mod tests {
             &[FileChange {
                 path: removed,
                 kind: ChangeKind::Deleted,
-                new_hash: None,
             }],
             root,
             DEFAULT_PARTIAL_LOAD_THRESHOLD,
@@ -382,7 +380,6 @@ mod tests {
             changes.push(FileChange {
                 path,
                 kind: ChangeKind::Modified,
-                new_hash: Some(format!("hash-{index}")),
             });
         }
 
@@ -410,7 +407,6 @@ mod tests {
             &[FileChange {
                 path: link_dir.join("ObjectModule.bsl"),
                 kind: ChangeKind::Modified,
-                new_hash: Some("hash".to_owned()),
             }],
             &root,
             DEFAULT_PARTIAL_LOAD_THRESHOLD,

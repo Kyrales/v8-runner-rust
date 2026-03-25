@@ -52,18 +52,12 @@ impl IbcmdConnection {
 #[derive(Debug, Clone, Copy)]
 pub enum DynamicUpdateMode {
     Auto,
-    Disable,
-    Prompt,
-    Force,
 }
 
 impl DynamicUpdateMode {
     fn as_str(self) -> &'static str {
         match self {
             DynamicUpdateMode::Auto => "auto",
-            DynamicUpdateMode::Disable => "disable",
-            DynamicUpdateMode::Prompt => "prompt",
-            DynamicUpdateMode::Force => "force",
         }
     }
 }

@@ -74,12 +74,6 @@ impl<'a> SourceSetsService<'a> {
             })
             .collect()
     }
-
-    /// Absolute path to the hash-storages directory.
-    pub fn storage_dir(&self) -> PathBuf {
-        self.config.work_path.join("hash-storages")
-    }
-
     /// Analyze all provided contexts and return context-tagged outcomes.
     pub fn analyze_contexts(&self, contexts: &[SourceSetContext]) -> Vec<ContextAnalysis> {
         analyzer::analyze_contexts(contexts, &self.config.work_path)

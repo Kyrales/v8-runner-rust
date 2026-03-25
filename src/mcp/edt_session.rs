@@ -117,11 +117,6 @@ pub struct EdtSessionManager {
 }
 
 impl EdtSessionManager {
-    /// Creates the production manager using existing MCP concurrency/shutdown settings.
-    pub fn for_config(config: &AppConfig) -> Result<Self, EdtSessionError> {
-        Self::for_config_with_telemetry(config, Arc::new(EdtTelemetry::default()))
-    }
-
     pub(crate) fn for_config_with_telemetry(
         config: &AppConfig,
         telemetry: Arc<EdtTelemetry>,
@@ -138,6 +133,7 @@ impl EdtSessionManager {
     }
 
     /// Submits one raw EDT command to the shared actor.
+    #[cfg(test)]
     pub async fn execute(
         &self,
         request: EdtSessionRequest,
@@ -276,6 +272,7 @@ impl EdtSessionManager {
     }
 
     /// Stops admission, drains queued work, and waits for the worker thread to exit.
+    #[cfg(test)]
     pub fn shutdown(&self) -> Result<(), EdtSessionShutdownError> {
         self.inner
             .begin_shutdown()
@@ -283,6 +280,7 @@ impl EdtSessionManager {
         self.inner.join_worker()
     }
 
+    #[cfg(test)]
     fn with_factory(
         factory: Arc<dyn SessionFactory>,
         queue_capacity: usize,

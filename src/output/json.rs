@@ -1,4 +1,3 @@
-use chrono::Utc;
 use serde::Serialize;
 
 use crate::domain::execution::StepResult;
@@ -35,8 +34,4 @@ impl<T: Serialize> Envelope<T> {
             steps: vec![],
         }
     }
-}
-
-pub fn now_ms() -> u64 {
-    Utc::now().timestamp_millis() as u64
 }

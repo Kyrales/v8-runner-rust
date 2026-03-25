@@ -12,7 +12,6 @@ use crate::domain::source_set::SourceSetContext;
 pub struct FileChange {
     pub path: PathBuf,
     pub kind: ChangeKind,
-    pub new_hash: Option<String>,
 }
 
 /// How a file changed relative to the stored state.
@@ -42,9 +41,7 @@ pub struct PreparedStateUpdate {
 /// Result of analyzing one source-set against its persisted snapshot.
 #[derive(Debug, Clone)]
 pub enum AnalysisOutcome {
-    NoChanges {
-        prepared: PreparedStateUpdate,
-    },
+    NoChanges,
     Changes {
         changes: Vec<FileChange>,
         prepared: PreparedStateUpdate,
@@ -132,13 +129,12 @@ pub fn analyze_context(context: &SourceSetContext, work_path: &Path) -> ContextA
             .map(|(rel, _)| FileChange {
                 path: context.path().join(rel),
                 kind: ChangeKind::Deleted,
-                new_hash: None,
             }),
     );
 
     let prepared = build_prepared_state(&scan, &snapshot.entries, snapshot.generation);
     let outcome = if changes.is_empty() {
-        AnalysisOutcome::NoChanges { prepared }
+        AnalysisOutcome::NoChanges
     } else {
         AnalysisOutcome::Changes { changes, prepared }
     };
@@ -223,7 +219,6 @@ fn detect_changes(
             Some(FileChange {
                 path: candidate.path.clone(),
                 kind,
-                new_hash: Some(candidate.hash.clone()),
             })
         })
         .collect()
@@ -404,7 +399,6 @@ mod tests {
         let changes = vec![FileChange {
             path: module,
             kind: ChangeKind::Modified,
-            new_hash: Some("abc".to_owned()),
         }];
         let decision = decide(
             &changes,

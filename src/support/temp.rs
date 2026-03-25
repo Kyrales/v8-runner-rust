@@ -2,14 +2,6 @@ use std::path::{Path, PathBuf};
 
 use tempfile::NamedTempFile;
 
-/// Create a named temporary file with given prefix and suffix.
-pub fn create_temp_file(prefix: &str, suffix: &str) -> std::io::Result<NamedTempFile> {
-    tempfile::Builder::new()
-        .prefix(prefix)
-        .suffix(suffix)
-        .tempfile()
-}
-
 /// Return the root temp directory inside `work_path`.
 pub fn temp_root(work_path: &Path) -> std::io::Result<PathBuf> {
     let dir = work_path.join("temp");
@@ -31,24 +23,9 @@ pub fn partial_lists_dir(work_path: &Path) -> std::io::Result<PathBuf> {
     Ok(dir)
 }
 
-/// Return the temp directory for YaXUnit config files inside `work_path`.
-pub fn yaxunit_dir(work_path: &Path) -> std::io::Result<PathBuf> {
-    let dir = temp_root(work_path)?.join("yaxunit");
-    std::fs::create_dir_all(&dir)?;
-    Ok(dir)
-}
-
 /// Return the reserved future EDT work directory for a source set.
 pub fn reserved_source_set_dir(work_path: &Path, source_set_name: &str) -> PathBuf {
     work_path.join("designer").join(source_set_name)
-}
-
-/// Create a temporary JSON file for a YaXUnit run config inside `work_path/temp/yaxunit`.
-pub fn yaxunit_config_file(work_path: &Path) -> std::io::Result<NamedTempFile> {
-    tempfile::Builder::new()
-        .prefix("yaxunit-config-")
-        .suffix(".json")
-        .tempfile_in(yaxunit_dir(work_path)?)
 }
 
 /// Create a temporary text file for a partial load list inside `work_path/temp/partial-lists`.
@@ -72,7 +49,7 @@ pub fn dump_object_list_file(work_path: &Path) -> std::io::Result<NamedTempFile>
 mod tests {
     use super::{
         dump_object_list_file, partial_list_file, partial_lists_dir, platform_logs_dir,
-        reserved_source_set_dir, yaxunit_config_file, yaxunit_dir,
+        reserved_source_set_dir,
     };
     use tempfile::tempdir;
 
@@ -81,11 +58,9 @@ mod tests {
         let dir = tempdir().expect("tempdir");
 
         let partial_dir = partial_lists_dir(dir.path()).expect("partial dir");
-        let yaxunit_dir = yaxunit_dir(dir.path()).expect("yaxunit dir");
         let logs_dir = platform_logs_dir(dir.path()).expect("logs dir");
 
         assert!(partial_dir.ends_with("temp/partial-lists"));
-        assert!(yaxunit_dir.ends_with("temp/yaxunit"));
         assert!(logs_dir.ends_with("logs/platform"));
     }
 
@@ -95,8 +70,6 @@ mod tests {
 
         let partial = partial_list_file(dir.path()).expect("partial file");
         let dump_partial = dump_object_list_file(dir.path()).expect("dump partial file");
-        let yaxunit = yaxunit_config_file(dir.path()).expect("yaxunit file");
-
         assert!(partial
             .path()
             .to_string_lossy()
@@ -105,7 +78,6 @@ mod tests {
             .path()
             .to_string_lossy()
             .contains("temp/partial-lists"));
-        assert!(yaxunit.path().to_string_lossy().contains("temp/yaxunit"));
     }
 
     #[test]

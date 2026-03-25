@@ -35,10 +35,6 @@ pub struct ProcessResult {
     pub stdout: String,
     /// Captured stderr as UTF-8 (lossy-decoded).
     pub stderr: String,
-    /// Path where stdout was mirrored by the runner, if requested.
-    pub stdout_log_path: Option<PathBuf>,
-    /// Path where stderr was mirrored by the runner, if requested.
-    pub stderr_log_path: Option<PathBuf>,
 }
 
 /// Result of a detached `spawn()` invocation.
@@ -187,8 +183,6 @@ impl ProcessExecutor {
             exit_code: output.status.code().unwrap_or(-1),
             stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
             stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-            stdout_log_path: request.stdout_log_path.clone(),
-            stderr_log_path: request.stderr_log_path.clone(),
         })
     }
 }

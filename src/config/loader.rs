@@ -19,12 +19,6 @@ pub enum ConfigLoadError {
     ValidationError(#[from] ConfigValidationError),
 }
 
-impl ConfigLoadError {
-    pub fn exit_code(&self) -> i32 {
-        crate::output::exit_codes::VALIDATION_ERROR
-    }
-}
-
 pub fn load_config(
     config_path: Option<&str>,
     workdir_override: Option<&str>,

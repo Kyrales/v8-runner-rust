@@ -15,7 +15,9 @@ use crate::platform::result::PlatformCommandResult;
 use crate::platform::utilities::PlatformUtilities;
 use crate::support::error::AppError;
 use crate::support::temp::platform_logs_dir;
-use crate::use_cases::context::{CommandName, ExecutionContext};
+#[cfg(test)]
+use crate::use_cases::context::CommandName;
+use crate::use_cases::context::ExecutionContext;
 use crate::use_cases::request::{
     DesignerConfigSyntaxRequest as DesignerConfigSyntaxArgs,
     DesignerModulesSyntaxRequest as DesignerModulesSyntaxArgs, SyntaxRequest as SyntaxArgs,
@@ -45,6 +47,12 @@ pub fn execute(
 
 type SyntaxExecutionFailure = UseCaseFailure<SyntaxCheckResult>;
 
+#[cfg(test)]
+fn run_syntax(config: &AppConfig, args: &SyntaxArgs) -> UseCaseResult<SyntaxCheckResult> {
+    let context = ExecutionContext::cli(CommandName::Syntax);
+    run_syntax_with_context(&context, config, args)
+}
+
 #[derive(Debug)]
 struct DesignerInvocation {
     kind: DesignerCommandKind,
@@ -64,11 +72,6 @@ impl DesignerCommandKind {
             Self::Modules => "designer-modules",
         }
     }
-}
-
-fn run_syntax(config: &AppConfig, args: &SyntaxArgs) -> UseCaseResult<SyntaxCheckResult> {
-    let context = ExecutionContext::cli(CommandName::Syntax);
-    run_syntax_with_context(&context, config, args)
 }
 
 fn run_syntax_with_context(

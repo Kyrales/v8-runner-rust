@@ -36,13 +36,6 @@ pub struct McpService<'a, P = DefaultMcpUseCasePort> {
     port: P,
 }
 
-impl<'a> McpService<'a, DefaultMcpUseCasePort> {
-    /// Creates an MCP service using the production use-case port.
-    pub fn new(config: &'a AppConfig) -> Self {
-        Self::with_port(config, DefaultMcpUseCasePort)
-    }
-}
-
 impl<'a, P> McpService<'a, P>
 where
     P: McpUseCasePort,
@@ -266,6 +259,7 @@ where
     }
 
     /// Executes the `check_syntax_edt` MCP tool.
+    #[cfg(test)]
     pub fn check_syntax_edt(
         &self,
         call_context: McpCallContext,

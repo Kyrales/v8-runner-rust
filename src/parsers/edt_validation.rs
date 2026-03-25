@@ -1,3 +1,4 @@
+#[cfg(test)]
 use std::path::Path;
 
 use tracing::warn;
@@ -37,6 +38,7 @@ pub fn parse(content: &str) -> Vec<Issue> {
     issues
 }
 
+#[cfg(test)]
 pub fn parse_path(path: &Path) -> std::io::Result<Vec<Issue>> {
     if !path.exists() {
         return Ok(vec![]);

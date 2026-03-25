@@ -376,8 +376,6 @@ mod tests {
                 exit_code: 0,
                 stdout: String::new(),
                 stderr: String::new(),
-                stdout_log_path: None,
-                stderr_log_path: None,
             })
         }
 

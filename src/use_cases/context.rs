@@ -60,11 +60,13 @@ impl ExecutionContext {
     }
 
     /// Creates an MCP stdio execution context for the specified command.
+    #[cfg(test)]
     pub const fn mcp_stdio(command: CommandName) -> Self {
         Self::new(command, ExecutionTransport::McpStdio)
     }
 
     /// Creates an MCP HTTP execution context for the specified command.
+    #[cfg(test)]
     pub const fn mcp_http(command: CommandName) -> Self {
         Self::new(command, ExecutionTransport::McpHttp)
     }
