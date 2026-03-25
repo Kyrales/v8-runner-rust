@@ -21,6 +21,7 @@ fn use_cases_do_not_depend_on_cli_or_output_types() {
         root.join("build_project.rs"),
         root.join("check_syntax.rs"),
         root.join("dump_config.rs"),
+        root.join("init_project.rs"),
         root.join("launch_app.rs"),
         root.join("run_tests.rs"),
     ];

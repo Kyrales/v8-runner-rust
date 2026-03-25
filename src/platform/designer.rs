@@ -92,6 +92,16 @@ impl<'a> DesignerDsl<'a> {
         self.run(&args)
     }
 
+    /// `CREATEINFOBASE <connection-string>`
+    pub fn create_infobase(&self) -> Result<PlatformCommandResult, DesignerError> {
+        let mut args = vec!["CREATEINFOBASE".to_owned()];
+        let connection = self.connection.create_infobase_arg().ok_or_else(|| {
+            DesignerError::UtilityNotFound("file-based connection is required".to_owned())
+        })?;
+        args.push(connection);
+        self.run(&args)
+    }
+
     /// `/DumpConfigToFiles <dir> [-Extension <name>] -updateConfigDumpInfo`
     pub fn dump_config_to_files(
         &self,
@@ -366,5 +376,30 @@ mod tests {
         assert!(args.contains("-updateConfigDumpInfo"));
         assert!(args.contains("-Extension"));
         assert!(args.contains("ExtName"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn create_infobase_builds_expected_args() {
+        let dir = tempdir().expect("tempdir");
+        let script = dir.path().join("1cv8");
+        let args_log = dir.path().join("args.log");
+        write_script(
+            &script,
+            &format!("printf '%s\n' \"$@\" > \"{}\"\nexit 0", args_log.display()),
+        );
+        let runner = ProcessExecutor;
+        let dsl = DesignerDsl::new(
+            script,
+            V8Connection::from_connection_string("File=/tmp/my ib"),
+            &runner as &dyn ProcessRunner,
+            None,
+        );
+
+        dsl.create_infobase().expect("create infobase");
+
+        let args = fs::read_to_string(args_log).expect("args log");
+        assert!(args.contains("CREATEINFOBASE"));
+        assert!(args.contains("File='/tmp/my ib'"));
     }
 }

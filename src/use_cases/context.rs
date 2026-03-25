@@ -3,6 +3,7 @@ use std::time::Duration;
 /// Identifies the logical command being executed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CommandName {
+    Init,
     Build,
     Test,
     Dump,
@@ -14,6 +15,7 @@ impl CommandName {
     /// Returns the stable command label used in logs and CLI envelopes.
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::Init => "init",
             Self::Build => "build",
             Self::Test => "test",
             Self::Dump => "dump",

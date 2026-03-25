@@ -102,6 +102,12 @@ impl<'a> IbcmdDsl<'a> {
         self.run(&args)
     }
 
+    pub fn infobase_create(&self) -> Result<PlatformCommandResult, IbcmdError> {
+        let mut args = vec!["infobase".to_owned(), "create".to_owned()];
+        args.extend(self.base_args());
+        self.run(&args)
+    }
+
     pub fn config_import_partial(
         &self,
         base_dir: &Path,
@@ -431,5 +437,29 @@ mod tests {
         assert!(result.platform_log_path.is_none());
         assert!(result.platform_log.is_none());
         assert!(result.platform_log_read_error.is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn infobase_create_builds_expected_args() {
+        let dir = tempdir().expect("tempdir");
+        let script = dir.path().join("ibcmd");
+        let args_log = dir.path().join("args.log");
+        write_script(
+            &script,
+            &format!("printf '%s\\n' \"$@\" > \"{}\"\nexit 0", args_log.display()),
+        );
+        let runner = ProcessExecutor;
+        let conn =
+            IbcmdConnection::from_v8_connection(&V8Connection::from_connection_string("File=/ib"))
+                .expect("connection");
+        let dsl = IbcmdDsl::new(script, conn, &runner as &dyn ProcessRunner);
+
+        dsl.infobase_create().expect("create");
+
+        let args = fs::read_to_string(args_log).expect("args");
+        assert!(args.contains("infobase"));
+        assert!(args.contains("create"));
+        assert!(args.contains("--database-path=/ib"));
     }
 }

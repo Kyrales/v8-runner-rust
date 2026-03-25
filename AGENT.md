@@ -27,12 +27,12 @@ Hard limits:
 
 ## After each implementation stage:
 
-1. **Review** — run `/rust-expert-best-practices-code-review` skill on changed code before committing
-2. **Compile check** — each stage must produce compilable code (`cargo check` must pass)
-3. **Mark progress** — update task status in the task list (in_progress → completed)
-4. **Update docs** — update the active task list (`spec/IMPLEMENTATION_TODO.md` by default, and `spec/MCP_IMPLEMENTATION_PLAN.md` only when explicitly maintaining the closed MCP rollout history/reference), and add/update doc comments (`///`) on all public types, functions, and modules introduced in the stage
-5. **Update architecture** — if new modules or significant components are added, update `ARCHITECTURE.md` to reflect the current structure
-6. **Commit** — create a git commit with a clear message describing the stage
+  1. **Review** — run `/rust-expert-best-practices-code-review` skill on changed code before committing
+1. **Compile check** — each stage must produce compilable code (`cargo check` must pass)
+2. **Mark progress** — update task status in the task list (in_progress → completed)
+3. **Update docs** — update the active task list (`spec/IMPLEMENTATION_TODO.md` by default, and `spec/MCP_IMPLEMENTATION_PLAN.md` only when explicitly maintaining the closed MCP rollout history/reference), and add/update doc comments (`///`) on all public types, functions, and modules introduced in the stage
+4. **Update architecture** — if new modules or significant components are added, update `ARCHITECTURE.md` to reflect the current structure
+5. **Commit** — create a git commit with a clear message describing the stage
 
 ## Stage definition
 

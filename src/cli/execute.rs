@@ -7,6 +7,7 @@ use crate::cli::args::{
 use crate::config::model::AppConfig;
 use crate::domain::build::{BuildMode, BuildResult};
 use crate::domain::dump::{DumpMode, DumpResult};
+use crate::domain::init::{InitResult, InitStepStatus};
 use crate::domain::issue::{Issue, IssueSeverity};
 use crate::domain::syntax::{SyntaxCheckResult, SyntaxCheckStatus};
 use crate::domain::test::{TestRunResult, TestStatus, TestTarget};
@@ -16,11 +17,12 @@ use crate::use_cases::build_project;
 use crate::use_cases::check_syntax;
 use crate::use_cases::context::{CommandName, ExecutionContext};
 use crate::use_cases::dump_config;
+use crate::use_cases::init_project;
 use crate::use_cases::launch_app;
 use crate::use_cases::request::{
     BuildRequest, DesignerConfigSyntaxRequest, DesignerModulesSyntaxRequest, DumpModeRequest,
-    DumpRequest, LaunchModeRequest, LaunchRequest, SyntaxRequest, SyntaxTargetRequest, TestRequest,
-    TestScopeRequest,
+    DumpRequest, InitRequest, LaunchModeRequest, LaunchRequest, SyntaxRequest, SyntaxTargetRequest,
+    TestRequest, TestScopeRequest,
 };
 use crate::use_cases::result::{UseCaseError, UseCaseErrorKind};
 use crate::use_cases::run_tests;
@@ -33,6 +35,7 @@ pub fn execute_command(
     presenter: &Presenter,
 ) -> Result<(), UseCaseError> {
     match command {
+        Command::Init => execute_init(config, presenter),
         Command::Build(args) => execute_build(config, args, presenter),
         Command::Test(args) => execute_test(config, args, presenter),
         Command::Dump(args) => execute_dump(config, args, presenter),
@@ -45,12 +48,50 @@ pub fn execute_command(
 /// Returns the canonical command identifier for a parsed CLI command.
 pub fn command_name(command: &Command) -> CommandName {
     match command {
+        Command::Init => CommandName::Init,
         Command::Build(_) => CommandName::Build,
         Command::Test(_) => CommandName::Test,
         Command::Dump(_) => CommandName::Dump,
         Command::Syntax(_) => CommandName::Syntax,
         Command::Launch(_) => CommandName::Launch,
         Command::Mcp(_) => unreachable!("mcp commands do not map to CLI command names"),
+    }
+}
+
+fn execute_init(config: &AppConfig, presenter: &Presenter) -> Result<(), UseCaseError> {
+    let request = InitRequest;
+    let context = ExecutionContext::cli(CommandName::Init);
+    match init_project::execute(&context, config, &request) {
+        Ok(result) => {
+            if presenter.is_json() {
+                presenter.print_envelope(&Envelope::ok(
+                    CommandName::Init.as_str(),
+                    result.duration_ms,
+                    result,
+                ));
+            } else {
+                render_init_text(&result, presenter);
+            }
+            Ok(())
+        }
+        Err(failure) => {
+            let error = failure.error;
+            if presenter.is_json() {
+                if let Some(result) = failure.payload {
+                    presenter.print_envelope(&Envelope::err(
+                        CommandName::Init.as_str(),
+                        result.duration_ms,
+                        result,
+                    ));
+                }
+            } else {
+                if let Some(result) = failure.payload.as_ref() {
+                    render_init_text(result, presenter);
+                }
+                presenter.print_error(&error.to_string());
+            }
+            Err(error)
+        }
     }
 }
 
@@ -406,6 +447,27 @@ fn render_build_text(result: &BuildResult, presenter: &Presenter, succeeded: boo
     }
 }
 
+fn render_init_text(result: &InitResult, presenter: &Presenter) {
+    for step in &result.steps {
+        presenter.print_info(&format!(
+            "{}: {} - {}",
+            step.target,
+            step.action,
+            step.message.as_deref().unwrap_or("ok")
+        ));
+    }
+
+    if result
+        .steps
+        .iter()
+        .all(|step| matches!(step.status, InitStepStatus::Ok | InitStepStatus::Skipped))
+    {
+        presenter.print_ok("Init completed successfully");
+    } else {
+        presenter.print_info("Init failed");
+    }
+}
+
 fn render_dump_text(result: &DumpResult, presenter: &Presenter, succeeded: bool) {
     let mode = match result.mode {
         DumpMode::Full => "full",
@@ -713,6 +775,7 @@ mod tests {
 
     #[test]
     fn resolves_command_name() {
+        assert_eq!(command_name(&Command::Init), CommandName::Init);
         assert_eq!(
             command_name(&Command::Build(BuildArgs {
                 full_rebuild: false

@@ -124,3 +124,7 @@ pub struct LaunchRequest {
     /// Requested launch target.
     pub mode: LaunchModeRequest,
 }
+
+/// Transport-neutral request for the `init` use case.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct InitRequest;

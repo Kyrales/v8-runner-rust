@@ -59,6 +59,12 @@ impl V8Connection {
             }
         })
     }
+
+    /// Returns a stable file-based infobase connection string when available.
+    pub fn create_infobase_arg(&self) -> Option<String> {
+        self.file_path()
+            .map(|path| format!("File='{}'", path.replace('\'', "''")))
+    }
 }
 
 fn file_path_from_args(args: &[String]) -> Option<&str> {

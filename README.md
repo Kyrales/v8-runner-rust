@@ -11,7 +11,7 @@
 
 ## Зачем использовать
 
-- Один инструмент для `build`, `test`, `dump`, `syntax`, `launch` и доступа по MCP.
+- Один инструмент для `init`, `build`, `test`, `dump`, `syntax`, `launch` и доступа по MCP.
 - Инкрементальные сценарии вместо полной пересборки на каждое изменение.
 - Удобная работа и с основной конфигурацией, и с расширениями.
 - Структурированные результаты, понятные и человеку, и MCP-клиенту.
@@ -20,6 +20,7 @@
 ## Что умеет
 
 - `build`: загружать изменённые исходники в ИБ, выбирая частичное или полное выполнение в зависимости от формата исходников и бэкенда.
+- `init`: первично создавать файловую ИБ и, для EDT-проектов, инициализировать workspace импортом всех настроенных `source-set`.
 - `test`: сначала выполнять `build`, затем запускать все YaXUnit-тесты или один модуль.
 - `dump`: выгружать состояние конфигурации или расширения обратно в файлы в режимах `full`, `incremental` и `partial`.
 - `syntax`: запускать проверки через Designer для Designer-исходников и `1cedtcli validate` для EDT-проектов.
@@ -53,6 +54,7 @@ source-set:
 
 ```bash
 ./target/release/v8-test-runner --config ./application.yaml build
+./target/release/v8-test-runner --config ./application.yaml init
 ./target/release/v8-test-runner --config ./application.yaml test all
 ./target/release/v8-test-runner --config ./application.yaml mcp serve stdio
 ```
@@ -63,6 +65,7 @@ source-set:
 
 | Сценарий | Текущая поддержка |
 | --- | --- |
+| `init` | `format=DESIGNER` с `builder=DESIGNER` или `IBCMD`; `format=EDT` с `builder=DESIGNER` |
 | `build` | `format=DESIGNER` с `builder=DESIGNER` или `IBCMD`; `format=EDT` с `builder=DESIGNER` |
 | `test` | Следует матрице `build` и всегда сначала запускает `build` |
 | `dump` | `format=DESIGNER` с `builder=DESIGNER` или `IBCMD` |
@@ -96,6 +99,8 @@ source-set:
 <summary>Текущие ограничения и оговорки</summary>
 
 - `IBCMD` требует файловое подключение к информационной базе.
+- `init` считает файловую ИБ существующей только по наличию файла `1Cv8.1CD` в каталоге базы и не валидирует содержимое глубже.
+- `init` для EDT считает workspace завершённым только после успешного полного импорта; незавершённый каталог без внутреннего marker-файла будет импортирован повторно.
 - Точечная частичная выгрузка по объектам нативно не реализована для `IBCMD`; запрос `partial` деградирует в инкрементальную выгрузку с предупреждением.
 - `syntax designer-modules` требует как минимум один флаг режима.
 - Общая интерактивная EDT-сессия сейчас используется для MCP-вызовов `check_syntax_edt`; более широкая поддержка EDT пока уже, чем остальная MCP-поверхность.

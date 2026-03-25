@@ -34,6 +34,8 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub enum Command {
+    /// Initialize infobase and EDT workspace
+    Init,
     /// Load sources into infobase
     Build(BuildArgs),
     /// Run YaXUnit tests
@@ -256,6 +258,12 @@ mod tests {
         ]);
 
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn parses_init_command() {
+        let cli = Cli::try_parse_from(["v8-test-runner", "init"]).expect("parse");
+        assert!(matches!(cli.command, Command::Init));
     }
 
     #[test]

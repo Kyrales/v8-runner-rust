@@ -66,6 +66,12 @@ impl<'a> EdtDsl<'a> {
         self.run(&args, Some(out_log))
     }
 
+    /// `-command import --project <source>`
+    pub fn import_project(&self, source: &Path) -> Result<PlatformCommandResult, EdtError> {
+        let args = process_arguments(&self.workspace, &import_command_arguments(source));
+        self.run(&args, None)
+    }
+
     fn run(
         &self,
         args: &[String],
@@ -161,6 +167,14 @@ fn validate_command_arguments(source: &Path, out_log: &Path) -> Vec<String> {
         "--file".to_owned(),
         out_log.display().to_string(),
         "--project-list".to_owned(),
+        source.display().to_string(),
+    ]
+}
+
+fn import_command_arguments(source: &Path) -> Vec<String> {
+    vec![
+        "import".to_owned(),
+        "--project".to_owned(),
         source.display().to_string(),
     ]
 }
@@ -323,6 +337,32 @@ mod tests {
 
         assert_eq!(result.process.exit_code, 0);
         assert!(workspace.is_dir());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn import_project_passes_expected_arguments() {
+        let dir = tempdir().expect("tempdir");
+        let script = dir.path().join("1cedtcli");
+        let args_log = dir.path().join("args.log");
+        write_script(
+            &script,
+            &format!("printf '%s\n' \"$@\" > \"{}\"\nexit 0", args_log.display()),
+        );
+
+        let runner = ProcessExecutor;
+        let dsl = EdtDsl::new(script, dir.path().join("ws"), &runner as &dyn ProcessRunner);
+
+        let result = dsl
+            .import_project(Path::new("/tmp/project"))
+            .expect("import project");
+
+        assert_eq!(result.process.exit_code, 0);
+        let args = fs::read_to_string(args_log).expect("args log");
+        assert!(args.contains("-command"));
+        assert!(args.contains("import"));
+        assert!(args.contains("--project"));
+        assert!(args.contains("/tmp/project"));
     }
 
     #[derive(Default)]

@@ -858,11 +858,15 @@ mod tests {
         startup_timeout: Duration,
         stream: &str,
     ) -> InteractiveProcessExecutor {
-        spawn_executor_with_wrapper(script, startup_timeout, &format!(
-            "STARTUP_PROMPT_STREAM='{}' exec '{}'\n",
-            stream,
-            script.display()
-        ))
+        spawn_executor_with_wrapper(
+            script,
+            startup_timeout,
+            &format!(
+                "STARTUP_PROMPT_STREAM='{}' exec '{}'\n",
+                stream,
+                script.display()
+            ),
+        )
     }
 
     #[cfg(unix)]
@@ -871,11 +875,15 @@ mod tests {
         startup_timeout: Duration,
         prompt_suffix: &str,
     ) -> InteractiveProcessExecutor {
-        spawn_executor_with_wrapper(script, startup_timeout, &format!(
-            "PROMPT_SUFFIX='{}' exec '{}'\n",
-            prompt_suffix,
-            script.display()
-        ))
+        spawn_executor_with_wrapper(
+            script,
+            startup_timeout,
+            &format!(
+                "PROMPT_SUFFIX='{}' exec '{}'\n",
+                prompt_suffix,
+                script.display()
+            ),
+        )
     }
 
     #[cfg(unix)]

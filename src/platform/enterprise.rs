@@ -83,7 +83,10 @@ impl<'a> EnterpriseDsl<'a> {
         let mut args = vec!["ENTERPRISE".to_owned()];
         args.extend(self.connection.args());
         args.push("/C".to_owned());
-        args.push(format!("RunUnitTests={}", normalize_c_payload_path(config_path)));
+        args.push(format!(
+            "RunUnitTests={}",
+            normalize_c_payload_path(config_path)
+        ));
         args.push("/Out".to_owned());
         args.push(self.log_file.display().to_string());
         args

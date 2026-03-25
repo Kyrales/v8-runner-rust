@@ -6,6 +6,8 @@ pub mod check_syntax;
 pub mod context;
 /// Dump orchestration use case.
 pub mod dump_config;
+/// Init orchestration use case.
+pub mod init_project;
 /// Launch orchestration use case.
 pub mod launch_app;
 /// Transport-neutral request DTOs consumed by use cases.

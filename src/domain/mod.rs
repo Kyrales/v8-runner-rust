@@ -4,6 +4,8 @@ pub mod build;
 pub mod dump;
 /// Shared execution result models.
 pub mod execution;
+/// Init domain models.
+pub mod init;
 /// Structured issue models.
 pub mod issue;
 /// Launch domain models.
