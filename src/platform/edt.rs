@@ -96,16 +96,16 @@ impl<'a> EdtDsl<'a> {
         self
     }
 
-    /// `-command export --project-name <source_name> --configuration-files <target>`
+    /// `-command export --project-name <project_name> --configuration-files <target>`
     pub fn export_project(
         &self,
-        source: &Path,
+        project_name: &str,
         target: &Path,
     ) -> Result<PlatformCommandResult, EdtError> {
-        let command_arguments = export_command_arguments(source, target);
+        let command_arguments = export_command_arguments(project_name, target);
         self.run(
             &process_arguments(&self.workspace, &command_arguments),
-            &render_interactive_export_command(source, target),
+            &render_interactive_export_command(project_name, target),
             None,
         )
     }
@@ -274,8 +274,8 @@ pub(crate) fn render_interactive_validate_command(source: &Path, out_log: &Path)
 }
 
 /// Renders an interactive `export` command.
-pub(crate) fn render_interactive_export_command(source: &Path, target: &Path) -> String {
-    render_interactive_command(&export_command_arguments(source, target))
+pub(crate) fn render_interactive_export_command(project_name: &str, target: &Path) -> String {
+    render_interactive_command(&export_command_arguments(project_name, target))
 }
 
 /// Renders an interactive `import` command.
@@ -329,11 +329,7 @@ fn output_indicates_interactive_command_error(stdout: &str, stderr: &str) -> boo
     stdout.contains(INTERACTIVE_EDT_ERROR_MARKER) || stderr.contains(INTERACTIVE_EDT_ERROR_MARKER)
 }
 
-fn export_command_arguments(source: &Path, target: &Path) -> Vec<String> {
-    let project_name = source
-        .file_name()
-        .and_then(|value| value.to_str())
-        .unwrap_or_else(|| source.as_os_str().to_str().unwrap_or_default());
+fn export_command_arguments(project_name: &str, target: &Path) -> Vec<String> {
     vec![
         "export".to_owned(),
         "--project-name".to_owned(),
@@ -430,7 +426,7 @@ mod tests {
         let dsl = EdtDsl::new(script, dir.path().join("ws"), &runner as &dyn ProcessRunner);
 
         let result = dsl
-            .export_project(Path::new("/tmp/project"), Path::new("/tmp/out"))
+            .export_project("project", Path::new("/tmp/out"))
             .expect("export project");
 
         assert_eq!(result.process.exit_code, 0);
@@ -514,7 +510,7 @@ mod tests {
         let runner = ProcessExecutor;
         let dsl = EdtDsl::new(script, workspace.clone(), &runner as &dyn ProcessRunner);
         let result = dsl
-            .export_project(Path::new("/tmp/project"), Path::new("/tmp/out"))
+            .export_project("project", Path::new("/tmp/out"))
             .expect("export project");
 
         assert_eq!(result.process.exit_code, 0);
@@ -658,7 +654,7 @@ mod tests {
         )
         .expect("interactive dsl");
 
-        dsl.export_project(Path::new("/tmp/project"), Path::new("/tmp/out"))
+        dsl.export_project("project", Path::new("/tmp/out"))
             .expect("export");
         dsl.import_project(Path::new("/tmp/project"))
             .expect("import");
@@ -713,7 +709,7 @@ OUT\n\
         .expect("interactive dsl");
 
         let result = dsl
-            .export_project(Path::new("/tmp/project"), Path::new("/tmp/out"))
+            .export_project("project", Path::new("/tmp/out"))
             .expect("export result");
 
         assert_eq!(result.process.exit_code, 1);

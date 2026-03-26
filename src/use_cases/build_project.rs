@@ -958,6 +958,7 @@ fn execute_edt_export_step(
     designer_context: &SourceSetContext,
 ) -> Result<(), AppError> {
     let export_target = reserved_source_set_dir(&config.work_path, &source_set.name);
+    let project_name = resolve_edt_project_name(source_set, edt_context);
     recreate_directory(&export_target).map_err(|error| {
         AppError::Runtime(format!(
             "failed to prepare EDT export directory '{}': {error}",
@@ -965,9 +966,27 @@ fn execute_edt_export_step(
         ))
     })?;
     let export_result = dsl
-        .export_project(edt_context.path(), designer_context.path())
+        .export_project(&project_name, designer_context.path())
         .map_err(|error| AppError::Platform(error.to_string()))?;
     ensure_platform_success("edt_export", source_set, &export_result)
+}
+
+fn resolve_edt_project_name(source_set: &SourceSetConfig, edt_context: &SourceSetContext) -> String {
+    let project_file = edt_context.path().join(".project");
+    std::fs::read_to_string(&project_file)
+        .ok()
+        .and_then(|contents| extract_xml_tag_text(&contents, "name"))
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| source_set.name.clone())
+}
+
+fn extract_xml_tag_text(contents: &str, tag_name: &str) -> Option<String> {
+    let open_tag = format!("<{tag_name}>");
+    let close_tag = format!("</{tag_name}>");
+    let start = contents.find(&open_tag)? + open_tag.len();
+    let rest = &contents[start..];
+    let end = rest.find(&close_tag)?;
+    Some(rest[..end].trim().to_owned())
 }
 
 fn recreate_directory(path: &Path) -> std::io::Result<()> {
@@ -1713,6 +1732,103 @@ mod tests {
                 .as_str()
         ));
         assert_eq!(edt_storage_generation(&config, "main"), 2);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn edt_build_prefers_project_name_from_dot_project_file() {
+        let dir = tempdir().expect("tempdir");
+        let base = dir.path().join("base");
+        let work = dir.path().join("work");
+        let platform_script = dir.path().join("platform").join("bin").join("1cv8");
+        let edt_script = dir.path().join("edt").join("1cedtcli");
+        let designer_calls = dir.path().join("designer-calls.log");
+        let edt_calls = dir.path().join("edt-calls.log");
+        create_source_tree(&base);
+        fs::create_dir_all(base.join("exts").join("client-mcp")).expect("ext dir");
+        fs::write(
+            base.join("exts").join("client-mcp").join(".project"),
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<projectDescription>\n  <name>client_mcp</name>\n</projectDescription>\n",
+        )
+        .expect("write .project");
+        fs::write(
+            base.join("exts").join("client-mcp").join("Module.bsl"),
+            "procedure Test()\n  // changed ext\nendprocedure",
+        )
+        .expect("write ext");
+        write_designer_script(&platform_script, &designer_calls, None);
+        write_edt_script(&edt_script, &edt_calls, None);
+
+        let mut config = build_edt_config(&base, &work, &dir.path().join("platform"), &edt_script);
+        config.source_sets = vec![SourceSetConfig {
+            name: "client_mcp".to_owned(),
+            purpose: SourceSetPurpose::Extension,
+            path: PathBuf::from("exts/client-mcp"),
+        }];
+        prime_edt_snapshots(&config);
+        fs::write(
+            base.join("exts").join("client-mcp").join("Module.bsl"),
+            "procedure Test()\n  // changed after snapshot\nendprocedure",
+        )
+        .expect("modify ext");
+
+        let result = run_build(
+            &config,
+            &BuildArgs {
+                full_rebuild: false,
+            },
+        )
+        .expect("build");
+        let edt_calls_text = fs::read_to_string(&edt_calls).expect("edt calls");
+
+        assert!(result.ok);
+        assert!(edt_calls_text.contains("export --project-name client_mcp"));
+        assert!(!edt_calls_text.contains("export --project-name client-mcp"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn edt_build_falls_back_to_source_set_name_when_dot_project_is_missing() {
+        let dir = tempdir().expect("tempdir");
+        let base = dir.path().join("base");
+        let work = dir.path().join("work");
+        let platform_script = dir.path().join("platform").join("bin").join("1cv8");
+        let edt_script = dir.path().join("edt").join("1cedtcli");
+        let designer_calls = dir.path().join("designer-calls.log");
+        let edt_calls = dir.path().join("edt-calls.log");
+        fs::create_dir_all(base.join("exts").join("client-mcp")).expect("ext dir");
+        fs::write(
+            base.join("exts").join("client-mcp").join("Module.bsl"),
+            "procedure Test()\n  // changed ext\nendprocedure",
+        )
+        .expect("write ext");
+        write_designer_script(&platform_script, &designer_calls, None);
+        write_edt_script(&edt_script, &edt_calls, None);
+
+        let mut config = build_edt_config(&base, &work, &dir.path().join("platform"), &edt_script);
+        config.source_sets = vec![SourceSetConfig {
+            name: "client_mcp".to_owned(),
+            purpose: SourceSetPurpose::Extension,
+            path: PathBuf::from("exts/client-mcp"),
+        }];
+        prime_edt_snapshots(&config);
+        fs::write(
+            base.join("exts").join("client-mcp").join("Module.bsl"),
+            "procedure Test()\n  // changed after snapshot\nendprocedure",
+        )
+        .expect("modify ext");
+
+        let result = run_build(
+            &config,
+            &BuildArgs {
+                full_rebuild: false,
+            },
+        )
+        .expect("build");
+        let edt_calls_text = fs::read_to_string(&edt_calls).expect("edt calls");
+
+        assert!(result.ok);
+        assert!(edt_calls_text.contains("export --project-name client_mcp"));
     }
 
     #[cfg(unix)]
