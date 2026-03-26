@@ -449,12 +449,16 @@ fn render_build_text(result: &BuildResult, presenter: &Presenter, succeeded: boo
 
 fn render_init_text(result: &InitResult, presenter: &Presenter) {
     for step in &result.steps {
-        presenter.print_info(&format!(
+        let line = format!(
             "{}: {} - {}",
             step.target,
             step.action,
             step.message.as_deref().unwrap_or("ok")
-        ));
+        );
+        match step.status {
+            InitStepStatus::Ok | InitStepStatus::Skipped => presenter.print_success_item(&line),
+            InitStepStatus::Failed => presenter.print_failure_item(&line),
+        }
     }
 
     if result
@@ -462,9 +466,9 @@ fn render_init_text(result: &InitResult, presenter: &Presenter) {
         .iter()
         .all(|step| matches!(step.status, InitStepStatus::Ok | InitStepStatus::Skipped))
     {
-        presenter.print_ok("Init completed successfully");
+        presenter.print_success_item("Init completed successfully");
     } else {
-        presenter.print_info("Init failed");
+        presenter.print_failure_item("Init failed");
     }
 }
 

@@ -202,6 +202,22 @@ fn write_level(writer: &mut Writer<'_>, level: &Level) -> std::fmt::Result {
 }
 
 fn write_message(writer: &mut Writer<'_>, message: &str) -> std::fmt::Result {
+    if message == "running interactive edt command" {
+        if writer.has_ansi_escapes() {
+            write!(writer, "running interactive edt ")?;
+            return write_highlighted_label(writer, "command", "1;96");
+        }
+        return write!(writer, "{message}");
+    }
+
+    if message == "interactive edt command finished" {
+        if writer.has_ansi_escapes() {
+            write!(writer, "interactive edt ")?;
+            return write_highlighted_label(writer, "command finished", "1;96");
+        }
+        return write!(writer, "{message}");
+    }
+
     let Some(prefix_end) = message.find(']') else {
         return write!(writer, "{message}");
     };
@@ -212,9 +228,41 @@ fn write_message(writer: &mut Writer<'_>, message: &str) -> std::fmt::Result {
 
     let (prefix, rest) = message.split_at(prefix_end + 1);
     if writer.has_ansi_escapes() {
-        write!(writer, "\x1b[1;34m{prefix}\x1b[0m{rest}")
+        write!(writer, "\x1b[1;34m{prefix}\x1b[0m")?;
+        write_stage_tail(writer, rest)
     } else {
         write!(writer, "{message}")
+    }
+}
+
+fn write_stage_tail(writer: &mut Writer<'_>, rest: &str) -> std::fmt::Result {
+    if let Some((before, project_name)) = split_project_name_suffix(rest) {
+        write!(writer, "{before}")?;
+        write_highlighted_label(writer, project_name, "1;37")
+    } else {
+        write!(writer, "{rest}")
+    }
+}
+
+fn split_project_name_suffix(rest: &str) -> Option<(&str, &str)> {
+    let (before, tail) = rest.rsplit_once(": ")?;
+    let project_name = tail.trim();
+    if project_name.is_empty() || project_name.contains(' ') {
+        return None;
+    }
+
+    Some((&rest[..before.len() + 2], project_name))
+}
+
+fn write_highlighted_label(
+    writer: &mut Writer<'_>,
+    text: &str,
+    ansi_code: &str,
+) -> std::fmt::Result {
+    if writer.has_ansi_escapes() {
+        write!(writer, "\x1b[{ansi_code}m{text}\x1b[0m")
+    } else {
+        write!(writer, "{text}")
     }
 }
 

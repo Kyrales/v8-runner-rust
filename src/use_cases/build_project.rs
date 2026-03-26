@@ -776,7 +776,7 @@ fn run_build_edt(
                 };
 
                 let export_started = Instant::now();
-                info!("[EDT] Конвертация в файлы Конфигуратора: {}", source_set.name);
+                info!("[EDT] Конвертация в файлы конфигуратора: {}", source_set.name);
                 let export_result = if config.tools.edt_cli.interactive_mode {
                     if interactive_edt.is_none() {
                         interactive_edt = Some(match EdtDsl::new_interactive(

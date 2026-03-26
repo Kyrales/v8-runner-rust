@@ -49,6 +49,18 @@ impl Presenter {
         }
     }
 
+    pub fn print_success_item(&self, msg: &str) {
+        if !self.is_json() {
+            self.text.print_success_item(msg);
+        }
+    }
+
+    pub fn print_failure_item(&self, msg: &str) {
+        if !self.is_json() {
+            self.text.print_failure_item(msg);
+        }
+    }
+
     pub fn print_envelope<T: Serialize>(&self, envelope: &Envelope<T>) {
         if self.is_json() {
             self.json.print(envelope);

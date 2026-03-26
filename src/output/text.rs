@@ -25,6 +25,22 @@ impl TextPresenter {
     pub fn print_info(&self, msg: &str) {
         println!("{msg}");
     }
+
+    pub fn print_success_item(&self, msg: &str) {
+        if self.no_color {
+            println!("✓ {msg}");
+        } else {
+            println!("\x1b[32m✓\x1b[0m {msg}");
+        }
+    }
+
+    pub fn print_failure_item(&self, msg: &str) {
+        if self.no_color {
+            println!("✗ {msg}");
+        } else {
+            println!("\x1b[31m✗\x1b[0m {msg}");
+        }
+    }
 }
 
 pub struct JsonPresenter;
