@@ -20,7 +20,6 @@ use crate::platform::process::ProcessRunner;
 use crate::platform::result::PlatformCommandResult;
 use crate::platform::utilities::PlatformUtilities;
 use crate::support::error::AppError;
-use crate::support::logging::emphasize;
 use crate::support::temp::{partial_list_file, platform_logs_dir, reserved_source_set_dir};
 use crate::use_cases::context::ExecutionContext;
 use crate::use_cases::request::BuildRequest as BuildArgs;
@@ -339,9 +338,7 @@ fn log_change_analysis(source_set_name: &str, changes: &[analyzer::FileChange]) 
     }
 
     info!(
-        "{} в {source_set_name}: {} {} (новых {added}, изменено {modified}, удалено {deleted})",
-        emphasize("Изменения"),
-        emphasize("найдено"),
+        "[Изменения] {source_set_name}: найдено {} (новых {added}, изменено {modified}, удалено {deleted})",
         changes.len()
     );
 }
@@ -779,12 +776,7 @@ fn run_build_edt(
                 };
 
                 let export_started = Instant::now();
-                info!(
-                    "{} в файлы {}: {}",
-                    emphasize("Конвертация"),
-                    emphasize("Конфигуратора"),
-                    source_set.name
-                );
+                info!("[EDT] Конвертация в файлы Конфигуратора: {}", source_set.name);
                 let export_result = if config.tools.edt_cli.interactive_mode {
                     if interactive_edt.is_none() {
                         interactive_edt = Some(match EdtDsl::new_interactive(
@@ -996,18 +988,11 @@ fn execute_source_set_step(
 ) -> Result<(), AppError> {
     if partial_paths.is_some() {
         info!(
-            "{} изменений в базу через {}: {}",
-            emphasize("Загрузка"),
-            emphasize("Конфигуратор"),
+            "[Конфигуратор] Загрузка изменений в базу: {}",
             source_set.name
         );
     } else {
-        info!(
-            "{} в базу через {}: {}",
-            emphasize("Загрузка"),
-            emphasize("Конфигуратор"),
-            source_set.name
-        );
+        info!("[Конфигуратор] Загрузка в базу: {}", source_set.name);
     }
     let load_result = if let Some(paths) = partial_paths {
         let list_file = partial_list_file(&config.work_path).map_err(|error| {
@@ -1075,19 +1060,9 @@ fn execute_source_set_step_ibcmd(
     commit: &StepCommit,
 ) -> Result<(), AppError> {
     if partial_paths.is_some() {
-        info!(
-            "{} изменений в базу через {}: {}",
-            emphasize("Загрузка"),
-            emphasize("ibcmd"),
-            source_set.name
-        );
+        info!("[ibcmd] Загрузка изменений в базу: {}", source_set.name);
     } else {
-        info!(
-            "{} в базу через {}: {}",
-            emphasize("Загрузка"),
-            emphasize("ibcmd"),
-            source_set.name
-        );
+        info!("[ibcmd] Загрузка в базу: {}", source_set.name);
     }
 
     let dsl = build_ibcmd_dsl(config, binary, runner)?;

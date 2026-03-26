@@ -259,11 +259,11 @@ fn build_text_stdout_includes_action_logs() {
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("starting command"));
-    assert!(stdout.contains("T"));
-    assert!(stdout.contains("found_changes="));
-    assert!(stdout.contains("executing build step"));
-    assert!(stdout.contains("running process"));
+    assert!(stdout.contains("[Изменения]"));
+    assert!(stdout.contains("main"));
+    assert!(stdout.contains("[Конфигуратор]"));
+    assert!(stdout.contains("Загрузка изменений в базу:"));
+    assert!(stdout.contains("Build completed successfully"));
 }
 
 #[test]
@@ -287,8 +287,9 @@ fn build_json_writes_action_log_file_without_polluting_stdout() {
 
     let action_log = work_path.join("logs").join("mcp").join("actions.log");
     let contents = fs::read_to_string(action_log).expect("action log");
-    assert!(contents.contains("starting command"));
-    assert!(contents.contains("running process"));
+    assert!(contents.contains("[Изменения]"));
+    assert!(contents.contains("[Конфигуратор]"));
+    assert!(contents.contains("Загрузка изменений в базу:"));
 }
 
 #[test]

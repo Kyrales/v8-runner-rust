@@ -135,7 +135,8 @@ fn launch_text_includes_binary_pid_and_cleans_platform_logs() {
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("Launched designer via"));
+    assert!(stdout.contains("[Запуск]"));
+    assert!(stdout.contains("Launched конфигуратор via"));
     assert!(stdout.contains(
         install_dir
             .join("bin")

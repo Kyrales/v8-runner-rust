@@ -1,16 +1,18 @@
 use std::fs::{File, OpenOptions};
-use std::io::{self, Write};
+use std::io::{self, Write as IoWrite};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use chrono::Utc;
 use thiserror::Error;
+use tracing::{Event, Level, Subscriber};
+use tracing_subscriber::fmt::format::{FormatEvent, FormatFields, Writer};
 use tracing_subscriber::fmt::time::FormatTime;
+use tracing_subscriber::fmt::FmtContext;
+use tracing_subscriber::registry::LookupSpan;
 use tracing_subscriber::EnvFilter;
 
 const ACTION_LOG_FILE_ENV: &str = "V8TR_ACTION_LOG_FILE";
-static RICH_LOG_EMPHASIS_ENABLED: AtomicBool = AtomicBool::new(false);
 
 #[derive(Debug, Error)]
 pub enum LoggingInitError {
@@ -27,31 +29,36 @@ pub fn init_action_logging(
     color_enabled: bool,
     work_path: &Path,
 ) -> Result<Option<PathBuf>, LoggingInitError> {
-    RICH_LOG_EMPHASIS_ENABLED.store(output_format == "text" && color_enabled, Ordering::Relaxed);
     let writer = ActionLogMakeWriter {
         stdout_enabled: output_format == "text",
         file: open_log_file(resolve_action_log_path(output_format, work_path).as_deref())?,
     };
     let log_path = resolve_action_log_path(output_format, work_path);
+    let ansi_enabled = output_format == "text" && color_enabled;
+    let env_filter = EnvFilter::try_new(level).unwrap_or_else(|_| EnvFilter::new("info"));
 
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::try_new(level).unwrap_or_else(|_| EnvFilter::new("info")))
-        .with_writer(writer)
-        .with_timer(UtcTimer)
-        .with_ansi(output_format == "text")
-        .with_target(false)
-        .try_init()
-        .map_err(|error| LoggingInitError::Install(error.to_string()))?;
+    if output_format == "text" {
+        tracing_subscriber::fmt()
+            .with_env_filter(env_filter)
+            .with_writer(writer)
+            .with_timer(UtcTimer)
+            .with_ansi(ansi_enabled)
+            .with_target(false)
+            .event_format(CliEventFormatter)
+            .try_init()
+            .map_err(|error| LoggingInitError::Install(error.to_string()))?;
+    } else {
+        tracing_subscriber::fmt()
+            .with_env_filter(env_filter)
+            .with_writer(writer)
+            .with_timer(UtcTimer)
+            .with_ansi(false)
+            .with_target(false)
+            .try_init()
+            .map_err(|error| LoggingInitError::Install(error.to_string()))?;
+    }
 
     Ok(log_path)
-}
-
-pub fn emphasize(text: &str) -> String {
-    if RICH_LOG_EMPHASIS_ENABLED.load(Ordering::Relaxed) {
-        format!("\u{1b}[1m{text}\u{1b}[22m")
-    } else {
-        text.to_owned()
-    }
 }
 
 fn resolve_action_log_path(output_format: &str, work_path: &Path) -> Option<PathBuf> {
@@ -102,6 +109,12 @@ struct ActionLogWriter {
 }
 
 struct UtcTimer;
+struct CliEventFormatter;
+#[derive(Default)]
+struct EventFieldVisitor {
+    message: Option<String>,
+    fields: Vec<String>,
+}
 
 impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for ActionLogMakeWriter {
     type Writer = ActionLogWriter;
@@ -123,7 +136,89 @@ impl FormatTime for UtcTimer {
     }
 }
 
-impl Write for ActionLogWriter {
+impl<S, N> FormatEvent<S, N> for CliEventFormatter
+where
+    S: Subscriber + for<'a> LookupSpan<'a>,
+    N: for<'a> FormatFields<'a> + 'static,
+{
+    fn format_event(
+        &self,
+        _ctx: &FmtContext<'_, S, N>,
+        mut writer: Writer<'_>,
+        event: &Event<'_>,
+    ) -> std::fmt::Result {
+        let meta = event.metadata();
+        let mut visitor = EventFieldVisitor::default();
+        event.record(&mut visitor);
+
+        write!(writer, "{}  ", Utc::now().format("%H:%M:%S%.3f"))?;
+        write_level(&mut writer, meta.level())?;
+
+        if let Some(message) = visitor.message.as_deref() {
+            write!(writer, " ")?;
+            write_message(&mut writer, message)?;
+        }
+
+        for field in &visitor.fields {
+            write!(writer, " {field}")?;
+        }
+
+        writeln!(writer)
+    }
+}
+
+impl tracing::field::Visit for EventFieldVisitor {
+    fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+        if field.name() == "message" {
+            self.message = Some(value.to_owned());
+        } else {
+            self.fields.push(format!(r#"{}="{}""#, field.name(), value));
+        }
+    }
+
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+        if field.name() == "message" {
+            self.message = Some(format!("{value:?}"));
+        } else {
+            self.fields.push(format!("{}={value:?}", field.name()));
+        }
+    }
+}
+
+fn write_level(writer: &mut Writer<'_>, level: &Level) -> std::fmt::Result {
+    let label = format!("{level:>5}");
+    if writer.has_ansi_escapes() {
+        let code = match *level {
+            Level::ERROR => "1;31",
+            Level::WARN => "1;33",
+            Level::INFO => "1;32",
+            Level::DEBUG => "1;36",
+            Level::TRACE => "1;35",
+        };
+        write!(writer, "\x1b[{code}m{label}\x1b[0m")
+    } else {
+        write!(writer, "{label}")
+    }
+}
+
+fn write_message(writer: &mut Writer<'_>, message: &str) -> std::fmt::Result {
+    let Some(prefix_end) = message.find(']') else {
+        return write!(writer, "{message}");
+    };
+
+    if !message.starts_with('[') {
+        return write!(writer, "{message}");
+    }
+
+    let (prefix, rest) = message.split_at(prefix_end + 1);
+    if writer.has_ansi_escapes() {
+        write!(writer, "\x1b[1;34m{prefix}\x1b[0m{rest}")
+    } else {
+        write!(writer, "{message}")
+    }
+}
+
+impl IoWrite for ActionLogWriter {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         if self.stdout_enabled {
             io::stdout().write_all(buf)?;
