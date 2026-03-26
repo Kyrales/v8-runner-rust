@@ -11,6 +11,8 @@ use crate::platform::interactive::{
 use crate::platform::process::{ProcessError, ProcessRequest, ProcessRunner};
 use crate::platform::result::PlatformCommandResult;
 
+const INTERACTIVE_EDT_ERROR_MARKER: &str = "Run '$exception printStackTrace' for error details";
+
 #[derive(Debug, Error)]
 pub enum EdtError {
     #[error("failed to prepare edt workspace '{path}': {source}")]
@@ -198,8 +200,13 @@ impl<'a> EdtDsl<'a> {
                     stderr = render_interactive_output_for_log(&output.stderr),
                     "interactive edt command finished"
                 );
+                let exit_code = if output_indicates_interactive_command_error(&output.stdout, &output.stderr) {
+                    1
+                } else {
+                    0
+                };
                 crate::platform::process::ProcessResult {
-                    exit_code: 0,
+                    exit_code,
                     stdout: output.stdout,
                     stderr: output.stderr,
                 }
@@ -318,6 +325,10 @@ fn render_interactive_output_for_log(output: &str) -> String {
     rendered
 }
 
+fn output_indicates_interactive_command_error(stdout: &str, stderr: &str) -> bool {
+    stdout.contains(INTERACTIVE_EDT_ERROR_MARKER) || stderr.contains(INTERACTIVE_EDT_ERROR_MARKER)
+}
+
 fn export_command_arguments(source: &Path, target: &Path) -> Vec<String> {
     vec![
         "export".to_owned(),
@@ -371,7 +382,7 @@ fn quote_interactive_argument(argument: &str) -> String {
 mod tests {
     use super::{
         render_interactive_change_dir_command, render_interactive_probe_workdir_command,
-        render_interactive_validate_command, EdtDsl,
+        render_interactive_validate_command, EdtDsl, INTERACTIVE_EDT_ERROR_MARKER,
     };
     use crate::platform::process::{
         ProcessError, ProcessExecutor, ProcessRequest, ProcessResult, ProcessRunner, SpawnResult,
@@ -653,5 +664,55 @@ mod tests {
         assert!(commands.contains("export --project /tmp/project --configuration-files /tmp/out"));
         assert!(commands.contains("import --project /tmp/project"));
         assert!(!commands.contains("-command"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn interactive_dsl_treats_exception_marker_as_command_failure() {
+        let dir = tempdir().expect("tempdir");
+        let script = dir.path().join("1cedtcli");
+        let body = format!(
+            "set -eu\n\
+             prompt() {{ printf '1C:EDT>'; }}\n\
+             prompt\n\
+             while IFS= read -r line; do\n\
+               eval \"set -- $line\"\n\
+               cmd=\"${{1:-}}\"\n\
+               if [ \"$#\" -gt 0 ]; then shift; fi\n\
+                 case \"$cmd\" in\n\
+                 cd)\n\
+                   prompt\n\
+                   ;;\n\
+                 export)\n\
+                   cat <<'OUT'\n\
+edtsh: Invalid project description.\n\
+/workspace/exts/client-mcp overlaps the location of another project: 'ClientMcp'\n\
+{}\n\
+OUT\n\
+                   prompt\n\
+                   ;;\n\
+                 *)\n\
+                   prompt\n\
+                   ;;\n\
+               esac\n\
+             done\n",
+            INTERACTIVE_EDT_ERROR_MARKER
+        );
+        write_script(&script, &body);
+
+        let dsl = EdtDsl::new_interactive(
+            script,
+            dir.path().join("ws"),
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+        )
+        .expect("interactive dsl");
+
+        let result = dsl
+            .export_project(Path::new("/tmp/project"), Path::new("/tmp/out"))
+            .expect("export result");
+
+        assert_eq!(result.process.exit_code, 1);
+        assert!(result.process.stdout.contains(INTERACTIVE_EDT_ERROR_MARKER));
     }
 }
