@@ -432,7 +432,9 @@ fn normalize_extension_scope(
 fn launch_mode_from_raw(raw: &str) -> Result<LaunchModeRequest, McpBusinessError> {
     let normalized = normalize_required_string(raw, "utility_type")?.to_lowercase();
     match normalized.as_str() {
-        "designer" | "configurator" | "1cv8" | "конфигуратор" => Ok(LaunchModeRequest::Designer),
+        "designer" | "configurator" | "1cv8" | "конфигуратор" => {
+            Ok(LaunchModeRequest::Designer)
+        }
         "thin"
         | "thin-client"
         | "thin client"
@@ -440,13 +442,13 @@ fn launch_mode_from_raw(raw: &str) -> Result<LaunchModeRequest, McpBusinessError
         | "tc"
         | "1cv8c"
         | "тонкий клиент"
-        | "тонкий" => {
-            Ok(LaunchModeRequest::Thin)
-        }
-        "thick" | "thick-client" | "thick client" | "thick_client" | "толстый клиент"
-        | "толстый" => {
-            Ok(LaunchModeRequest::Thick)
-        }
+        | "тонкий" => Ok(LaunchModeRequest::Thin),
+        "thick"
+        | "thick-client"
+        | "thick client"
+        | "thick_client"
+        | "толстый клиент"
+        | "толстый" => Ok(LaunchModeRequest::Thick),
         _ => Err(McpBusinessError::unsupported_value(format!(
             "unsupported launch utility_type: {raw}"
         ))),

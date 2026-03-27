@@ -29,19 +29,18 @@ pub fn run() -> i32 {
     };
 
     let level = cli.log_level.as_deref().unwrap_or("info");
-    let action_log_path =
-        match crate::support::logging::init_action_logging(
-            level,
-            &cli.output,
-            !cli.no_color,
-            &config.work_path,
-        ) {
-            Ok(path) => path,
-            Err(e) => {
-                presenter.print_error(&format!("{e}"));
-                return crate::output::exit_codes::RUNTIME_ERROR;
-            }
-        };
+    let action_log_path = match crate::support::logging::init_action_logging(
+        level,
+        &cli.output,
+        !cli.no_color,
+        &config.work_path,
+    ) {
+        Ok(path) => path,
+        Err(e) => {
+            presenter.print_error(&format!("{e}"));
+            return crate::output::exit_codes::RUNTIME_ERROR;
+        }
+    };
 
     debug!(
         command = command_name(&cli.command),

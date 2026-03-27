@@ -1,5 +1,7 @@
 use crate::config::model::AppConfig;
-use crate::platform::locator::{EdtVersion, Locator, PlatformVersion, UtilityLocation, UtilityType};
+use crate::platform::locator::{
+    EdtVersion, Locator, PlatformVersion, UtilityLocation, UtilityType,
+};
 use crate::platform::process::{ProcessExecutor, ProcessRunner};
 use tracing::debug;
 

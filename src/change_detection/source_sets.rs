@@ -151,6 +151,8 @@ mod tests {
         let contexts = service.designer_contexts();
 
         assert_eq!(contexts.len(), 1);
-        assert!(contexts[0].path().ends_with(Path::new("target/tmp-work/designer/main")));
+        assert!(contexts[0]
+            .path()
+            .ends_with(Path::new("target/tmp-work/designer/main")));
     }
 }

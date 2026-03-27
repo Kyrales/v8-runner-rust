@@ -200,11 +200,12 @@ impl<'a> EdtDsl<'a> {
                     stderr = render_interactive_output_for_log(&output.stderr),
                     "interactive edt command finished"
                 );
-                let exit_code = if output_indicates_interactive_command_error(&output.stdout, &output.stderr) {
-                    1
-                } else {
-                    0
-                };
+                let exit_code =
+                    if output_indicates_interactive_command_error(&output.stdout, &output.stderr) {
+                        1
+                    } else {
+                        0
+                    };
                 crate::platform::process::ProcessResult {
                     exit_code,
                     stdout: output.stdout,

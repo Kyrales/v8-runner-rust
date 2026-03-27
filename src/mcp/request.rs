@@ -40,7 +40,9 @@ pub struct McpDumpConfigRequest {
     #[schemars(description = "Dump mode, for example FULL or INCREMENTAL.")]
     pub mode: Option<String>,
     /// Optional extension name.
-    #[schemars(description = "Extension name to dump. When omitted, the main configuration is dumped.")]
+    #[schemars(
+        description = "Extension name to dump. When omitted, the main configuration is dumped."
+    )]
     pub extension: Option<String>,
     /// Requested object list for partial dump.
     #[serde(default)]
@@ -64,7 +66,9 @@ pub struct McpLaunchAppRequest {
 #[serde(default, rename_all = "camelCase")]
 pub struct McpCheckSyntaxEdtRequest {
     /// Optional project name; when absent, all EDT projects are checked.
-    #[schemars(description = "EDT project name to check. When omitted, all EDT projects are checked.")]
+    #[schemars(
+        description = "EDT project name to check. When omitted, all EDT projects are checked."
+    )]
     pub project_name: Option<String>,
 }
 

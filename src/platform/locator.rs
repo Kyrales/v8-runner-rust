@@ -718,7 +718,8 @@ mod tests {
         let thin = root.join("8.3.25.1234").join("bin").join("1cv8c");
         touch_executable(&thin);
 
-        let mut locator = Locator::with_roots(Some(root), Some(version), None, None, vec![], vec![]);
+        let mut locator =
+            Locator::with_roots(Some(root), Some(version), None, None, vec![], vec![]);
 
         assert_eq!(locator.locate(UtilityType::V8C).expect("locate").path, thin);
     }

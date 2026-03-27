@@ -776,33 +776,40 @@ fn run_build_edt(
                 };
 
                 let export_started = Instant::now();
-                info!("[EDT] Конвертация в файлы конфигуратора: {}", source_set.name);
+                info!(
+                    "[EDT] Конвертация в файлы конфигуратора: {}",
+                    source_set.name
+                );
                 let export_result = if config.tools.edt_cli.interactive_mode {
                     if interactive_edt.is_none() {
-                        interactive_edt = Some(match EdtDsl::new_interactive(
-                            edt.clone(),
-                            config.work_path.join("edt-workspace"),
-                            Duration::from_millis(config.tools.edt_cli.startup_timeout_ms),
-                            Duration::from_millis(config.tools.edt_cli.command_timeout_ms),
-                        ) {
-                            Ok(dsl) => dsl,
-                            Err(error) => {
-                                let app_error = AppError::Platform(error.to_string());
-                                let result = fail_with_remaining_steps(
-                                    started,
-                                    steps,
-                                    ordered_source_sets
-                                        .iter()
-                                        .skip(index)
-                                        .copied()
-                                        .collect::<Vec<_>>(),
-                                    source_set,
-                                    BuildMode::EdtExport,
-                                    app_error.to_string(),
-                                );
-                                return Err(BuildExecutionFailure::with_payload(app_error, result));
-                            }
-                        });
+                        interactive_edt = Some(
+                            match EdtDsl::new_interactive(
+                                edt.clone(),
+                                config.work_path.join("edt-workspace"),
+                                Duration::from_millis(config.tools.edt_cli.startup_timeout_ms),
+                                Duration::from_millis(config.tools.edt_cli.command_timeout_ms),
+                            ) {
+                                Ok(dsl) => dsl,
+                                Err(error) => {
+                                    let app_error = AppError::Platform(error.to_string());
+                                    let result = fail_with_remaining_steps(
+                                        started,
+                                        steps,
+                                        ordered_source_sets
+                                            .iter()
+                                            .skip(index)
+                                            .copied()
+                                            .collect::<Vec<_>>(),
+                                        source_set,
+                                        BuildMode::EdtExport,
+                                        app_error.to_string(),
+                                    );
+                                    return Err(BuildExecutionFailure::with_payload(
+                                        app_error, result,
+                                    ));
+                                }
+                            },
+                        );
                     }
                     execute_edt_export_step(
                         config,
@@ -971,7 +978,10 @@ fn execute_edt_export_step(
     ensure_platform_success("edt_export", source_set, &export_result)
 }
 
-fn resolve_edt_project_name(source_set: &SourceSetConfig, edt_context: &SourceSetContext) -> String {
+fn resolve_edt_project_name(
+    source_set: &SourceSetConfig,
+    edt_context: &SourceSetContext,
+) -> String {
     let project_file = edt_context.path().join(".project");
     std::fs::read_to_string(&project_file)
         .ok()

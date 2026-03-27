@@ -313,7 +313,7 @@ fn execute_launch(
                     result,
                 ));
             } else {
-                presenter.print_ok(
+                presenter.print_success_item(
                     result
                         .message
                         .as_deref()
@@ -464,37 +464,46 @@ fn build_test_envelope(result: TestRunResult, ok: bool) -> Envelope<TestRunResul
 
 fn render_build_text(result: &BuildResult, presenter: &Presenter, succeeded: bool) {
     for step in &result.steps {
-        let mode = match &step.mode {
-            BuildMode::EdtExport => "edt_export",
-            BuildMode::Full => "full",
-            BuildMode::Partial { file_count } => {
-                presenter.print_info(&format!(
-                    "{}: partial ({file_count} files) - {}",
-                    step.source_set,
-                    step.message.as_deref().unwrap_or("ok")
-                ));
-                continue;
-            }
-            BuildMode::Skipped => "skipped",
+        let line = match &step.mode {
+            BuildMode::EdtExport => format!(
+                "{}: edt_export - {}",
+                step.source_set,
+                step.message.as_deref().unwrap_or("ok")
+            ),
+            BuildMode::Full => format!(
+                "{}: full - {}",
+                step.source_set,
+                step.message.as_deref().unwrap_or("ok")
+            ),
+            BuildMode::Partial { file_count } => format!(
+                "{}: partial ({file_count} files) - {}",
+                step.source_set,
+                step.message.as_deref().unwrap_or("ok")
+            ),
+            BuildMode::Skipped => format!(
+                "{}: skipped - {}",
+                step.source_set,
+                step.message.as_deref().unwrap_or("ok")
+            ),
         };
 
-        presenter.print_info(&format!(
-            "{}: {mode} - {}",
-            step.source_set,
-            step.message.as_deref().unwrap_or("ok")
-        ));
+        if step.ok {
+            presenter.print_success_item(&line);
+        } else {
+            presenter.print_failure_item(&line);
+        }
     }
 
     if !succeeded {
-        presenter.print_info("Build failed");
+        presenter.print_failure_item("Build failed");
     } else if result
         .steps
         .iter()
         .all(|step| matches!(step.mode, BuildMode::Skipped) && step.ok)
     {
-        presenter.print_ok("Build completed: no changes");
+        presenter.print_success_item("Build completed: no changes");
     } else {
-        presenter.print_ok("Build completed successfully");
+        presenter.print_success_item("Build completed successfully");
     }
 }
 
@@ -552,18 +561,20 @@ fn render_dump_text(result: &DumpResult, presenter: &Presenter, succeeded: bool)
         DumpMode::Partial => "partial",
     };
     let source_set = result.source_set.as_deref().unwrap_or("<unresolved>");
-    presenter.print_info(&format!(
-        "{source_set}: {mode} -> {}",
-        result.target_path.display()
-    ));
+    let summary = format!("{source_set}: {mode} -> {}", result.target_path.display());
+    if succeeded {
+        presenter.print_success_item(&summary);
+    } else {
+        presenter.print_failure_item(&summary);
+    }
     if let Some(message) = result.message.as_deref() {
         presenter.print_info(message);
     }
 
     if succeeded {
-        presenter.print_ok("Dump completed successfully");
+        presenter.print_success_item("Dump completed successfully");
     } else {
-        presenter.print_info("Dump failed");
+        presenter.print_failure_item("Dump failed");
     }
 }
 
@@ -640,9 +651,9 @@ fn render_test_text(result: &TestRunResult, presenter: &Presenter) {
     }
 
     if result.ok {
-        presenter.print_ok("Tests completed successfully");
+        presenter.print_success_item("Tests completed successfully");
     } else {
-        presenter.print_info("Tests failed");
+        presenter.print_failure_item("Tests failed");
     }
 }
 
