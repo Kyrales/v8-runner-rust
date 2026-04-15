@@ -40,6 +40,8 @@ pub enum Command {
     Extensions(ExtensionsArgs),
     /// Load sources into infobase
     Build(BuildArgs),
+    /// Load release artifacts into infobase
+    Load(LoadArgs),
     /// Run YaXUnit tests
     Test(TestArgs),
     /// Dump configuration from infobase to files
@@ -59,6 +61,25 @@ pub struct BuildArgs {
     /// Clear change cache and rebuild everything
     #[arg(long)]
     pub full_rebuild: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct LoadArgs {
+    /// Path to a built artifact (.cf/.cfe)
+    #[arg(long)]
+    pub path: String,
+
+    /// Load mode
+    #[arg(long, default_value = "load", value_parser = ["load", "merge", "update"])]
+    pub mode: String,
+
+    /// Merge settings file used by --mode merge
+    #[arg(long)]
+    pub settings: Option<String>,
+
+    /// Extension name required for .cfe artifacts
+    #[arg(long)]
+    pub extension: Option<String>,
 }
 
 #[derive(Args, Debug)]
@@ -258,7 +279,8 @@ pub struct DesignerModulesSyntaxArgs {
 #[cfg(test)]
 mod tests {
     use super::{
-        ArtifactsArgs, Cli, Command, ExtensionsArgs, McpCommand, McpServeTransport, SyntaxTarget,
+        ArtifactsArgs, Cli, Command, ExtensionsArgs, LoadArgs, McpCommand, McpServeTransport,
+        SyntaxTarget,
     };
     use clap::Parser;
 
@@ -309,6 +331,59 @@ mod tests {
         match cli.command {
             Command::Extensions(ExtensionsArgs { names }) => {
                 assert_eq!(names, vec!["client_mcp", "tests"]);
+            }
+            _ => panic!("unexpected command"),
+        }
+    }
+
+    #[test]
+    fn parses_load_command_with_default_mode() {
+        let cli = Cli::try_parse_from(["v8-test-runner", "load", "--path", "dist/main.cf"])
+            .expect("parse load");
+
+        match cli.command {
+            Command::Load(LoadArgs {
+                path,
+                mode,
+                settings,
+                extension,
+            }) => {
+                assert_eq!(path, "dist/main.cf");
+                assert_eq!(mode, "load");
+                assert!(settings.is_none());
+                assert!(extension.is_none());
+            }
+            _ => panic!("unexpected command"),
+        }
+    }
+
+    #[test]
+    fn parses_load_command_with_merge_mode() {
+        let cli = Cli::try_parse_from([
+            "v8-test-runner",
+            "load",
+            "--path",
+            "dist/ext.cfe",
+            "--mode",
+            "merge",
+            "--settings",
+            "merge.xml",
+            "--extension",
+            "SalesAddon",
+        ])
+        .expect("parse load merge");
+
+        match cli.command {
+            Command::Load(LoadArgs {
+                path,
+                mode,
+                settings,
+                extension,
+            }) => {
+                assert_eq!(path, "dist/ext.cfe");
+                assert_eq!(mode, "merge");
+                assert_eq!(settings.as_deref(), Some("merge.xml"));
+                assert_eq!(extension.as_deref(), Some("SalesAddon"));
             }
             _ => panic!("unexpected command"),
         }

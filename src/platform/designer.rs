@@ -92,6 +92,73 @@ impl<'a> DesignerDsl<'a> {
         self.run(&args)
     }
 
+    /// `/LoadCfg <file> [-Extension <name>]`
+    pub fn load_cfg(
+        &self,
+        artifact_file: &Path,
+        extension: Option<&str>,
+    ) -> Result<PlatformCommandResult, DesignerError> {
+        let mut args = self.base_args();
+        args.push("/LoadCfg".to_owned());
+        args.push(artifact_file.display().to_string());
+        if let Some(extension) = extension {
+            args.push("-Extension".to_owned());
+            args.push(extension.to_owned());
+        }
+        self.run(&args)
+    }
+
+    /// `/MergeCfg <file> -Settings <settings> [-Extension <name>]`
+    pub fn merge_cfg(
+        &self,
+        artifact_file: &Path,
+        settings_file: &Path,
+        extension: Option<&str>,
+    ) -> Result<PlatformCommandResult, DesignerError> {
+        let mut args = self.base_args();
+        args.push("/MergeCfg".to_owned());
+        args.push(artifact_file.display().to_string());
+        args.push("-Settings".to_owned());
+        args.push(settings_file.display().to_string());
+        if let Some(extension) = extension {
+            args.push("-Extension".to_owned());
+            args.push(extension.to_owned());
+        }
+        self.run(&args)
+    }
+
+    /// `/CompareCfg ... -ReportType Brief -ReportFormat txt -ReportFile <file>`
+    pub fn compare_cfg(
+        &self,
+        first_configuration_type: &str,
+        first_name: Option<&str>,
+        second_configuration_type: &str,
+        second_name: Option<&str>,
+        report_file: &Path,
+    ) -> Result<PlatformCommandResult, DesignerError> {
+        let mut args = self.base_args();
+        args.push("/CompareCfg".to_owned());
+        args.push("-FirstConfigurationType".to_owned());
+        args.push(first_configuration_type.to_owned());
+        if let Some(first_name) = first_name {
+            args.push("-FirstName".to_owned());
+            args.push(first_name.to_owned());
+        }
+        args.push("-SecondConfigurationType".to_owned());
+        args.push(second_configuration_type.to_owned());
+        if let Some(second_name) = second_name {
+            args.push("-SecondName".to_owned());
+            args.push(second_name.to_owned());
+        }
+        args.push("-ReportType".to_owned());
+        args.push("Brief".to_owned());
+        args.push("-ReportFormat".to_owned());
+        args.push("txt".to_owned());
+        args.push("-ReportFile".to_owned());
+        args.push(report_file.display().to_string());
+        self.run(&args)
+    }
+
     /// `CREATEINFOBASE <connection-string>`
     pub fn create_infobase(&self) -> Result<PlatformCommandResult, DesignerError> {
         let mut args = vec!["CREATEINFOBASE".to_owned()];
@@ -480,6 +547,82 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn load_and_merge_cfg_pass_expected_arguments() {
+        let dir = tempdir().expect("tempdir");
+        let script = dir.path().join("1cv8");
+        let args_log = dir.path().join("args.log");
+        write_script(
+            &script,
+            &format!("printf '%s\\n' \"$*\" > \"{}\"\nexit 0", args_log.display()),
+        );
+        let runner = ProcessExecutor;
+        let dsl = DesignerDsl::new(
+            script,
+            V8Connection::from_connection_string("File=/tmp/ib"),
+            &runner as &dyn ProcessRunner,
+            None,
+        );
+
+        dsl.load_cfg(&dir.path().join("release.cf"), None)
+            .expect("load cfg");
+        let args = fs::read_to_string(&args_log).expect("args log");
+        assert!(args.contains("/LoadCfg"));
+        assert!(args.contains("release.cf"));
+
+        dsl.merge_cfg(
+            &dir.path().join("release.cfe"),
+            &dir.path().join("merge.xml"),
+            Some("SalesAddon"),
+        )
+        .expect("merge cfg");
+        let args = fs::read_to_string(&args_log).expect("args log");
+        assert!(args.contains("/MergeCfg"));
+        assert!(args.contains("release.cfe"));
+        assert!(args.contains("-Settings"));
+        assert!(args.contains("merge.xml"));
+        assert!(args.contains("-Extension SalesAddon"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn compare_cfg_passes_configuration_types_names_and_report_file() {
+        let dir = tempdir().expect("tempdir");
+        let script = dir.path().join("1cv8");
+        let args_log = dir.path().join("args.log");
+        write_script(
+            &script,
+            &format!("printf '%s\\n' \"$*\" > \"{}\"\nexit 0", args_log.display()),
+        );
+        let runner = ProcessExecutor;
+        let dsl = DesignerDsl::new(
+            script,
+            V8Connection::from_connection_string("File=/tmp/ib"),
+            &runner as &dyn ProcessRunner,
+            None,
+        );
+
+        dsl.compare_cfg(
+            "ExtensionConfiguration",
+            Some("SalesAddon"),
+            "ExtensionDBConfiguration",
+            Some("SalesAddon"),
+            &dir.path().join("compare.txt"),
+        )
+        .expect("compare cfg");
+
+        let args = fs::read_to_string(args_log).expect("args log");
+        assert!(args.contains("/CompareCfg"));
+        assert!(args.contains("-FirstConfigurationType ExtensionConfiguration"));
+        assert!(args.contains("-FirstName SalesAddon"));
+        assert!(args.contains("-SecondConfigurationType ExtensionDBConfiguration"));
+        assert!(args.contains("-SecondName SalesAddon"));
+        assert!(args.contains("-ReportType Brief"));
+        assert!(args.contains("-ReportFormat txt"));
+        assert!(args.contains("compare.txt"));
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn external_dump_and_load_commands_shape_arguments() {
         let dir = tempdir().expect("tempdir");
         let script = dir.path().join("1cv8");
@@ -510,8 +653,14 @@ mod tests {
             .iter()
             .position(|line| line == "/DumpExternalDataProcessorOrReportToFiles")
             .expect("dump arg");
-        assert_eq!(args[dump_pos + 1], dir.path().join("dump/Artifact.xml").display().to_string());
-        assert_eq!(args[dump_pos + 2], dir.path().join("artifact.epf").display().to_string());
+        assert_eq!(
+            args[dump_pos + 1],
+            dir.path().join("dump/Artifact.xml").display().to_string()
+        );
+        assert_eq!(
+            args[dump_pos + 2],
+            dir.path().join("artifact.epf").display().to_string()
+        );
 
         dsl.load_external_data_processor_or_report_from_files(
             &dir.path().join("dump/Artifact.xml"),
@@ -527,7 +676,13 @@ mod tests {
             .iter()
             .position(|line| line == "/LoadExternalDataProcessorOrReportFromFiles")
             .expect("load arg");
-        assert_eq!(args[load_pos + 1], dir.path().join("dump/Artifact.xml").display().to_string());
-        assert_eq!(args[load_pos + 2], dir.path().join("artifact.epf").display().to_string());
+        assert_eq!(
+            args[load_pos + 1],
+            dir.path().join("dump/Artifact.xml").display().to_string()
+        );
+        assert_eq!(
+            args[load_pos + 2],
+            dir.path().join("artifact.epf").display().to_string()
+        );
     }
 }

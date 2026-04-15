@@ -16,6 +16,8 @@ pub mod init;
 pub mod issue;
 /// Launch domain models.
 pub mod launch;
+/// Artifact load/import domain models.
+pub mod load;
 /// Shared runner models.
 pub mod runner;
 /// Source set domain models.

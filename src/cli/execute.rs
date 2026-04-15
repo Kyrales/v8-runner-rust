@@ -4,7 +4,7 @@ use serde_json::json;
 
 use crate::cli::args::{
     ArtifactsArgs, BuildArgs, Command, DesignerConfigSyntaxArgs, DesignerModulesSyntaxArgs,
-    DumpArgs, ExtensionsArgs, LaunchArgs, SyntaxArgs, SyntaxTarget, TestArgs, TestScope,
+    DumpArgs, ExtensionsArgs, LaunchArgs, LoadArgs, SyntaxArgs, SyntaxTarget, TestArgs, TestScope,
 };
 use crate::config::model::{AppConfig, SourceSetPurpose};
 use crate::domain::artifacts::{ArtifactBuildMode, ArtifactsResult};
@@ -13,6 +13,7 @@ use crate::domain::dump::{DumpMode, DumpResult};
 use crate::domain::extensions::ExtensionsResult;
 use crate::domain::init::{InitResult, InitStepStatus};
 use crate::domain::issue::{Issue, IssueSeverity};
+use crate::domain::load::{LoadMode, LoadResult};
 use crate::domain::syntax::{SyntaxCheckResult, SyntaxCheckStatus};
 use crate::domain::test::{TestRunResult, TestStatus, TestTarget};
 use crate::output::json::Envelope;
@@ -28,11 +29,12 @@ use crate::use_cases::context::{CommandName, ExecutionContext};
 use crate::use_cases::dump_config;
 use crate::use_cases::init_project;
 use crate::use_cases::launch_app;
+use crate::use_cases::load_artifact;
 use crate::use_cases::request::{
     ArtifactsModeRequest, ArtifactsRequest, BuildRequest, ConfigureExtensionsRequest,
     DesignerConfigSyntaxRequest, DesignerModulesSyntaxRequest, DumpModeRequest, DumpRequest,
-    InitRequest, LaunchModeRequest, LaunchRequest, SyntaxRequest, SyntaxTargetRequest, TestRequest,
-    TestScopeRequest,
+    InitRequest, LaunchModeRequest, LaunchRequest, LoadRequest, SyntaxRequest, SyntaxTargetRequest,
+    TestRequest, TestScopeRequest,
 };
 use crate::use_cases::result::{UseCaseError, UseCaseErrorKind};
 use crate::use_cases::run_tests;
@@ -52,6 +54,7 @@ pub fn execute_command(
             execute_extensions(config, args, presenter, clean_before_execution)
         }
         Command::Build(args) => execute_build(config, args, presenter, clean_before_execution),
+        Command::Load(args) => execute_load(config, args, presenter, clean_before_execution),
         Command::Test(args) => execute_test(config, args, presenter, clean_before_execution),
         Command::Dump(args) => execute_dump(config, args, presenter, clean_before_execution),
         Command::Artifacts(args) => {
@@ -69,6 +72,7 @@ pub fn command_name(command: &Command) -> CommandName {
         Command::Init => CommandName::Init,
         Command::Extensions(_) => CommandName::Extensions,
         Command::Build(_) => CommandName::Build,
+        Command::Load(_) => CommandName::Load,
         Command::Test(_) => CommandName::Test,
         Command::Dump(_) => CommandName::Dump,
         Command::Artifacts(_) => CommandName::Artifacts,
@@ -252,6 +256,54 @@ fn execute_test(
                 } else {
                     if let Some(result) = failure.payload.as_ref() {
                         render_test_text(result, presenter);
+                    }
+                    presenter.print_error(&error.to_string());
+                }
+                Err(error)
+            }
+        },
+    )
+}
+
+fn execute_load(
+    config: &AppConfig,
+    args: &LoadArgs,
+    presenter: &Presenter,
+    clean_before_execution: bool,
+) -> Result<(), UseCaseError> {
+    let request = map_load_request(args)?;
+    let context = ExecutionContext::cli(CommandName::Load);
+    with_cli_workspace_lock(
+        config,
+        presenter,
+        CommandName::Load,
+        clean_before_execution,
+        || match load_artifact::execute(&context, config, &request) {
+            Ok(result) => {
+                if presenter.is_json() {
+                    presenter.print_envelope(&Envelope::ok(
+                        CommandName::Load.as_str(),
+                        result.duration_ms,
+                        result,
+                    ));
+                } else {
+                    render_load_text(&result, presenter, true);
+                }
+                Ok(())
+            }
+            Err(failure) => {
+                let error = failure.error;
+                if presenter.is_json() {
+                    if let Some(result) = failure.payload {
+                        presenter.print_envelope(&Envelope::err(
+                            CommandName::Load.as_str(),
+                            result.duration_ms,
+                            result,
+                        ));
+                    }
+                } else {
+                    if let Some(result) = failure.payload.as_ref() {
+                        render_load_text(result, presenter, false);
                     }
                     presenter.print_error(&error.to_string());
                 }
@@ -532,6 +584,25 @@ fn map_test_request(args: &TestArgs) -> Result<TestRequest, UseCaseError> {
     })
 }
 
+fn map_load_request(args: &LoadArgs) -> Result<LoadRequest, UseCaseError> {
+    Ok(LoadRequest {
+        mode: match args.mode.as_str() {
+            "load" => LoadMode::Load,
+            "merge" => LoadMode::Merge,
+            "update" => LoadMode::Update,
+            other => {
+                return Err(UseCaseError::new(
+                    UseCaseErrorKind::Validation,
+                    format!("unsupported load mode: {other}"),
+                ));
+            }
+        },
+        artifact_path: args.path.clone(),
+        settings_path: args.settings.clone(),
+        extension: args.extension.clone(),
+    })
+}
+
 fn map_dump_request(args: &DumpArgs) -> Result<DumpRequest, UseCaseError> {
     Ok(DumpRequest {
         mode: match args.mode.as_str() {
@@ -723,6 +794,46 @@ fn render_build_text(result: &BuildResult, presenter: &Presenter, succeeded: boo
     }
 }
 
+fn render_load_text(result: &LoadResult, presenter: &Presenter, succeeded: bool) {
+    let mode = match result.mode {
+        LoadMode::Load => "load",
+        LoadMode::Merge => "merge",
+        LoadMode::Update => "update",
+    };
+    let artifact_type = match result.artifact_type {
+        ArtifactBuildMode::Unknown => "unknown",
+        ArtifactBuildMode::ConfigurationCf => "cf",
+        ArtifactBuildMode::ExtensionCfe => "cfe",
+        ArtifactBuildMode::ExternalDataProcessorEpf => "epf",
+        ArtifactBuildMode::ExternalReportErf => "erf",
+    };
+    let target = match result.target_kind {
+        crate::domain::load::LoadTargetKind::Configuration => "configuration".to_owned(),
+        crate::domain::load::LoadTargetKind::Extension => format!(
+            "extension {}",
+            result.extension.as_deref().unwrap_or("<unknown>")
+        ),
+        crate::domain::load::LoadTargetKind::Unknown => "unknown".to_owned(),
+    };
+    let summary = format!(
+        "{target}: {mode} {artifact_type} <- {}",
+        result.artifact_path.display()
+    );
+    if succeeded {
+        presenter.print_success_item(&summary);
+    } else {
+        presenter.print_failure_item(&summary);
+    }
+    if let Some(message) = result.message.as_deref() {
+        presenter.print_info(message);
+    }
+    if succeeded {
+        presenter.print_success_item("Artifact load completed successfully");
+    } else {
+        presenter.print_failure_item("Artifact load failed");
+    }
+}
+
 fn render_extensions_text(result: &ExtensionsResult, presenter: &Presenter, succeeded: bool) {
     for step in &result.steps {
         let line = format!(
@@ -796,6 +907,7 @@ fn render_dump_text(result: &DumpResult, presenter: &Presenter, succeeded: bool)
 
 fn render_artifacts_text(result: &ArtifactsResult, presenter: &Presenter, succeeded: bool) {
     let mode = match result.mode {
+        ArtifactBuildMode::Unknown => "unknown",
         ArtifactBuildMode::ConfigurationCf => "cf",
         ArtifactBuildMode::ExtensionCfe => "cfe",
         ArtifactBuildMode::ExternalDataProcessorEpf => "epf",
@@ -968,16 +1080,18 @@ mod tests {
     use super::{
         command_name, execute_command, map_artifacts_request_with_config, map_build_request,
         map_designer_config_request, map_dump_request, map_extensions_request, map_launch_request,
-        map_syntax_request, map_test_request, pre_dispatch_error_envelope,
+        map_load_request, map_syntax_request, map_test_request, pre_dispatch_error_envelope,
     };
     use crate::cli::args::{
         ArtifactsArgs, BuildArgs, Command, DesignerConfigSyntaxArgs, DesignerModulesSyntaxArgs,
-        DumpArgs, ExtensionsArgs, LaunchArgs, SyntaxArgs, SyntaxTarget, TestArgs, TestScope,
+        DumpArgs, ExtensionsArgs, LaunchArgs, LoadArgs, SyntaxArgs, SyntaxTarget, TestArgs,
+        TestScope,
     };
     use crate::config::model::{
         AppConfig, BuildConfig, BuilderBackend, SourceFormat, SourceSetConfig, SourceSetPurpose,
         TestsConfig, ToolsConfig,
     };
+    use crate::domain::load::LoadMode;
     use crate::output::presenter::{ColorMode, Presenter};
     use crate::support::fs::acquire_advisory_lock;
     use crate::support::temp::platform_logs_dir;
@@ -1054,7 +1168,7 @@ mod tests {
     }
 
     #[test]
-    fn maps_build_dump_and_launch_requests() {
+    fn maps_build_dump_launch_and_load_requests() {
         assert!(map_build_request(&BuildArgs { full_rebuild: true }).full_rebuild);
         assert_eq!(
             map_extensions_request(&ExtensionsArgs {
@@ -1094,6 +1208,17 @@ mod tests {
             .mode,
             LaunchModeRequest::Thin
         );
+        let load = map_load_request(&LoadArgs {
+            path: "dist/main.cf".to_owned(),
+            mode: "merge".to_owned(),
+            settings: Some("merge.xml".to_owned()),
+            extension: Some("Ext".to_owned()),
+        })
+        .expect("load request");
+        assert_eq!(load.mode, LoadMode::Merge);
+        assert_eq!(load.artifact_path, "dist/main.cf");
+        assert_eq!(load.settings_path.as_deref(), Some("merge.xml"));
+        assert_eq!(load.extension.as_deref(), Some("Ext"));
         let artifacts = map_artifacts_request_with_config(
             &sample_config(Path::new("/tmp/work")),
             &ArtifactsArgs {
@@ -1141,6 +1266,20 @@ mod tests {
 
         assert_eq!(dump_error.kind(), UseCaseErrorKind::Validation);
         assert_eq!(launch_error.kind(), UseCaseErrorKind::Validation);
+    }
+
+    #[test]
+    fn rejects_invalid_load_mode_mapping() {
+        let error = map_load_request(&LoadArgs {
+            path: "dist/main.cf".to_owned(),
+            mode: "garbage".to_owned(),
+            settings: None,
+            extension: None,
+        })
+        .expect_err("load mode should be rejected");
+
+        assert_eq!(error.kind(), UseCaseErrorKind::Validation);
+        assert_eq!(error.message(), "unsupported load mode: garbage");
     }
 
     #[test]
@@ -1192,6 +1331,15 @@ mod tests {
                 full_rebuild: false
             })),
             CommandName::Build
+        );
+        assert_eq!(
+            command_name(&Command::Load(LoadArgs {
+                path: "dist/main.cf".to_owned(),
+                mode: "load".to_owned(),
+                settings: None,
+                extension: None,
+            })),
+            CommandName::Load
         );
         assert_eq!(
             command_name(&Command::Artifacts(ArtifactsArgs {

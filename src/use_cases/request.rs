@@ -1,5 +1,6 @@
 use crate::domain::artifacts::{CFE_RUNNER_ID, CF_RUNNER_ID, EPF_RUNNER_ID, ERF_RUNNER_ID};
 use crate::domain::execution::ExecutionTimeouts;
+use crate::domain::load::LoadMode;
 use crate::domain::runner::{
     ExecutionPolicy, RunnerKind, RunnerOutputFormat, RunnerProfile, ScenarioExecutionRequest,
 };
@@ -10,6 +11,19 @@ use crate::domain::test::TEST_RUNNER_ID;
 pub struct BuildRequest {
     /// Forces a full rebuild instead of change-based execution.
     pub full_rebuild: bool,
+}
+
+/// Transport-neutral request for the `load` use case.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LoadRequest {
+    /// Requested mode for artifact application.
+    pub mode: LoadMode,
+    /// Path to artifact file.
+    pub artifact_path: String,
+    /// Optional merge settings file.
+    pub settings_path: Option<String>,
+    /// Optional extension target.
+    pub extension: Option<String>,
 }
 
 /// Transport-neutral request for the `test` use case.

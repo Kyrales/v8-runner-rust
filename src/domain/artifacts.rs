@@ -13,6 +13,7 @@ pub const ERF_RUNNER_ID: &str = "designer-erf";
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ArtifactBuildMode {
+    Unknown,
     ConfigurationCf,
     ExtensionCfe,
     ExternalDataProcessorEpf,
@@ -22,6 +23,7 @@ pub enum ArtifactBuildMode {
 impl ArtifactBuildMode {
     pub const fn file_extension(self) -> &'static str {
         match self {
+            Self::Unknown => "unknown",
             Self::ConfigurationCf => "cf",
             Self::ExtensionCfe => "cfe",
             Self::ExternalDataProcessorEpf => "epf",
