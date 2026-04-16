@@ -2,34 +2,38 @@
 
 ## Цель
 
-Закрыть два разных контура проверки:
+Начиная с `2026-04-17`, source of truth для real-env happy-path должен быть будущий GitHub Actions matrix contract на `ubuntu-latest` и `windows-latest`, а локальные скрипты в `scripts/test/*` остаются helper/entrypoint-слоем для этого workflow.
 
-1. `contract/regression` для локального запуска и обычного CI без реальной 1С-инфраструктуры.
-2. `live smoke` для реального окружения с установленными `1cv8`, `1cv8c`, `1cedtcli`, рабочей файловой ИБ и выделенными конфигами для EDT и IBCMD сценариев.
+Обязательный smoke-контур для обеих ОС один и тот же:
 
-На `2026-03-21` базовый автоматизированный прогон `cargo test` в этом репозитории проходит полностью: `342` теста.
+1. `build`
+2. `syntax/check`
+3. `test`
+4. `package`
+5. `deploy-ready artifacts`
 
-## Эталонное реальное окружение
+Под `deploy-ready artifacts` в этом репозитории понимается только публикация и проверка наличия/непустоты следующих файлов:
 
-Текущий референс для live-проверок:
+- `.cf`
+- `.cfe`
+- `.epf`
+- `.erf`
 
-- проект: `/home/alko/develop/open-source/ai/mcp/onec-client-mcp-devkit`
-- конфиг: `/home/alko/develop/open-source/ai/mcp/onec-client-mcp-devkit/.agents/tools/onec-client-mcp-devkit.edt.yaml`
+Ни `load`, ни обратное `apply` в mandatory happy-path не входят.
 
-Этот конфиг уже задает:
+Default mandatory `test` stage uses `V8TR_DESIGNER_TEST_MODE=va`, so the canonical happy-path also requires these Vanessa Automation assets to be present:
 
-- `format: EDT`
-- `builder: DESIGNER`
-- файловую ИБ `File=/home/alko/develop/onec_file_db/client-mcp`
-- три `source-set`: `configuration`, `ClientMcp`, `tests`
-- платформу `8.5.1.1150`
-- `1cedtcli` `2025.2.3`
+- `target/vanessa-automation-single.epf`
+- `scripts/test/live-cli-designer.va-params.json`
+- `scripts/test/features/live-cli-designer`
 
-## Разделение наборов тестов
+These are hard prerequisites of the default contract, not optional extras. If they are not intended, the canonical `test` path must be switched to `module` explicitly.
 
-### 1. Generic local/CI
+## Контуры
 
-Назначение: быстрый сигнал по контрактам CLI/MCP и внутренней логике без реальных бинарей 1С.
+### 1. Contract / regression
+
+Назначение: быстрый сигнал по Rust/CLI/MCP-контрактам без реальной 1С-инфраструктуры.
 
 Команда:
 
@@ -37,176 +41,64 @@
 bash scripts/test/ci-rust.sh
 ```
 
-Что проверяет:
+Поведение:
 
-- unit-тесты use case-ов, парсеров, конфигурации и platform DSL
-- интеграционные CLI-тесты на стабах процессов
-- интеграционные MCP stdio/http тесты на стабах процессов
+- `V8_TEST_RUNNER_CI_SCOPE=contract` или `full` запускает `cargo test --locked`
+- `V8_TEST_RUNNER_CI_SCOPE=runtime-locks` запускает только lock-focused regression subset
+- `V8_TEST_RUNNER_CI_SCOPE=happy-path` запускает обязательную цепочку `build -> syntax/check -> test -> package -> deploy-ready artifacts`
 
-Где запускать:
+### 2. Mandatory Linux/Windows happy-path
 
-- локально перед коммитом
-- в обычном CI на generic Linux runner
+Назначение: одинаково обязательный smoke для `Linux` и `Windows` на trusted контексте.
 
-Критерий успеха:
-
-- `cargo test --locked` завершился без ошибок
-
-Перед запуском live-сценариев нужно явно экспортировать конфиг. Рекомендуемое значение на текущем стенде:
+Canonical entrypoint:
 
 ```bash
-export V8TR_REAL_CONFIG=/home/alko/develop/open-source/ai/mcp/onec-client-mcp-devkit/.agents/tools/onec-client-mcp-devkit.edt.yaml
+V8_TEST_RUNNER_CI_SCOPE=happy-path bash scripts/test/ci-rust.sh
 ```
 
-Скрипты намеренно не держат этот путь как default, чтобы не привязывать запуск к одному файловому дереву и не рисковать чужой реальной ИБ.
+Реальный helper chain:
 
-### 2. Live CLI smoke
+1. `cargo build --locked --bin v8-test-runner`
+2. `cargo check --locked --all-targets`
+3. `cargo test --locked`
+4. `bash scripts/test/live-cli-designer.sh`
 
-Назначение: проверить, что CLI работает на реальном EDT-проекте и реальной ИБ.
+`scripts/test/live-cli-designer.sh` в mandatory профиле обязан выполнить одинаковые стадии для обеих ОС:
 
-Команда:
+1. `init/setup infobase`
+2. `build --full-rebuild`
+3. `syntax designer-config`
+4. `syntax designer-modules`
+5. `test`
+6. `make` для `.cf/.cfe/.epf/.erf`
+7. проверку, что все deploy-ready артефакты существуют и не пусты
 
-```bash
-bash scripts/test/live-cli.sh
-```
+### 3. Non-blocking live contours
 
-Что выполняется по умолчанию:
+Эти сценарии сохраняются отдельно и не являются частью mandatory matrix happy-path:
 
-1. `build`
-2. `syntax edt`
-3. `test module <smoke module>`
+- `bash scripts/test/live-cli.sh`
+- `python3 scripts/test/live-mcp-http.py`
+- `bash scripts/test/live-cli-ibcmd.sh`
 
-Опционально:
+Они остаются полезными для расширенной диагностики, но не определяют blocking-успех canonical Linux/Windows chain.
 
-- `launch --mode thin`, только при `V8TR_ENABLE_LAUNCH=1`
-- designer-only проверки, если появится отдельный `DESIGNER` конфиг
+## Gating contract
 
-Почему `launch` не включен по умолчанию:
+Mandatory happy-path должен быть blocking только для:
 
-- на headless self-hosted runner шаг часто нестабилен из-за GUI/desktop-зависимостей
+- `master`
+- trusted branches
+- same-repo PR
 
-Переменные окружения:
+Для fork PR live jobs не должны становиться blocking. В этом репозитории это пока выражено не workflow-файлом, а env hook-контрактом:
 
-- `V8TR_REAL_CONFIG` - обязателен; путь к live YAML-конфигу
-- `V8TR_BIN` - путь к бинарю `v8-test-runner`
-- `V8TR_SMOKE_MODULE` - smoke-модуль YaXUnit, по умолчанию `ЮТДымовыеТесты`
-- `V8TR_ENABLE_LAUNCH=1` - включить шаг `launch`
+- mandatory designer smoke требует `V8TR_DESIGNER_REAL_CONFIG`
+- workflow может разрешить soft-skip только через `V8TR_DESIGNER_ALLOW_MISSING_CONFIG=1`
+- без этого hook `scripts/test/live-cli-designer.sh` падает, если `V8TR_DESIGNER_REAL_CONFIG` не задан
 
-Критерий успеха:
-
-- все CLI-команды завершились с `exit code 0`
-- для `test module` есть зеленый прогон smoke-модуля
-
-Артефакты для анализа при падении:
-
-- `workPath/logs/**`
-- `workPath/temp/**`
-- stdout/stderr конкретной команды
-
-Почему в этот smoke не включен `syntax designer-*`:
-
-- референсный devkit-конфиг находится в `format: EDT`
-- `syntax designer-config` и `syntax designer-modules` поддерживаются только для `builder=DESIGNER` и `format=DESIGNER`
-- для этих проверок нужен отдельный live `DESIGNER`-конфиг
-
-### 3. Live MCP HTTP smoke
-
-Назначение: проверить живой MCP transport и бизнес-интеграцию поверх того же EDT-конфига.
-
-Команда:
-
-```bash
-python3 scripts/test/live-mcp-http.py
-```
-
-Что выполняется:
-
-1. старт `v8-test-runner mcp serve http`
-2. `initialize`
-3. `notifications/initialized`
-4. `tools/list`
-5. `tools/call build_project`
-6. `tools/call check_syntax_edt`
-7. `tools/call run_module_tests`
-
-Переменные окружения:
-
-- `V8TR_REAL_CONFIG` - обязателен; путь к live YAML-конфигу
-- `V8TR_BIN` - путь к бинарю `v8-test-runner`
-- `V8TR_MCP_URL` - URL MCP HTTP endpoint, по умолчанию `http://127.0.0.1:3000/mcp`
-- `V8TR_SMOKE_MODULE` - smoke-модуль YaXUnit, по умолчанию `ЮТДымовыеТесты`
-- `V8TR_EDT_PROJECT` - EDT project для `check_syntax_edt`, по умолчанию `configuration`
-- `V8TR_HTTP_TIMEOUT_SECONDS` - timeout одного HTTP вызова
-- `V8TR_SERVER_STARTUP_TIMEOUT_SECONDS` - ожидание старта MCP HTTP сервера
-
-Технические требования:
-
-- `python3 >= 3.8`
-
-Критерий успеха:
-
-- transport-level HTTP статусы корректны: `200` и `202`
-- `tools/list` возвращает как минимум обязательное подмножество инструментов: `build_project`, `check_syntax_edt`, `run_module_tests`
-- `build_project`, `check_syntax_edt`, `run_module_tests` возвращают `structuredContent.status=success`
-- для `build_project` и `run_module_tests` поле `result.success=true`
-- для `check_syntax_edt` поле `result.check_result` находится в `clean|issues_found`
-
-Артефакты для анализа при падении:
-
-- `target/manual-tests/live-mcp-http/server.stderr.log`
-- `workPath/logs/mcp/actions.log`
-- `workPath/temp/**`
-- JSON-RPC/SSE payload текущего упавшего шага
-
-### 4. Live CLI IBCMD smoke
-
-Назначение: проверить реальный CLI path для `format=DESIGNER + builder=IBCMD` на файловой ИБ.
-
-Команда:
-
-```bash
-bash scripts/test/live-cli-ibcmd.sh
-```
-
-Что выполняется:
-
-1. `init`
-2. `build`
-3. `dump --mode full`
-4. `dump --mode incremental`
-5. `dump --mode partial --object Catalog.Items`
-6. `extensions`
-
-Что не выполняется намеренно:
-
-- реальный `partial-fail` сценарий в live-контуре, чтобы не добавлять недетерминированные или потенциально опасные для рабочей ИБ условия;
-- `syntax edt` и `test module`, так как этот smoke предназначен для IBCMD-конфига `DESIGNER`-формата и проверяет только целевой IBCMD path.
-
-Skip policy:
-
-- если `V8TR_IBCMD_REAL_CONFIG` не задан, скрипт завершает прогон со статусом `SKIPPED` и `exit code 0`;
-- это считается корректным поведением для окружений без выделенного IBCMD live-стенда;
-- если `V8TR_IBCMD_REAL_CONFIG` задан, но файл отсутствует, не соответствует `format: DESIGNER` + `builder: IBCMD` или использует не файловую строку подключения (`File=...` / raw `/F ...`), скрипт завершает прогон с ранней понятной ошибкой.
-
-Переменные окружения:
-
-- `V8TR_IBCMD_REAL_CONFIG` - путь к отдельному live YAML-конфигу для IBCMD smoke (`format: DESIGNER`, `builder: IBCMD`, файловая ИБ)
-- `V8TR_BIN` - путь к бинарю `v8-test-runner`
-
-Критерий успеха:
-
-- при заданном валидном `V8TR_IBCMD_REAL_CONFIG` все команды smoke завершаются с `exit code 0`;
-- при незаданном `V8TR_IBCMD_REAL_CONFIG` сценарий завершается как `SKIPPED` (`exit code 0`).
-
-Артефакты для анализа при падении:
-
-- `workPath/logs/**`
-- `workPath/temp/**`
-- stdout/stderr конкретной команды
-
-### 5. Live CLI Designer smoke
-
-Назначение: fixture-based smoke для всех поддержанных CLI-команд конфигуратора при `format=DESIGNER + builder=DESIGNER` с реальным `1cv8` и файловой ИБ.
+## Контракт `live-cli-designer`
 
 Команда:
 
@@ -214,116 +106,86 @@ Skip policy:
 bash scripts/test/live-cli-designer.sh
 ```
 
-Что выполняется:
+Обязательные переменные окружения:
 
-1. `init`
-2. `build --full-rebuild`
-3. `dump --mode full --source-set configuration`
-4. `dump --mode incremental --source-set configuration`
-5. `dump --mode partial --source-set configuration --object Catalog.Справочник1`
-6. `syntax designer-config --all-extensions`
-7. `syntax designer-modules --server --all-extensions`
-8. `artifacts --output <.../configuration.cf>`
-9. `artifacts --output <.../extension.cfe> --source-set Расширение1 --extension Расширение1`
-10. `artifacts --output <.../external-processor> --source-set external-processor`
-11. `artifacts --output <.../external-report> --source-set external-report`
-12. `launch --mode designer`
+- `V8TR_DESIGNER_REAL_CONFIG` - отдельный YAML-конфиг для fixture-based `format: DESIGNER` + `builder: DESIGNER`; обязателен для mandatory smoke
 
-Контракт live-конфига:
+Опциональные hook-переменные:
 
-- `V8TR_DESIGNER_REAL_CONFIG` должен указывать на отдельный YAML-конфиг для fixture-набора из `tests/fixtures/designer`;
-- `basePath` должен резолвиться в `<repo>/tests/fixtures/designer`;
-- `workPath` рекомендуется держать внутри `target/manual-tests/live-cli-designer/work`;
-- `format: DESIGNER`;
-- `builder: DESIGNER`;
-- файловое подключение `connection: File=...` или raw `/F ...`;
-- source-set'ы: `configuration`, `Расширение1`, `external-processor`, `external-report`;
-- `tools.platform.path` должен быть задан и указывать на валидный platform hint;
-- шаблон: `examples/live-cli-designer.fixture.yaml`.
-
-Что дополнительно проверяет smoke:
-
-- после `init` существует `1Cv8.1CD`;
-- `build --full-rebuild` в JSON-результате содержит успешные steps для `configuration` и `Расширение1`;
-- после `dump` реально существуют `Configuration.xml`, `ConfigDumpInfo.xml` и `Catalogs/Справочник1.xml`;
-- после `artifacts` реально существуют и не пусты `configuration.cf`, `extension.cfe`, `ВнешняяОбработка1.epf`, `ВнешнийОтчет1.erf`;
-- `launch --mode designer` возвращает JSON с `pid`, процесс поднимается и завершается cleanup'ом скрипта.
-
-Skip policy:
-
-- если `V8TR_DESIGNER_REAL_CONFIG` не задан, скрипт завершает прогон со статусом `SKIPPED` и `exit code 0`;
-- если `V8TR_DESIGNER_REAL_CONFIG` задан, но файл отсутствует, не соответствует `format: DESIGNER` + `builder: DESIGNER`, не использует файловую строку подключения, не ссылается на fixture-basePath или не содержит обязательные source-set'ы, скрипт падает ранней понятной ошибкой.
-
-Переменные окружения:
-
-- `V8TR_DESIGNER_REAL_CONFIG` - путь к отдельному live YAML-конфигу для Designer fixture smoke
 - `V8TR_BIN` - путь к бинарю `v8-test-runner`
+- `V8TR_PLATFORM_PATH` - явный override пути до `1cv8`/`1cv8.exe`
+- `V8TR_DESIGNER_SMOKE_PROFILE=mandatory|extended` - mandatory по умолчанию; `extended` включает dump-only хвост
+- `V8TR_DESIGNER_TEST_MODE=va|module` - конкретизация текущего test-stage helper-а
+- `V8TR_DESIGNER_TEST_MODULE` - обязателен при `V8TR_DESIGNER_TEST_MODE=module`
+- `V8TR_DESIGNER_ALLOW_MISSING_CONFIG=1` - разрешить `SKIPPED` вместо hard failure только для non-blocking/soft-skip контекстов
+
+Требования к конфигу:
+
+- `format: DESIGNER`
+- `builder: DESIGNER`
+- файловое подключение `File=...` или raw `/F ...`
+- `basePath`, резолвящийся в `tests/fixtures/designer`
+- source-set'ы для `configuration`, `extension`, `external-processor`, `external-report`
+- заданный `tools.platform.path` или внешний override `V8TR_PLATFORM_PATH`
+
+Cross-platform hardening:
+
+- в `bash`-окружении поддерживаются и `1cv8`, и `1cv8.exe`
+- платформа может быть найдена через config path, `V8TR_PLATFORM_PATH`, `PATH`, Linux `/opt/1cv8` и Windows `Program Files`
+- mandatory path не зависит от GUI и не использует `launch`
+- mandatory path не делает `load/apply`
 
 Критерий успеха:
 
-- при заданном валидном `V8TR_DESIGNER_REAL_CONFIG` все команды smoke завершаются с `exit code 0`;
-- обязательные dump/artifacts outputs реально опубликованы;
-- `launch --mode designer` возвращает рабочий `pid`;
-- при незаданном `V8TR_DESIGNER_REAL_CONFIG` сценарий завершается как `SKIPPED` (`exit code 0`).
+- все стадии `build -> syntax/check -> test -> package -> deploy-ready artifacts` завершаются с `exit code 0`
+- существуют и не пусты:
+  - `target/manual-tests/live-cli-designer/artifacts/configuration.cf`
+  - `target/manual-tests/live-cli-designer/artifacts/extension.cfe`
+  - `target/manual-tests/live-cli-designer/artifacts/external-processor/*.epf`
+  - `target/manual-tests/live-cli-designer/artifacts/external-report/*.erf`
 
-Артефакты для анализа при падении:
-
-- `target/manual-tests/live-cli-designer/**`
-- `workPath/logs/**`
-- `workPath/temp/**`
-- stdout/stderr конкретной команды
-
-## Рекомендуемый порядок запуска
+## Рекомендованный порядок запуска
 
 ### Локально
 
-1. `bash scripts/test/ci-rust.sh`
-2. `bash scripts/test/live-cli.sh`
-3. `python3 scripts/test/live-mcp-http.py`
-4. `bash scripts/test/live-cli-ibcmd.sh`
-5. `bash scripts/test/live-cli-designer.sh`
-
-### CI
-
-#### Generic CI
-
-Запускать только:
-
 ```bash
 bash scripts/test/ci-rust.sh
-```
-
-#### Self-hosted CI с 1С/EDT
-
-После generic CI или в отдельном job запускать:
-
-```bash
-bash scripts/test/live-cli.sh
+V8_TEST_RUNNER_CI_SCOPE=happy-path bash scripts/test/ci-rust.sh
 python3 scripts/test/live-mcp-http.py
 bash scripts/test/live-cli-ibcmd.sh
-bash scripts/test/live-cli-designer.sh
 ```
 
-Рекомендация:
+### Будущий GitHub Actions matrix
 
-- держать live smoke в отдельном job/stage
-- не делать его обязательным для любого внешнего PR, если runner и ИБ недоступны
+Для `ubuntu-latest` и `windows-latest` blocking должен использоваться один и тот же entrypoint:
+
+```bash
+V8_TEST_RUNNER_CI_SCOPE=happy-path bash scripts/test/ci-rust.sh
+```
+
+Install/bootstrap шаги для 1С, `ibsrv`, trusted/fork gating, artifact upload и branch filters пользователь добавит позже в workflow wiring.
+
+Windows runner contract for this helper layer is explicit:
+
+- invoke the entrypoint through `bash`
+- provide `python3` in PATH
+- allow the helper to use `python3` for config normalization, JSON checks, and platform detection
 
 ## Матрица покрытия
 
-| Контур | Build | Syntax EDT | Syntax Designer | YaXUnit | Launch | MCP initialize/list/tools |
-| --- | --- | --- | --- | --- | --- | --- |
-| `ci-rust` | mock | mock | mock | mock | mock | mock |
-| `live-cli` | real | real | requires separate DESIGNER config | real | optional real | n/a |
-| `live-mcp-http` | real via MCP | real via MCP | n/a | real via MCP | n/a | real |
-| `live-cli-ibcmd` | real (`IBCMD`) | n/a | n/a | n/a | n/a | n/a |
-| `live-cli-designer` | real (`DESIGNER`) | n/a | real | n/a | real (`designer`) | n/a |
+| Контур | Linux | Windows | Blocking | Build | Syntax/check | Test | Package | Deploy-ready artifacts |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `ci-rust contract` | yes | yes | yes | Rust | Rust | Rust | no | no |
+| `ci-rust happy-path` | yes | yes | yes on trusted | Rust + real 1C | real | real | real | real |
+| `live-mcp-http` | optional | optional | no | real via MCP | real via MCP | real via MCP | n/a | n/a |
+| `live-cli-ibcmd` | optional | optional | no | real (`IBCMD`) | n/a | n/a | diagnostic dump/export only | n/a |
+| `live-cli` | optional | optional | no | real | real | real | n/a | n/a |
 
-## Ограничения и риски
+## Ограничения и TODO hooks
 
-- Live smoke меняет состояние реальной ИБ и рабочего каталога.
-- `launch` зависит от GUI-окружения и поэтому оставлен opt-in.
-- Smoke-модуль привязан к devkit-проекту; при переименовании нужно обновить `V8TR_SMOKE_MODULE`.
-- В обычный CI нельзя переносить live smoke без self-hosted runner и установленной 1С-инфраструктуры.
-- Для `live-cli-ibcmd` обязательный реальный стенд может отсутствовать; в этом случае сценарий штатно завершает прогон как `SKIPPED`.
-- Для `live-cli-designer` нужен отдельный fixture-based стенд с GUI-доступом для `launch --mode designer`; в generic CI этот контур запускать нельзя.
+- В репозитории пока нет новых `.github/workflows/*.yml`; здесь зафиксированы только matrix/contract/TODO hooks.
+- Установка 1С, bootstrap файловой ИБ через `ibsrv`, artifact upload и branch/fork gating остаются внешним workflow wiring.
+- `live-cli-designer` по умолчанию использует текущий helper test-stage (`va`), но canonical contract формулируется как stage `test`, а не как жёстко зафиксированная конкретная команда.
+- Default `va`-path additionally requires the Vanessa Automation EPF, params template, and feature directory listed above.
+- `live-mcp-http` и `live-cli-ibcmd` остаются отдельными non-blocking контурами.
+- Mandatory designer smoke requires `V8TR_DESIGNER_REAL_CONFIG`; `V8TR_DESIGNER_ALLOW_MISSING_CONFIG=1` is reserved for fork/non-blocking soft-skip contexts.

@@ -170,3 +170,12 @@
 - [x] Добавить MCP runtime telemetry: semaphore wait time, EDT queue depth, restart count и shutdown/restart drain stats
 - [x] Расширить MCP regression/stress suite: `tools/list` contract, все 8 stdio tools, HTTP admission/tool-call regressions и `dump_config(PARTIAL)` matrix для `DESIGNER`/`IBCMD`
 - [x] 2026-03-21: `spec/MCP_IMPLEMENTATION_PLAN.md` сохранён как canonical staged MCP rollout history/reference; `spec/IMPLEMENTATION_TODO.md` остаётся активным backlog для follow-up и немигрированных EDT-задач.
+
+## CI contract hooks (2026-04-17)
+
+- [x] Перевести `scripts/test/ci-rust.sh` на контрактные scope'ы `contract|runtime-locks|happy-path`.
+- [x] Добавить helper entrypoint `scripts/test/ci-happy-path.sh` для одинаковой Linux/Windows цепочки `build -> syntax/check -> test -> package -> deploy-ready artifacts`.
+- [x] Перевести `scripts/test/live-cli-designer.sh` на mandatory profile без `load/apply/launch` и с подтверждением непустых `.cf/.cfe/.epf/.erf`.
+- [x] Убрать fixture-config fallback как неявный "live" default; mandatory designer smoke теперь требует явный `V8TR_DESIGNER_REAL_CONFIG`, а soft-skip разрешается только через hook `V8TR_DESIGNER_ALLOW_MISSING_CONFIG=1`.
+- [x] Зафиксировать в `spec/REAL_ENV_TEST_PLAN.md`, что будущий GitHub Actions matrix на `ubuntu-latest` и `windows-latest` является source of truth, а `live-mcp-http` и `live-cli-ibcmd` остаются non-blocking.
+- [ ] Добавить workflow wiring для установки 1С на GitHub-hosted runner'ах, bootstrap файловой ИБ через `ibsrv`, trusted/fork gating и upload deploy-ready артефактов.

@@ -4,8 +4,12 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
-DEFAULT_DESIGNER_CONFIG_PATH="$ROOT_DIR/scripts/test/live-cli-designer.fixture.yaml"
-DESIGNER_CONFIG_PATH="${V8TR_DESIGNER_REAL_CONFIG:-$DEFAULT_DESIGNER_CONFIG_PATH}"
+DESIGNER_CONFIG_PATH="${V8TR_DESIGNER_REAL_CONFIG:-}"
+ALLOW_MISSING_CONFIG="${V8TR_DESIGNER_ALLOW_MISSING_CONFIG:-0}"
+DESIGNER_SMOKE_PROFILE="${V8TR_DESIGNER_SMOKE_PROFILE:-mandatory}"
+DESIGNER_TEST_MODE="${V8TR_DESIGNER_TEST_MODE:-va}"
+DESIGNER_TEST_MODULE="${V8TR_DESIGNER_TEST_MODULE:-}"
+PLATFORM_PATH_OVERRIDE="${V8TR_PLATFORM_PATH:-}"
 BIN_PATH="${V8TR_BIN:-$ROOT_DIR/target/debug/v8-test-runner}"
 OUTPUT_ROOT="$ROOT_DIR/target/manual-tests/live-cli-designer"
 FIXTURE_BASE_PATH="$ROOT_DIR/tests/fixtures/designer"
@@ -16,6 +20,14 @@ VANESSA_FEATURE_PATH="${V8TR_VA_FEATURE_PATH:-$ROOT_DIR/scripts/test/features/li
 die() {
     echo "$*" >&2
     exit 2
+}
+
+print_stage() {
+    local title="$1"
+    echo
+    echo "============================================================"
+    echo "MANDATORY DESIGNER SMOKE: $title"
+    echo "============================================================"
 }
 
 assert_file_exists() {
@@ -101,9 +113,10 @@ config_matches() {
 
 detect_platform_path() {
     local configured_path="${1:-}"
+    local candidate="${PLATFORM_PATH_OVERRIDE:-$configured_path}"
 
-    if [[ -n "$configured_path" && "$configured_path" != "AUTO_PLATFORM" && -e "$configured_path" ]]; then
-        printf '%s\n' "$configured_path"
+    if [[ -n "$candidate" && "$candidate" != "AUTO_PLATFORM" && -e "$candidate" ]]; then
+        printf '%s\n' "$candidate"
         return 0
     fi
 
@@ -112,14 +125,39 @@ detect_platform_path() {
         return 0
     fi
 
-    python3 - <<'PY'
-import pathlib
+    if command -v 1cv8.exe >/dev/null 2>&1; then
+        command -v 1cv8.exe
+        return 0
+    fi
 
-candidates = sorted(pathlib.Path("/opt/1cv8").glob("**/1cv8"), reverse=True)
-for candidate in candidates:
-    if candidate.is_file():
-        print(candidate)
-        raise SystemExit(0)
+    python3 - <<'PY'
+import os
+import pathlib
+import sys
+
+candidate_roots = [
+    pathlib.Path("/opt/1cv8"),
+    pathlib.Path("/c/Program Files/1cv8"),
+    pathlib.Path("/c/Program Files (x86)/1cv8"),
+    pathlib.Path("C:/Program Files/1cv8"),
+    pathlib.Path("C:/Program Files (x86)/1cv8"),
+]
+
+for env_name in ("ProgramFiles", "ProgramFiles(x86)"):
+    env_value = os.environ.get(env_name)
+    if env_value:
+        candidate_roots.append(pathlib.Path(env_value) / "1cv8")
+
+patterns = ("**/1cv8", "**/1cv8.exe")
+
+for root in candidate_roots:
+    if not root.exists():
+        continue
+    for pattern in patterns:
+        for path in sorted(root.glob(pattern), reverse=True):
+            if path.is_file():
+                print(path)
+                raise SystemExit(0)
 
 raise SystemExit(1)
 PY
@@ -261,89 +299,18 @@ raise SystemExit("connection must use File=... or raw /F ...")
 PY
 }
 
-extract_launch_pid() {
-    local json_path="$1"
-    python3 - "$json_path" <<'PY'
-import json
-import sys
-
-with open(sys.argv[1], "r", encoding="utf-8") as fh:
-    payload = json.load(fh)
-
-pid = payload.get("data", {}).get("pid")
-if not isinstance(pid, int) or pid <= 0:
-    raise SystemExit("launch output does not contain a valid pid")
-print(pid)
-PY
-}
-
-run_cli() {
-    echo
-    echo "==> $*"
-    "$BIN_PATH" --config "$DESIGNER_CONFIG_PATH" "$@"
-}
-
-run_cli_json_to_file() {
-    local json_path="$1"
-    shift
-    echo
-    echo "==> --output json $*"
-    "$BIN_PATH" --config "$DESIGNER_CONFIG_PATH" --output json "$@" | tee "$json_path"
-}
-
-print_test_step() {
-    local title="$1"
-    echo
-    echo "============================================================"
-    echo "TEST: $title"
-    echo "============================================================"
-}
-
-assert_load_json_ok() {
-    local json_path="$1"
-    local target_kind="$2"
-
-    python3 - "$json_path" "$target_kind" <<'PY'
-import json
-import sys
-
-json_path, target_kind = sys.argv[1], sys.argv[2]
-with open(json_path, "r", encoding="utf-8") as fh:
-    payload = json.load(fh)
-
-if payload.get("ok") is not True:
-    raise SystemExit(f"load command failed: {payload}")
-
-if payload.get("command") != "load":
-    raise SystemExit(f"unexpected command in load output: {payload.get('command')}")
-
-data = payload.get("data", {})
-execution = data.get("execution", {})
-metadata = execution.get("payload", {})
-
-if data.get("target_kind") != target_kind:
-    raise SystemExit(
-        f"unexpected load target_kind '{data.get('target_kind')}', expected '{target_kind}'"
-    )
-
-if metadata.get("applied") is not True:
-    raise SystemExit(f"load output does not confirm applied=true: {payload}")
-
-if metadata.get("update_db_cfg_ran") is not True:
-    raise SystemExit(f"load output does not confirm UpdateDBCfg ran: {payload}")
-PY
-}
-
 assert_test_json_ok() {
     local json_path="$1"
-    local expected_min_total="${2:-1}"
+    local expected_command="$2"
+    local expected_min_total="${3:-1}"
 
-    python3 - "$json_path" "$expected_min_total" <<'PY'
+    python3 - "$json_path" "$expected_command" "$expected_min_total" <<'PY'
 import json
 import sys
 
 json_path = sys.argv[1]
-expected_min_total = int(sys.argv[2])
+expected_command = sys.argv[2]
+expected_min_total = int(sys.argv[3])
 
 with open(json_path, "r", encoding="utf-8") as fh:
     payload = json.load(fh)
@@ -372,13 +339,14 @@ if not isinstance(total, int) or total < expected_min_total:
         f"test summary total must be >= {expected_min_total}, got {total}: {payload}"
     )
 
-retained_paths = data.get("retained_paths")
-if not isinstance(retained_paths, dict):
-    raise SystemExit(f"test payload does not contain retained_paths: {payload}")
+invocation = data.get("invocation", {})
+if not isinstance(invocation, dict):
+    raise SystemExit(f"test payload does not contain invocation: {payload}")
 
-runner_log = retained_paths.get("yaxunit_log")
-if not isinstance(runner_log, str) or not runner_log:
-    raise SystemExit(f"test retained_paths does not include runner log: {payload}")
+if invocation.get("mode") != expected_command:
+    raise SystemExit(
+        f"test invocation mode must be '{expected_command}', got {invocation.get('mode')}: {payload}"
+    )
 PY
 }
 
@@ -432,29 +400,91 @@ target.write_text(text, encoding="utf-8")
 PY
 }
 
-LAUNCH_PID=""
-cleanup() {
-    if [[ -n "$LAUNCH_PID" ]]; then
-        kill "$LAUNCH_PID" >/dev/null 2>&1 || true
-    fi
+run_cli() {
+    echo
+    echo "==> $*"
+    "$BIN_PATH" --config "$DESIGNER_CONFIG_PATH" "$@"
 }
-trap cleanup EXIT
+
+run_cli_json_to_file() {
+    local json_path="$1"
+    shift
+    echo
+    echo "==> --output json $*"
+    "$BIN_PATH" --config "$DESIGNER_CONFIG_PATH" --output json "$@" | tee "$json_path"
+}
+
+run_test_stage() {
+    local json_path="$OUTPUT_ROOT/json/test-stage.json"
+
+    case "$DESIGNER_TEST_MODE" in
+        va)
+            [[ -f "$VANESSA_EPF_PATH" ]] || die "Vanessa Automation EPF not found: $VANESSA_EPF_PATH"
+            [[ -f "$VANESSA_PARAMS_TEMPLATE_PATH" ]] || die "Vanessa params template not found: $VANESSA_PARAMS_TEMPLATE_PATH"
+            [[ -d "$VANESSA_FEATURE_PATH" ]] || die "Vanessa feature path not found: $VANESSA_FEATURE_PATH"
+            run_cli_json_to_file "$json_path" test va
+            assert_test_json_ok "$json_path" "va" 1
+            ;;
+        module)
+            [[ -n "$DESIGNER_TEST_MODULE" ]] || die "V8TR_DESIGNER_TEST_MODULE must be set when V8TR_DESIGNER_TEST_MODE=module"
+            run_cli_json_to_file "$json_path" test module "$DESIGNER_TEST_MODULE"
+            assert_test_json_ok "$json_path" "module" 1
+            ;;
+        *)
+            die "Unsupported V8TR_DESIGNER_TEST_MODE: $DESIGNER_TEST_MODE"
+            ;;
+    esac
+}
+
+run_extended_steps() {
+    local dump_root="$OUTPUT_ROOT/dump"
+
+    print_stage "extended dump validation"
+    rm -f \
+        "$WORK_BASE_PATH/$CONFIGURATION_SOURCE_SET_PATH/Configuration.xml" \
+        "$WORK_BASE_PATH/$CONFIGURATION_SOURCE_SET_PATH/ConfigDumpInfo.xml"
+    run_cli dump --mode full --source-set "$CONFIGURATION_SOURCE_SET_NAME"
+    assert_file_exists "$WORK_BASE_PATH/$CONFIGURATION_SOURCE_SET_PATH/Configuration.xml"
+    assert_file_exists "$WORK_BASE_PATH/$CONFIGURATION_SOURCE_SET_PATH/ConfigDumpInfo.xml"
+    snapshot_dir "$WORK_BASE_PATH/$CONFIGURATION_SOURCE_SET_PATH" "$dump_root/full"
+
+    rm -f "$WORK_BASE_PATH/$CONFIGURATION_SOURCE_SET_PATH/ConfigDumpInfo.xml"
+    run_cli dump --mode incremental --source-set "$CONFIGURATION_SOURCE_SET_NAME"
+    assert_dir_exists "$WORK_BASE_PATH/$CONFIGURATION_SOURCE_SET_PATH"
+    assert_file_exists "$WORK_BASE_PATH/$CONFIGURATION_SOURCE_SET_PATH/ConfigDumpInfo.xml"
+    snapshot_dir "$WORK_BASE_PATH/$CONFIGURATION_SOURCE_SET_PATH" "$dump_root/incremental"
+
+    rm -f "$WORK_BASE_PATH/$CONFIGURATION_SOURCE_SET_PATH/Catalogs/Справочник1.xml"
+    run_cli dump --mode partial --source-set "$CONFIGURATION_SOURCE_SET_NAME" --object Catalog.Справочник1
+    assert_file_exists "$WORK_BASE_PATH/$CONFIGURATION_SOURCE_SET_PATH/Catalogs/Справочник1.xml"
+    snapshot_dir "$WORK_BASE_PATH/$CONFIGURATION_SOURCE_SET_PATH" "$dump_root/partial"
+}
+
+if [[ -z "$DESIGNER_CONFIG_PATH" ]]; then
+    if [[ "$ALLOW_MISSING_CONFIG" == "1" ]]; then
+        echo "SKIPPED: V8TR_DESIGNER_REAL_CONFIG is not set."
+        echo "Set V8TR_DESIGNER_REAL_CONFIG to a dedicated format=DESIGNER,builder=DESIGNER fixture config."
+        echo "Default va-path also requires target/vanessa-automation-single.epf, scripts/test/live-cli-designer.va-params.json, and scripts/test/features/live-cli-designer."
+        exit 0
+    fi
+    die "V8TR_DESIGNER_REAL_CONFIG is required for mandatory designer smoke."
+fi
 
 if [[ ! -f "$DESIGNER_CONFIG_PATH" ]]; then
     die "Live Designer config not found: $DESIGNER_CONFIG_PATH"
 fi
 
-if [[ ! -f "$VANESSA_EPF_PATH" ]]; then
-    die "Vanessa Automation EPF not found: $VANESSA_EPF_PATH"
+if ! command -v python3 >/dev/null 2>&1; then
+    die "python3 is required for the live-cli-designer helper contract"
 fi
 
-if [[ ! -f "$VANESSA_PARAMS_TEMPLATE_PATH" ]]; then
-    die "Vanessa params template not found: $VANESSA_PARAMS_TEMPLATE_PATH"
-fi
-
-if [[ ! -d "$VANESSA_FEATURE_PATH" ]]; then
-    die "Vanessa feature path not found: $VANESSA_FEATURE_PATH"
-fi
+case "$DESIGNER_SMOKE_PROFILE" in
+    mandatory|extended)
+        ;;
+    *)
+        die "Unsupported V8TR_DESIGNER_SMOKE_PROFILE: $DESIGNER_SMOKE_PROFILE"
+        ;;
+esac
 
 if ! config_matches "^format:\\s*DESIGNER\\s*$" "$DESIGNER_CONFIG_PATH"; then
     die "Live Designer config must contain 'format: DESIGNER': $DESIGNER_CONFIG_PATH"
@@ -515,8 +545,8 @@ if [[ "$config_base_real" != "$fixture_base_real" ]]; then
 fi
 
 platform_path="$(extract_platform_path)"
-if [[ -z "$platform_path" ]]; then
-    die "Live Designer config must define tools.platform.path: $DESIGNER_CONFIG_PATH"
+if [[ -z "$platform_path" && -z "$PLATFORM_PATH_OVERRIDE" ]]; then
+    die "Live Designer config must define tools.platform.path or provide V8TR_PLATFORM_PATH"
 fi
 
 platform_path="$(detect_platform_path "$platform_path")" || die "Unable to detect 1cv8 platform binary automatically"
@@ -541,9 +571,6 @@ fi
 rm -rf "$OUTPUT_ROOT"
 mkdir -p \
     "$WORK_BASE_PATH" \
-    "$OUTPUT_ROOT/dump/full" \
-    "$OUTPUT_ROOT/dump/incremental" \
-    "$OUTPUT_ROOT/dump/partial" \
     "$OUTPUT_ROOT/artifacts/external-processor" \
     "$OUTPUT_ROOT/artifacts/external-report" \
     "$OUTPUT_ROOT/json"
@@ -563,82 +590,56 @@ done
 EXTERNAL_PROCESSOR_ARTIFACT_NAME="$(extract_artifact_root_name "$EXTERNAL_PROCESSOR_SOURCE_SET_PATH")"
 EXTERNAL_REPORT_ARTIFACT_NAME="$(extract_artifact_root_name "$EXTERNAL_REPORT_SOURCE_SET_PATH")"
 
-print_test_step "init infobase"
+print_stage "init and setup infobase"
 run_cli init
 assert_file_exists "$(extract_connection_file_path)/1Cv8.1CD"
 
 build_json="$OUTPUT_ROOT/json/build.json"
-print_test_step "build full rebuild"
+print_stage "build full rebuild"
 run_cli_json_to_file "$build_json" build --full-rebuild
 assert_json_step_ok "$build_json" "$CONFIGURATION_SOURCE_SET_NAME"
 assert_json_step_ok "$build_json" "$EXTENSION_SOURCE_SET_NAME"
 
-print_test_step "dump full configuration"
-rm -f \
-    "$WORK_BASE_PATH/$CONFIGURATION_SOURCE_SET_PATH/Configuration.xml" \
-    "$WORK_BASE_PATH/$CONFIGURATION_SOURCE_SET_PATH/ConfigDumpInfo.xml"
-run_cli dump --mode full --source-set "$CONFIGURATION_SOURCE_SET_NAME"
-assert_file_exists "$WORK_BASE_PATH/$CONFIGURATION_SOURCE_SET_PATH/Configuration.xml"
-assert_file_exists "$WORK_BASE_PATH/$CONFIGURATION_SOURCE_SET_PATH/ConfigDumpInfo.xml"
-snapshot_dir "$WORK_BASE_PATH/$CONFIGURATION_SOURCE_SET_PATH" "$OUTPUT_ROOT/dump/full"
-
-print_test_step "dump incremental configuration"
-rm -f "$WORK_BASE_PATH/$CONFIGURATION_SOURCE_SET_PATH/ConfigDumpInfo.xml"
-run_cli dump --mode incremental --source-set "$CONFIGURATION_SOURCE_SET_NAME"
-assert_dir_exists "$WORK_BASE_PATH/$CONFIGURATION_SOURCE_SET_PATH"
-assert_file_exists "$WORK_BASE_PATH/$CONFIGURATION_SOURCE_SET_PATH/ConfigDumpInfo.xml"
-snapshot_dir "$WORK_BASE_PATH/$CONFIGURATION_SOURCE_SET_PATH" "$OUTPUT_ROOT/dump/incremental"
-
-print_test_step "dump partial configuration"
-rm -f "$WORK_BASE_PATH/$CONFIGURATION_SOURCE_SET_PATH/Catalogs/Справочник1.xml"
-run_cli dump --mode partial --source-set "$CONFIGURATION_SOURCE_SET_NAME" --object Catalog.Справочник1
-assert_file_exists "$WORK_BASE_PATH/$CONFIGURATION_SOURCE_SET_PATH/Catalogs/Справочник1.xml"
-snapshot_dir "$WORK_BASE_PATH/$CONFIGURATION_SOURCE_SET_PATH" "$OUTPUT_ROOT/dump/partial"
-
-print_test_step "syntax designer config"
+print_stage "syntax and checks"
 run_cli syntax designer-config --all-extensions
-print_test_step "syntax designer modules"
 run_cli syntax designer-modules --server --all-extensions
 
-print_test_step "make configuration cf"
+print_stage "test"
+run_test_stage
+
+print_stage "package artifacts"
 run_cli make --output "$OUTPUT_ROOT/artifacts/configuration.cf"
 assert_file_nonempty "$OUTPUT_ROOT/artifacts/configuration.cf"
 
-print_test_step "make extension cfe"
 run_cli make \
     --output "$OUTPUT_ROOT/artifacts/extension.cfe" \
     --source-set "$EXTENSION_SOURCE_SET_NAME" \
     --extension "$EXTENSION_SOURCE_SET_NAME"
 assert_file_nonempty "$OUTPUT_ROOT/artifacts/extension.cfe"
 
-print_test_step "make external processor epf"
 run_cli make \
     --output "$OUTPUT_ROOT/artifacts/external-processor" \
     --source-set "$EXTERNAL_PROCESSOR_SOURCE_SET_NAME"
 assert_file_nonempty "$OUTPUT_ROOT/artifacts/external-processor/${EXTERNAL_PROCESSOR_ARTIFACT_NAME}.epf"
 
-print_test_step "make external report erf"
 run_cli make \
     --output "$OUTPUT_ROOT/artifacts/external-report" \
     --source-set "$EXTERNAL_REPORT_SOURCE_SET_NAME"
 assert_file_nonempty "$OUTPUT_ROOT/artifacts/external-report/${EXTERNAL_REPORT_ARTIFACT_NAME}.erf"
 
-load_cf_json="$OUTPUT_ROOT/json/load-configuration.json"
-print_test_step "load configuration cf"
-run_cli_json_to_file "$load_cf_json" load --path "$OUTPUT_ROOT/artifacts/configuration.cf"
-assert_load_json_ok "$load_cf_json" "configuration"
+print_stage "deploy-ready artifact validation"
+for artifact in \
+    "$OUTPUT_ROOT/artifacts/configuration.cf" \
+    "$OUTPUT_ROOT/artifacts/extension.cfe" \
+    "$OUTPUT_ROOT/artifacts/external-processor/${EXTERNAL_PROCESSOR_ARTIFACT_NAME}.epf" \
+    "$OUTPUT_ROOT/artifacts/external-report/${EXTERNAL_REPORT_ARTIFACT_NAME}.erf"; do
+    assert_file_nonempty "$artifact"
+    echo "READY: $artifact"
+done
 
-test_va_json="$OUTPUT_ROOT/json/test-va.json"
-print_test_step "test vanessa automation"
-run_cli_json_to_file "$test_va_json" test va
-assert_test_json_ok "$test_va_json" 1
-
-launch_json="$OUTPUT_ROOT/json/launch-designer.json"
-print_test_step "launch designer"
-run_cli_json_to_file "$launch_json" launch --mode designer
-LAUNCH_PID="$(extract_launch_pid "$launch_json")"
-sleep 1
-kill -0 "$LAUNCH_PID" >/dev/null 2>&1 || die "Designer process is not running after launch: pid $LAUNCH_PID"
+if [[ "$DESIGNER_SMOKE_PROFILE" == "extended" ]]; then
+    run_extended_steps
+fi
 
 echo
 echo "Live CLI Designer smoke completed successfully."
