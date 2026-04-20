@@ -25,7 +25,7 @@ use crate::use_cases::request::{
     SyntaxTargetRequest as SyntaxTarget,
 };
 use crate::use_cases::result::{UseCaseFailure, UseCaseResult};
-use tracing::info;
+use tracing::debug;
 
 const SUPPORTED_DESIGNER_SYNTAX_ERROR: &str =
     "syntax currently supports only builder=DESIGNER and format=DESIGNER";
@@ -38,7 +38,7 @@ pub fn execute(
     config: &AppConfig,
     args: &SyntaxArgs,
 ) -> UseCaseResult<SyntaxCheckResult> {
-    info!(
+    debug!(
         command = context.command().as_str(),
         transport = ?context.transport(),
         "executing syntax use case"
@@ -122,7 +122,7 @@ fn run_syntax_with_context(
         ));
     }
 
-    info!(
+    debug!(
         check = invocation.kind.check_name(),
         flags = ?invocation.flags,
         "starting syntax check"
@@ -152,7 +152,7 @@ fn run_syntax_with_context(
     };
 
     let log_path = unique_log_path(&log_dir, invocation.kind.check_name());
-    info!(path = %log_path.display(), "syntax platform log reserved");
+    debug!(path = %log_path.display(), "syntax platform log reserved");
 
     let mut utilities = PlatformUtilities::from_config(config);
     let location = match utilities.locate(UtilityType::V8) {

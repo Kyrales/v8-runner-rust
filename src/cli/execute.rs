@@ -14,6 +14,7 @@ use crate::domain::dump::{DumpMode, DumpResult};
 use crate::domain::execution::ExecutionTimeouts;
 use crate::domain::init::{InitResult, InitStep, InitStepStatus};
 use crate::domain::issue::{Issue, IssueSeverity};
+use crate::domain::launch::{LaunchMode, LaunchResult};
 use crate::domain::load::{LoadMode, LoadResult};
 use crate::domain::runner::{
     ExecutionPolicy, LaunchClientModeRequest, LaunchOptions, RunnerKind, RunnerOutputFormat,
@@ -484,12 +485,7 @@ fn execute_launch(
                         result,
                     ));
                 } else {
-                    presenter.print_success_item(
-                        result
-                            .message
-                            .as_deref()
-                            .unwrap_or("Launched application successfully"),
-                    );
+                    render_launch_text(&result, presenter);
                 }
                 Ok(())
             }
@@ -952,18 +948,58 @@ fn render_build_text(result: &BuildResult, presenter: &Presenter, succeeded: boo
     presenter.print_timeline(&[summary]);
 }
 
-fn render_load_text(result: &LoadResult, presenter: &Presenter, succeeded: bool) {
-    let mode = match result.mode {
-        LoadMode::Load => "load",
-        LoadMode::Merge => "merge",
-        LoadMode::Update => "update",
-    };
-    let artifact_type = match result.artifact_type {
+fn timeline_status(ok: bool) -> TimelineStatus {
+    if ok {
+        TimelineStatus::Succeeded
+    } else {
+        TimelineStatus::Failed
+    }
+}
+
+fn timeline_item_with_details(
+    status: TimelineStatus,
+    label: impl Into<String>,
+    details: Vec<String>,
+) -> TimelineItem {
+    let item = TimelineItem::new(status, label);
+    if details.is_empty() {
+        item
+    } else {
+        item.with_detail(details.join("\n"))
+    }
+}
+
+fn status_detail(ok: bool, message: impl AsRef<str>) -> String {
+    if ok {
+        format!("✓ {}", message.as_ref())
+    } else {
+        format!("✗ {}", message.as_ref())
+    }
+}
+
+fn step_status_detail(status: &InitStepStatus, message: impl AsRef<str>) -> String {
+    match status {
+        InitStepStatus::Ok => format!("✓ {}", message.as_ref()),
+        InitStepStatus::Skipped => format!("○ {}", message.as_ref()),
+        InitStepStatus::Failed => format!("✗ {}", message.as_ref()),
+    }
+}
+
+fn render_artifact_mode(mode: ArtifactBuildMode) -> &'static str {
+    match mode {
         ArtifactBuildMode::Unknown => "unknown",
         ArtifactBuildMode::ConfigurationCf => "cf",
         ArtifactBuildMode::ExtensionCfe => "cfe",
         ArtifactBuildMode::ExternalDataProcessorEpf => "epf",
         ArtifactBuildMode::ExternalReportErf => "erf",
+    }
+}
+
+fn render_load_text(result: &LoadResult, presenter: &Presenter, succeeded: bool) {
+    let mode = match result.mode {
+        LoadMode::Load => "load",
+        LoadMode::Merge => "merge",
+        LoadMode::Update => "update",
     };
     let target = match result.target_kind {
         crate::domain::load::LoadTargetKind::Configuration => "configuration".to_owned(),
@@ -973,21 +1009,22 @@ fn render_load_text(result: &LoadResult, presenter: &Presenter, succeeded: bool)
         ),
         crate::domain::load::LoadTargetKind::Unknown => "unknown".to_owned(),
     };
-    let summary = format!(
-        "{target}: {mode} {artifact_type} <- {}",
+    let mut details = vec![format!(
+        "[Конфигуратор] {mode} {} <- {}",
+        render_artifact_mode(result.artifact_type),
         result.artifact_path.display()
-    );
-    let mut timeline = Vec::new();
-    let status = if succeeded {
-        TimelineStatus::Succeeded
-    } else {
-        TimelineStatus::Failed
-    };
-    let mut item = TimelineItem::new(status, summary);
+    )];
     if let Some(message) = result.message.as_deref() {
-        item = item.with_detail(message);
+        details.push(status_detail(succeeded, message));
     }
-    timeline.push(item);
+    if let Some(path) = result.platform_log_path.as_deref() {
+        details.push(format!("platform log: {}", path.display()));
+    }
+    let mut timeline = vec![timeline_item_with_details(
+        timeline_status(succeeded),
+        format!("{target}:"),
+        details,
+    )];
     timeline.push(if succeeded {
         TimelineItem::new(
             TimelineStatus::Succeeded,
@@ -1000,7 +1037,7 @@ fn render_load_text(result: &LoadResult, presenter: &Presenter, succeeded: bool)
 }
 
 fn render_init_text(result: &InitResult, presenter: &Presenter) {
-    let mut timeline = Vec::new();
+    let mut details = Vec::new();
     for step in &result.steps {
         if is_designer_edt_workspace_noop(step) {
             continue;
@@ -1012,30 +1049,23 @@ fn render_init_text(result: &InitResult, presenter: &Presenter) {
             step.action,
             step.message.as_deref().unwrap_or("ok")
         );
-        match step.status {
-            InitStepStatus::Ok => {
-                timeline.push(TimelineItem::new(TimelineStatus::Succeeded, line));
-            }
-            InitStepStatus::Skipped => {
-                timeline.push(TimelineItem::new(TimelineStatus::Skipped, line));
-            }
-            InitStepStatus::Failed => {
-                timeline.push(TimelineItem::new(TimelineStatus::Failed, line));
-            }
-        }
+        details.push(step_status_detail(&step.status, line));
     }
 
-    timeline.push(
-        if result
-            .steps
-            .iter()
-            .all(|step| matches!(step.status, InitStepStatus::Ok | InitStepStatus::Skipped))
-        {
-            TimelineItem::new(TimelineStatus::Succeeded, "Init completed successfully")
-        } else {
-            TimelineItem::new(TimelineStatus::Failed, "Init failed")
-        },
-    );
+    let succeeded = result
+        .steps
+        .iter()
+        .all(|step| matches!(step.status, InitStepStatus::Ok | InitStepStatus::Skipped));
+    let mut timeline = vec![timeline_item_with_details(
+        timeline_status(succeeded),
+        "init:",
+        details,
+    )];
+    timeline.push(if succeeded {
+        TimelineItem::new(TimelineStatus::Succeeded, "Init completed successfully")
+    } else {
+        TimelineItem::new(TimelineStatus::Failed, "Init failed")
+    });
     presenter.print_timeline(&timeline);
 }
 
@@ -1056,18 +1086,24 @@ fn render_dump_text(result: &DumpResult, presenter: &Presenter, succeeded: bool)
         DumpMode::Partial => "partial",
     };
     let source_set = result.source_set.as_deref().unwrap_or("<unresolved>");
-    let summary = format!("{source_set}: {mode} -> {}", result.target_path.display());
-    let status = if succeeded {
-        TimelineStatus::Succeeded
-    } else {
-        TimelineStatus::Failed
-    };
-    let mut timeline = Vec::new();
-    let mut item = TimelineItem::new(status, summary);
-    if let Some(message) = result.message.as_deref() {
-        item = item.with_detail(message);
+    let mut details = vec![format!(
+        "[Конфигуратор] Выгрузка {mode} -> {}",
+        result.target_path.display()
+    )];
+    if let Some(extension) = result.extension.as_deref() {
+        details.push(format!("extension: {extension}"));
     }
-    timeline.push(item);
+    if let Some(message) = result.message.as_deref() {
+        details.push(status_detail(succeeded, message));
+    }
+    if let Some(path) = result.platform_log_path.as_deref() {
+        details.push(format!("platform log: {}", path.display()));
+    }
+    let mut timeline = vec![timeline_item_with_details(
+        timeline_status(succeeded),
+        format!("{source_set}:"),
+        details,
+    )];
 
     timeline.push(if succeeded {
         TimelineItem::new(TimelineStatus::Succeeded, "Dump completed successfully")
@@ -1078,17 +1114,14 @@ fn render_dump_text(result: &DumpResult, presenter: &Presenter, succeeded: bool)
 }
 
 fn render_artifacts_text(result: &ArtifactsResult, presenter: &Presenter, succeeded: bool) {
-    let mode = match result.mode {
-        ArtifactBuildMode::Unknown => "unknown",
-        ArtifactBuildMode::ConfigurationCf => "cf",
-        ArtifactBuildMode::ExtensionCfe => "cfe",
-        ArtifactBuildMode::ExternalDataProcessorEpf => "epf",
-        ArtifactBuildMode::ExternalReportErf => "erf",
-    };
     let source_set = result.source_set.as_deref().unwrap_or("<unresolved>");
-    let mut summary = format!("{source_set}: {mode} -> {}", result.output_path.display());
+    let mut details = vec![format!(
+        "[Конфигуратор] Сборка {} -> {}",
+        render_artifact_mode(result.mode),
+        result.output_path.display()
+    )];
     if let Some(extension) = result.extension.as_deref() {
-        summary.push_str(&format!(" (extension: {extension})"));
+        details.push(format!("extension: {extension}"));
     }
     let published_count = result
         .artifacts
@@ -1097,19 +1130,19 @@ fn render_artifacts_text(result: &ArtifactsResult, presenter: &Presenter, succee
         .filter(|artifact| artifact.role.as_deref() == Some("package_file"))
         .count();
     if published_count > 1 {
-        summary.push_str(&format!(" ({published_count} files)"));
+        details.push(format!("published files: {published_count}"));
     }
-    let status = if succeeded {
-        TimelineStatus::Succeeded
-    } else {
-        TimelineStatus::Failed
-    };
-    let mut timeline = Vec::new();
-    let mut item = TimelineItem::new(status, summary);
     if let Some(message) = result.message.as_deref() {
-        item = item.with_detail(message);
+        details.push(status_detail(succeeded, message));
     }
-    timeline.push(item);
+    if let Some(path) = result.platform_log_path.as_deref() {
+        details.push(format!("platform log: {}", path.display()));
+    }
+    let mut timeline = vec![timeline_item_with_details(
+        timeline_status(succeeded),
+        format!("{source_set}:"),
+        details,
+    )];
     timeline.push(if succeeded {
         TimelineItem::new(
             TimelineStatus::Succeeded,
@@ -1122,72 +1155,116 @@ fn render_artifacts_text(result: &ArtifactsResult, presenter: &Presenter, succee
 }
 
 fn render_syntax_text(result: &SyntaxCheckResult, presenter: &Presenter) {
-    let summary_line = format!(
-        "{}: {:?} (exit {}, errors {}, warnings {}, info {}, duration {} ms)",
-        result.check_name,
-        result.status,
-        result.exit_code,
-        result.summary.errors,
-        result.summary.warnings,
-        result.summary.info,
-        result.duration_ms
-    );
-
-    match result.status {
-        SyntaxCheckStatus::Clean => presenter.print_ok(&summary_line),
-        SyntaxCheckStatus::IssuesFound | SyntaxCheckStatus::ToolFailed => {
-            presenter.print_info(&summary_line)
-        }
+    let succeeded = matches!(result.status, SyntaxCheckStatus::Clean);
+    let mut details = vec![
+        format!("[Синтаксис] Проверка: {}", result.check_name),
+        status_detail(
+            succeeded,
+            format!(
+                "{} (exit {}, errors {}, warnings {}, info {}, duration {} ms)",
+                render_syntax_status(result.status),
+                result.exit_code,
+                result.summary.errors,
+                result.summary.warnings,
+                result.summary.info,
+                result.duration_ms
+            ),
+        ),
+    ];
+    if let Some(path) = result.platform_log_path.as_deref() {
+        details.push(format!("platform log: {}", path.display()));
     }
-
     for issue in &result.issues {
-        presenter.print_info(&render_issue(issue));
+        details.push(render_issue(issue));
     }
 
     if let Some(log_read_warning) = &result.log_read_warning {
-        presenter.print_info(&format!("log warning: {log_read_warning}"));
+        details.push(format!("Warning: log {log_read_warning}"));
     }
 
     if matches!(result.status, SyntaxCheckStatus::ToolFailed) {
         if let Some(stderr) = &result.stderr {
-            presenter.print_info(&format!("stderr: {}", stderr.trim()));
+            details.push(format!("stderr: {}", stderr.trim()));
         }
+    }
+
+    let mut timeline = vec![timeline_item_with_details(
+        timeline_status(succeeded),
+        "syntax:",
+        details,
+    )];
+    timeline.push(if succeeded {
+        TimelineItem::new(
+            TimelineStatus::Succeeded,
+            format!("Syntax check {} completed successfully", result.check_name),
+        )
+    } else {
+        TimelineItem::new(
+            TimelineStatus::Failed,
+            format!("Syntax check {} failed", result.check_name),
+        )
+    });
+    presenter.print_timeline(&timeline);
+}
+
+fn render_syntax_status(status: SyntaxCheckStatus) -> &'static str {
+    match status {
+        SyntaxCheckStatus::Clean => "clean",
+        SyntaxCheckStatus::IssuesFound => "issues_found",
+        SyntaxCheckStatus::ToolFailed => "tool_failed",
+    }
+}
+
+fn render_launch_text(result: &LaunchResult, presenter: &Presenter) {
+    let message = result
+        .message
+        .as_deref()
+        .unwrap_or("Launched application successfully");
+    let mut details = vec![
+        format!("[Запуск] Приложение: {}", render_launch_mode(&result.mode)),
+        status_detail(true, message),
+        format!("binary: {}", result.binary.display()),
+    ];
+    if let Some(pid) = result.pid {
+        details.push(format!("pid: {pid}"));
+    }
+
+    let timeline = vec![
+        timeline_item_with_details(TimelineStatus::Succeeded, "launch:", details),
+        TimelineItem::new(TimelineStatus::Succeeded, "Launch completed successfully"),
+    ];
+    presenter.print_timeline(&timeline);
+}
+
+fn render_launch_mode(mode: &LaunchMode) -> &'static str {
+    match mode {
+        LaunchMode::Designer => "конфигуратор",
+        LaunchMode::Thin => "тонкий клиент",
+        LaunchMode::Thick => "толстый клиент",
+        LaunchMode::Ordinary => "обычное приложение",
     }
 }
 
 fn render_test_text(result: &TestRunResult, presenter: &Presenter) {
-    let target = render_test_target(&result.target);
-    let mut timeline =
-        vec![TimelineItem::new(TimelineStatus::Succeeded, "Tests: target").with_detail(target)];
+    let mut details = vec![format!("target: {}", render_test_target(&result.target))];
+    for step in &result.steps {
+        let message = step
+            .message
+            .as_deref()
+            .filter(|value| !value.is_empty())
+            .unwrap_or("ok");
+        details.push(status_detail(
+            step.ok,
+            format!("{}: {message}", render_test_step_label(&step.name)),
+        ));
+    }
 
-    timeline.extend(result.steps.iter().map(|step| {
-        let status = if step.ok {
-            TimelineStatus::Succeeded
-        } else {
-            TimelineStatus::Failed
-        };
-        let mut item = TimelineItem::new(status, render_test_step_label(&step.name));
-        if let Some(message) = step.message.as_deref().filter(|value| !value.is_empty()) {
-            item = item.with_detail(message.to_owned());
-        }
-        item
-    }));
+    let status = timeline_status(result.ok);
+    let mut timeline = vec![timeline_item_with_details(status, "tests:", details)];
 
-    let status = if result.ok {
-        TimelineStatus::Succeeded
-    } else {
-        TimelineStatus::Failed
-    };
-    let mut summary = TimelineItem::new(
-        status,
-        if result.ok {
-            "Tests completed successfully"
-        } else {
-            "Tests failed"
-        },
-    );
+    let mut summary_details = Vec::new();
     if let Some(report) = &result.report {
-        summary = summary.with_detail(format!(
+        summary_details.push(format!(
             "total={}, passed={}, failed={}, skipped={}, errors={}",
             report.summary.total,
             report.summary.passed,
@@ -1195,31 +1272,36 @@ fn render_test_text(result: &TestRunResult, presenter: &Presenter) {
             report.summary.skipped,
             report.summary.errors
         ));
-    }
-    timeline.push(summary);
-    presenter.print_timeline(&timeline);
-
-    if let Some(report) = &result.report {
         for suite in &report.suites {
-            presenter.print_info(&format!("Suite: {}", suite.name));
+            summary_details.push(format!("Suite: {}", suite.name));
             for case in &suite.cases {
-                presenter.print_info(&format!("  {} {}", status_label(&case.status), case.name));
+                summary_details.push(format!("  {} {}", status_label(&case.status), case.name));
                 if let Some(message) = &case.failure_message {
-                    presenter.print_info(&format!("    {message}"));
+                    summary_details.push(format!("    {message}"));
                 }
                 if let Some(trace) = &case.stack_trace {
-                    presenter.print_info(&format!("    {trace}"));
+                    summary_details.push(format!("    {trace}"));
                 }
             }
         }
     }
-
     for diagnostic in &result.diagnostics {
-        presenter.print_info(&format!("Diagnostic: {diagnostic}"));
+        summary_details.push(format!("Diagnostic: {diagnostic}"));
     }
     for warning in &result.warnings {
-        presenter.print_info(&format!("Warning: {warning}"));
+        summary_details.push(format!("Warning: {warning}"));
     }
+
+    timeline.push(timeline_item_with_details(
+        status,
+        if result.ok {
+            "Tests completed successfully"
+        } else {
+            "Tests failed"
+        },
+        summary_details,
+    ));
+    presenter.print_timeline(&timeline);
 }
 
 fn render_test_target(target: &TestTarget) -> String {
@@ -1231,13 +1313,13 @@ fn render_test_target(target: &TestTarget) -> String {
 
 fn render_test_step_label(name: &str) -> String {
     match name {
-        "build" => "Tests: build prerequisite".to_owned(),
-        "prepare_artifacts" => "Tests: prepare artifacts".to_owned(),
-        "prepare_runner" => "Tests: prepare runner".to_owned(),
-        "run" => "Tests: enterprise run".to_owned(),
-        "parse_junit" => "Tests: parse JUnit report".to_owned(),
-        "parse_log" => "Tests: parse runner log".to_owned(),
-        other => format!("Tests: {other}"),
+        "build" => "build prerequisite".to_owned(),
+        "prepare_artifacts" => "prepare artifacts".to_owned(),
+        "prepare_runner" => "prepare runner".to_owned(),
+        "run" => "enterprise run".to_owned(),
+        "parse_junit" => "parse JUnit report".to_owned(),
+        "parse_log" => "parse runner log".to_owned(),
+        other => other.to_owned(),
     }
 }
 

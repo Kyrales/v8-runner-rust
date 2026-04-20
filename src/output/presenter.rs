@@ -37,24 +37,6 @@ impl Presenter {
         }
     }
 
-    pub fn print_info(&self, msg: &str) {
-        if !self.is_json() {
-            self.text.print_info(msg);
-        }
-    }
-
-    pub fn print_ok(&self, msg: &str) {
-        if !self.is_json() {
-            self.text.print_ok(msg);
-        }
-    }
-
-    pub fn print_success_item(&self, msg: &str) {
-        if !self.is_json() {
-            self.text.print_success_item(msg);
-        }
-    }
-
     pub fn print_timeline(&self, items: &[TimelineItem]) {
         if !self.is_json() {
             self.text.print_timeline(items);
@@ -65,6 +47,6 @@ impl Presenter {
         if self.is_json() {
             self.json.print(envelope);
         }
-        // text mode: callers use print_ok/print_info directly
+        // text mode: callers render explicit timeline items.
     }
 }

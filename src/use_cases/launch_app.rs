@@ -10,7 +10,7 @@ use crate::support::error::AppError;
 use crate::use_cases::context::ExecutionContext;
 use crate::use_cases::request::{LaunchModeRequest, LaunchRequest as LaunchArgs};
 use crate::use_cases::result::{UseCaseFailure, UseCaseResult};
-use tracing::{debug, info};
+use tracing::debug;
 
 const LAUNCH_STARTUP_PROBE: Duration = Duration::from_millis(250);
 
@@ -52,7 +52,7 @@ pub fn execute(
         &args.launch,
     );
 
-    info!("[Запуск] Приложение: {}", mode_label(args.mode));
+    debug!("[Запуск] Приложение: {}", mode_label(args.mode));
     let spawned = utilities
         .runner_for(utility)
         .spawn(&ProcessRequest {

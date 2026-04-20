@@ -8,6 +8,7 @@ use crate::cli::execute;
 use crate::config::loader::load_config;
 use crate::output::json::Envelope;
 use crate::output::presenter::Presenter;
+use crate::output::text::{TimelineItem, TimelineStatus};
 use crate::use_cases::config_init::{ConfigBuilderRequest, ConfigFormatRequest, ConfigInitRequest};
 
 pub fn run() -> i32 {
@@ -143,13 +144,7 @@ fn run_config_init(cli: &Cli, args: &ConfigInitArgs, presenter: &Presenter) -> i
             if presenter.is_json() {
                 presenter.print_envelope(&Envelope::ok("config init", result.duration_ms, result));
             } else {
-                presenter.print_ok(&format!("Config written: {}", result.path));
-                for source_set in &result.source_sets {
-                    presenter.print_success_item(&format!(
-                        "{}: {} ({})",
-                        source_set.name, source_set.path, source_set.source_type
-                    ));
-                }
+                render_config_init_text(&result, presenter);
             }
             0
         }
@@ -163,6 +158,32 @@ fn run_config_init(cli: &Cli, args: &ConfigInitArgs, presenter: &Presenter) -> i
             }
         }
     }
+}
+
+fn render_config_init_text(
+    result: &crate::domain::config_init::ConfigInitResult,
+    presenter: &Presenter,
+) {
+    let mut details = vec![
+        format!("path: {}", result.path),
+        format!("format: {}", result.format),
+        format!("builder: {}", result.builder),
+    ];
+    if result.overwritten {
+        details.push("overwritten: yes".to_owned());
+    }
+    for source_set in &result.source_sets {
+        details.push(format!(
+            "source-set {}: {} ({})",
+            source_set.name, source_set.path, source_set.source_type
+        ));
+    }
+
+    let timeline = vec![
+        TimelineItem::new(TimelineStatus::Succeeded, "config:").with_detail(details.join("\n")),
+        TimelineItem::new(TimelineStatus::Succeeded, "Config written successfully"),
+    ];
+    presenter.print_timeline(&timeline);
 }
 
 fn map_config_format(value: &str) -> ConfigFormatRequest {

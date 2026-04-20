@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use chrono::Utc;
-use tracing::info;
+use tracing::debug;
 
 use crate::change_detection::source_sets::SourceSetsService;
 use crate::config::model::{
@@ -49,7 +49,7 @@ pub fn execute(
     config: &AppConfig,
     args: &ArtifactsRequest,
 ) -> UseCaseResult<ArtifactsResult> {
-    info!(
+    debug!(
         command = context.command().as_str(),
         transport = ?context.transport(),
         mode = ?args.mode,

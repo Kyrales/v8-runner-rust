@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 use std::time::Instant;
 
-use tracing::{debug, info};
+use tracing::debug;
 
 use crate::config::model::{
     AppConfig, BuilderBackend, SourceFormat, SourceSetConfig, SourceSetPurpose,
@@ -140,7 +140,7 @@ fn ensure_infobase(config: &AppConfig, utilities: &mut PlatformUtilities) -> Ste
     };
 
     let marker = infobase_marker_path(&infobase_dir);
-    info!("[Инфобаза] Подготовка: {}", infobase_dir.display());
+    debug!("[Инфобаза] Подготовка: {}", infobase_dir.display());
     if marker.exists() {
         return StepOutcome::skipped(
             "infobase",
@@ -267,10 +267,10 @@ fn ensure_edt_workspace(config: &AppConfig, utilities: &mut PlatformUtilities) -
             utilities.runner_for(UtilityType::EdtCli),
         )
     };
-    info!("[EDT] Инициализация workspace: {}", workspace.display());
+    debug!("[EDT] Инициализация workspace: {}", workspace.display());
     for source_set in ordered_source_sets(config) {
         let source_path = resolve_source_set_path(config, source_set);
-        info!("[EDT] Импорт проекта: {}", source_set.name);
+        debug!("[EDT] Импорт проекта: {}", source_set.name);
         match dsl.import_project(&source_path) {
             Ok(result) => {
                 if let Err(error) =

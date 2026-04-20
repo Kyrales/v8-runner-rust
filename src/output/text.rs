@@ -5,7 +5,6 @@ use serde::Serialize;
 pub enum TimelineStatus {
     Succeeded,
     Failed,
-    Skipped,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -35,29 +34,12 @@ pub struct TextPresenter {
 }
 
 impl TextPresenter {
-    pub fn print_ok(&self, msg: &str) {
-        println!(
-            "{} OK: {msg}",
-            self.timeline_node(TimelineStatus::Succeeded)
-        );
-    }
-
     pub fn print_error(&self, msg: &str) {
         if self.no_color {
             eprintln!("ERROR: {msg}");
         } else {
             eprintln!("\x1b[31mERROR\x1b[0m: {msg}");
         }
-    }
-
-    pub fn print_info(&self, msg: &str) {
-        for line in msg.lines() {
-            println!("{} {line}", self.timeline_pipe());
-        }
-    }
-
-    pub fn print_success_item(&self, msg: &str) {
-        println!("{} {msg}", self.timeline_node(TimelineStatus::Succeeded));
     }
 
     pub fn print_timeline(&self, items: &[TimelineItem]) {
@@ -86,7 +68,6 @@ impl TextPresenter {
             let color = match status {
                 TimelineStatus::Succeeded => "32",
                 TimelineStatus::Failed => "31",
-                TimelineStatus::Skipped => "90",
             };
             format!("\x1b[{color}m{glyph}\x1b[0m")
         }

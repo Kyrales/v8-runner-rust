@@ -34,7 +34,7 @@ use crate::use_cases::request::{DumpModeRequest, DumpRequest as DumpArgs};
 use crate::use_cases::result::{UseCaseFailure, UseCaseResult};
 use quick_xml::events::Event;
 use quick_xml::Reader;
-use tracing::info;
+use tracing::debug;
 
 #[cfg(test)]
 const DUMP_COMMAND: &str = crate::use_cases::context::CommandName::Dump.as_str();
@@ -52,7 +52,7 @@ pub fn execute(
     config: &AppConfig,
     args: &DumpArgs,
 ) -> UseCaseResult<DumpResult> {
-    info!(
+    debug!(
         command = context.command().as_str(),
         transport = ?context.transport(),
         "executing dump use case"
@@ -81,7 +81,7 @@ fn run_dump(config: &AppConfig, args: &DumpArgs) -> UseCaseResult<DumpResult> {
         DumpModeRequest::Incremental => DumpMode::Incremental,
         DumpModeRequest::Partial => DumpMode::Partial,
     };
-    info!(
+    debug!(
         mode = ?mode,
         source_set = args.source_set.as_deref().unwrap_or("<auto>"),
         extension = args.extension.as_deref().unwrap_or("<none>"),
@@ -297,7 +297,7 @@ fn run_incremental_dump_designer(
     binary: &Path,
     runner: &dyn ProcessRunner,
 ) -> Result<(PlatformCommandResult, Option<String>), AppError> {
-    info!(
+    debug!(
         source_set = resolved.source_set_name.as_str(),
         target = %resolved.target_path.display(),
         "running incremental dump"
@@ -324,7 +324,7 @@ fn run_full_dump_designer(
     binary: &Path,
     runner: &dyn ProcessRunner,
 ) -> Result<(PlatformCommandResult, Option<String>), AppError> {
-    info!(
+    debug!(
         source_set = resolved.source_set_name.as_str(),
         target = %resolved.target_path.display(),
         "running full dump via staging directory"
@@ -349,7 +349,7 @@ fn run_full_dump_designer(
     }
     std::fs::create_dir(&staging_dir)
         .map_err(|error| AppError::Runtime(format!("failed to create staging dir: {error}")))?;
-    info!(path = %staging_dir.display(), "created dump staging directory");
+    debug!(path = %staging_dir.display(), "created dump staging directory");
     write_temp_dir_metadata(
         &staging_dir,
         TempDirKind::Stage,
@@ -379,7 +379,7 @@ fn run_full_dump_designer(
         &resolved.target_identity,
     )
     .map_err(|error| AppError::Runtime(format!("failed to publish staged dump: {error}")))?;
-    info!(target = %resolved.target_path.display(), "published staged dump");
+    debug!(target = %resolved.target_path.display(), "published staged dump");
 
     Ok((dump_result, publish_outcome.cleanup_warning))
 }
@@ -390,7 +390,7 @@ fn run_incremental_dump_ibcmd(
     binary: &Path,
     runner: &dyn ProcessRunner,
 ) -> Result<(PlatformCommandResult, Option<String>), AppError> {
-    info!(
+    debug!(
         source_set = resolved.source_set_name.as_str(),
         target = %resolved.target_path.display(),
         "running incremental ibcmd dump"
@@ -411,7 +411,7 @@ fn run_full_dump_ibcmd(
     binary: &Path,
     runner: &dyn ProcessRunner,
 ) -> Result<(PlatformCommandResult, Option<String>), AppError> {
-    info!(
+    debug!(
         source_set = resolved.source_set_name.as_str(),
         target = %resolved.target_path.display(),
         "running full ibcmd dump via staging directory"
@@ -436,7 +436,7 @@ fn run_full_dump_ibcmd(
     }
     std::fs::create_dir(&staging_dir)
         .map_err(|error| AppError::Runtime(format!("failed to create staging dir: {error}")))?;
-    info!(path = %staging_dir.display(), "created dump staging directory");
+    debug!(path = %staging_dir.display(), "created dump staging directory");
     write_temp_dir_metadata(
         &staging_dir,
         TempDirKind::Stage,
@@ -465,7 +465,7 @@ fn run_full_dump_ibcmd(
         &resolved.target_identity,
     )
     .map_err(|error| AppError::Runtime(format!("failed to publish staged dump: {error}")))?;
-    info!(target = %resolved.target_path.display(), "published staged dump");
+    debug!(target = %resolved.target_path.display(), "published staged dump");
 
     Ok((dump_result, publish_outcome.cleanup_warning))
 }
@@ -477,7 +477,7 @@ fn run_partial_dump_designer(
     runner: &dyn ProcessRunner,
     objects: &[String],
 ) -> Result<(PlatformCommandResult, Option<String>), AppError> {
-    info!(
+    debug!(
         source_set = resolved.source_set_name.as_str(),
         target = %resolved.target_path.display(),
         object_count = objects.len(),

@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use tracing::info;
+use tracing::debug;
 
 use crate::config::model::{AppConfig, BuilderBackend, SourceFormat};
 use crate::domain::artifacts::ArtifactBuildMode;
@@ -33,7 +33,7 @@ pub fn execute(
     config: &AppConfig,
     args: &LoadRequest,
 ) -> UseCaseResult<LoadResult> {
-    info!(
+    debug!(
         command = context.command().as_str(),
         transport = ?context.transport(),
         mode = ?args.mode,
