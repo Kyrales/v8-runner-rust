@@ -85,7 +85,7 @@ fn setup_edt_init_project(
     fs::create_dir_all(base_path.join("ext")).expect("ext");
     fs::create_dir_all(&work_path).expect("work");
     let platform_body = if builder == "IBCMD" {
-        "if [ \"$1\" = \"infobase\" ] && [ \"$2\" = \"create\" ]; then\n  shift 2\n  while [ \"$#\" -gt 0 ]; do\n    case \"$1\" in --database-path) shift; path=$1 ;; --database-path=*) path=${1#--database-path=} ;; esac\n    shift\n  done\n  mkdir -p \"$path\" && : > \"$path/1Cv8.1CD\"\nfi\nexit 0"
+        "if [ \"$1\" = \"infobase\" ]; then\n  shift\n  command=\"\"\n  path=\"\"\n  while [ \"$#\" -gt 0 ]; do\n    case \"$1\" in\n      create) command=create ;;\n      --db-path|--database-path) shift; path=$1 ;;\n      --db-path=*|--database-path=*) path=${1#*=} ;;\n    esac\n    shift\n  done\n  if [ \"$command\" = \"create\" ]; then\n    mkdir -p \"$path\" && : > \"$path/1Cv8.1CD\"\n  fi\nfi\nexit 0"
             .to_owned()
     } else {
         "if [ \"$1\" = \"CREATEINFOBASE\" ]; then\n  path=\"$2\"\n  path=${path#File=\\'}\n  path=${path%\\'}\n  mkdir -p \"$path\" && : > \"$path/1Cv8.1CD\"\nfi\nexit 0"
@@ -137,7 +137,8 @@ fn init_designer_creates_infobase_and_skips_edt_workspace() {
     assert!(!work_path.join("edt-workspace").exists());
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("infobase: create"));
-    assert!(stdout.contains("edt_workspace: import"));
+    assert!(!stdout.contains("edt_workspace: import"));
+    assert!(!stdout.contains("format=DESIGNER"));
 }
 
 #[test]

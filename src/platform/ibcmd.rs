@@ -35,13 +35,26 @@ impl IbcmdConnection {
         })
     }
 
-    pub fn args(&self) -> Vec<String> {
+    #[cfg(test)]
+    fn args(&self) -> Vec<String> {
+        let mut args = self.infobase_args();
+        args.extend(self.auth_args());
+        args
+    }
+
+    fn infobase_args(&self) -> Vec<String> {
         let mut args = Vec::new();
+        // 8.3.20 accepts only this short alias and expects it before nested commands.
         push_option_value(
             &mut args,
-            "--database-path",
+            "--db-path",
             self.database_path.display().to_string(),
         );
+        args
+    }
+
+    fn auth_args(&self) -> Vec<String> {
+        let mut args = Vec::new();
         if let Some(user) = &self.user {
             push_option_value(&mut args, "--user", user);
         }
@@ -92,12 +105,7 @@ impl<'a> IbcmdDsl<'a> {
         source_dir: &Path,
         extension: Option<&str>,
     ) -> Result<PlatformCommandResult, IbcmdError> {
-        let mut args = vec![
-            "infobase".to_owned(),
-            "config".to_owned(),
-            "import".to_owned(),
-        ];
-        args.extend(self.base_args());
+        let mut args = self.authenticated_infobase_args(&["config", "import"]);
         if let Some(extension) = extension {
             push_option_value(&mut args, "--extension", extension);
         }
@@ -106,8 +114,7 @@ impl<'a> IbcmdDsl<'a> {
     }
 
     pub fn infobase_create(&self) -> Result<PlatformCommandResult, IbcmdError> {
-        let mut args = vec!["infobase".to_owned(), "create".to_owned()];
-        args.extend(self.base_args());
+        let args = self.infobase_args(&["create"]);
         self.run(&args)
     }
 
@@ -117,8 +124,7 @@ impl<'a> IbcmdDsl<'a> {
         safe_mode: bool,
         unsafe_action_protection: bool,
     ) -> Result<PlatformCommandResult, IbcmdError> {
-        let mut args = vec!["extension".to_owned(), "update".to_owned()];
-        args.extend(self.base_args());
+        let mut args = self.authenticated_infobase_args(&["config", "extension", "update"]);
         push_option_value(&mut args, "--name", name);
         push_option_value(
             &mut args,
@@ -143,13 +149,7 @@ impl<'a> IbcmdDsl<'a> {
         files: &[PathBuf],
         extension: Option<&str>,
     ) -> Result<PlatformCommandResult, IbcmdError> {
-        let mut args = vec![
-            "infobase".to_owned(),
-            "config".to_owned(),
-            "import".to_owned(),
-            "files".to_owned(),
-        ];
-        args.extend(self.base_args());
+        let mut args = self.authenticated_infobase_args(&["config", "import", "files"]);
         if let Some(extension) = extension {
             push_option_value(&mut args, "--extension", extension);
         }
@@ -164,12 +164,7 @@ impl<'a> IbcmdDsl<'a> {
         extension: Option<&str>,
         dynamic: DynamicUpdateMode,
     ) -> Result<PlatformCommandResult, IbcmdError> {
-        let mut args = vec![
-            "infobase".to_owned(),
-            "config".to_owned(),
-            "apply".to_owned(),
-        ];
-        args.extend(self.base_args());
+        let mut args = self.authenticated_infobase_args(&["config", "apply"]);
         if let Some(extension) = extension {
             push_option_value(&mut args, "--extension", extension);
         }
@@ -183,12 +178,7 @@ impl<'a> IbcmdDsl<'a> {
         target_dir: &Path,
         extension: Option<&str>,
     ) -> Result<PlatformCommandResult, IbcmdError> {
-        let mut args = vec![
-            "infobase".to_owned(),
-            "config".to_owned(),
-            "export".to_owned(),
-        ];
-        args.extend(self.base_args());
+        let mut args = self.authenticated_infobase_args(&["config", "export"]);
         if let Some(extension) = extension {
             push_option_value(&mut args, "--extension", extension);
         }
@@ -202,12 +192,7 @@ impl<'a> IbcmdDsl<'a> {
         target_dir: &Path,
         extension: Option<&str>,
     ) -> Result<PlatformCommandResult, IbcmdError> {
-        let mut args = vec![
-            "infobase".to_owned(),
-            "config".to_owned(),
-            "export".to_owned(),
-        ];
-        args.extend(self.base_args());
+        let mut args = self.authenticated_infobase_args(&["config", "export"]);
         if let Some(extension) = extension {
             push_option_value(&mut args, "--extension", extension);
         }
@@ -217,7 +202,20 @@ impl<'a> IbcmdDsl<'a> {
     }
 
     fn base_args(&self) -> Vec<String> {
-        self.connection.args()
+        self.connection.infobase_args()
+    }
+
+    fn infobase_args(&self, command: &[&str]) -> Vec<String> {
+        let mut args = vec!["infobase".to_owned()];
+        args.extend(self.base_args());
+        args.extend(command.iter().map(|part| (*part).to_owned()));
+        args
+    }
+
+    fn authenticated_infobase_args(&self, command: &[&str]) -> Vec<String> {
+        let mut args = self.infobase_args(command);
+        args.extend(self.connection.auth_args());
+        args
     }
 
     fn run(&self, args: &[String]) -> Result<PlatformCommandResult, IbcmdError> {
@@ -286,7 +284,7 @@ mod tests {
         let conn = V8Connection::from_connection_string("File=/tmp/ib");
         let ibcmd = IbcmdConnection::from_v8_connection(&conn).expect("connection");
 
-        assert_eq!(ibcmd.args(), vec!["--database-path", "/tmp/ib"]);
+        assert_eq!(ibcmd.args(), vec!["--db-path", "/tmp/ib"]);
     }
 
     #[test]
@@ -309,7 +307,7 @@ mod tests {
         assert_eq!(
             ibcmd.args(),
             vec![
-                "--database-path",
+                "--db-path",
                 "/tmp/ib",
                 "--user",
                 "admin",
@@ -341,7 +339,7 @@ mod tests {
         let args = fs::read_to_string(args_log).expect("args");
         assert!(args.contains("config"));
         assert!(args.contains("import"));
-        assert!(args.contains("--database-path\n/ib"));
+        assert!(args.contains("infobase\n--db-path\n/ib\nconfig\nimport"));
         assert!(args.contains("--extension\nExt"));
     }
 
@@ -516,7 +514,7 @@ mod tests {
         let args = fs::read_to_string(args_log).expect("args");
         assert!(args.contains("infobase"));
         assert!(args.contains("create"));
-        assert!(args.contains("--database-path\n/ib"));
+        assert!(args.contains("infobase\n--db-path\n/ib\ncreate"));
     }
 
     #[cfg(unix)]
@@ -541,6 +539,7 @@ mod tests {
         let args = fs::read_to_string(args_log).expect("args");
         assert!(args.contains("extension"));
         assert!(args.contains("update"));
+        assert!(args.contains("infobase\n--db-path\n/ib\nconfig\nextension\nupdate"));
         assert!(args.contains("--name\nclient_mcp"));
         assert!(args.contains("--safe-mode\nno"));
         assert!(args.contains("--unsafe-action-protection\nno"));

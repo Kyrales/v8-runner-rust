@@ -2012,8 +2012,8 @@ mod tests {
             .iter()
             .any(|step| matches!(step.mode, BuildMode::EdtExport) && step.ok));
         assert!(edt_calls_text.contains("export --project-name main"));
-        assert!(ibcmd_calls_text.contains("infobase config import"));
-        assert!(ibcmd_calls_text.contains("infobase config apply"));
+        assert!(ibcmd_calls_text.contains("infobase --db-path /tmp/ib config import"));
+        assert!(ibcmd_calls_text.contains("infobase --db-path /tmp/ib config apply"));
         assert!(ibcmd_calls_text.contains(
             work.join("designer")
                 .join("main")

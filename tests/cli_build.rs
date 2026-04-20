@@ -367,8 +367,12 @@ fn build_ibcmd_passes_credentials_to_import_and_apply() {
 
     assert!(output.status.success());
     let calls = fs::read_to_string(calls_log).expect("calls");
-    assert!(calls.contains("infobase config import"));
-    assert!(calls.contains("infobase config apply"));
+    assert!(
+        calls.contains("infobase --db-path /tmp/ib config import --user Admin --password secret")
+    );
+    assert!(
+        calls.contains("infobase --db-path /tmp/ib config apply --user Admin --password secret")
+    );
     assert!(calls.contains("--user Admin"));
     assert!(calls.contains("--password secret"));
 }
@@ -456,6 +460,6 @@ fn build_ibcmd_accepts_raw_f_connection() {
 
     assert!(output.status.success());
     let calls = fs::read_to_string(calls_log).expect("calls");
-    assert!(calls.contains("--database-path /tmp/ib"));
+    assert!(calls.contains("--db-path /tmp/ib"));
     assert!(calls.contains("config apply"));
 }

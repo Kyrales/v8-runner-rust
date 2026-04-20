@@ -13,7 +13,7 @@ use crate::domain::build::{BuildMode, BuildResult};
 use crate::domain::dump::{DumpMode, DumpResult};
 use crate::domain::execution::ExecutionTimeouts;
 use crate::domain::extensions::ExtensionsResult;
-use crate::domain::init::{InitResult, InitStepStatus};
+use crate::domain::init::{InitResult, InitStep, InitStepStatus};
 use crate::domain::issue::{Issue, IssueSeverity};
 use crate::domain::load::{LoadMode, LoadResult};
 use crate::domain::runner::{
@@ -1071,6 +1071,10 @@ fn render_extensions_text(result: &ExtensionsResult, presenter: &Presenter, succ
 fn render_init_text(result: &InitResult, presenter: &Presenter) {
     let mut timeline = Vec::new();
     for step in &result.steps {
+        if is_designer_edt_workspace_noop(step) {
+            continue;
+        }
+
         let line = format!(
             "{}: {} - {}",
             step.target,
@@ -1102,6 +1106,16 @@ fn render_init_text(result: &InitResult, presenter: &Presenter) {
         },
     );
     presenter.print_timeline(&timeline);
+}
+
+fn is_designer_edt_workspace_noop(step: &InitStep) -> bool {
+    matches!(step.status, InitStepStatus::Skipped)
+        && step.target == "edt_workspace"
+        && step.action == "import"
+        && step
+            .message
+            .as_deref()
+            .is_some_and(|message| message.contains("format=DESIGNER"))
 }
 
 fn render_dump_text(result: &DumpResult, presenter: &Presenter, succeeded: bool) {
