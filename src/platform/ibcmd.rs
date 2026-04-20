@@ -36,13 +36,18 @@ impl IbcmdConnection {
     }
 
     pub fn args(&self) -> Vec<String> {
-        let mut args = vec![format!("--database-path={}", self.database_path.display())];
+        let mut args = Vec::new();
+        push_option_value(
+            &mut args,
+            "--database-path",
+            self.database_path.display().to_string(),
+        );
         if let Some(user) = &self.user {
-            args.push(format!("--user={user}"));
+            push_option_value(&mut args, "--user", user);
         }
         if let Some(password) = &self.password {
             if !password.is_empty() {
-                args.push(format!("--password={password}"));
+                push_option_value(&mut args, "--password", password);
             }
         }
         args
@@ -94,7 +99,7 @@ impl<'a> IbcmdDsl<'a> {
         ];
         args.extend(self.base_args());
         if let Some(extension) = extension {
-            args.push(format!("--extension={extension}"));
+            push_option_value(&mut args, "--extension", extension);
         }
         args.push(source_dir.display().to_string());
         self.run(&args)
@@ -114,19 +119,21 @@ impl<'a> IbcmdDsl<'a> {
     ) -> Result<PlatformCommandResult, IbcmdError> {
         let mut args = vec!["extension".to_owned(), "update".to_owned()];
         args.extend(self.base_args());
-        args.push(format!("--name={name}"));
-        args.push(format!(
-            "--safe-mode={}",
-            if safe_mode { "yes" } else { "no" }
-        ));
-        args.push(format!(
-            "--unsafe-action-protection={}",
+        push_option_value(&mut args, "--name", name);
+        push_option_value(
+            &mut args,
+            "--safe-mode",
+            if safe_mode { "yes" } else { "no" },
+        );
+        push_option_value(
+            &mut args,
+            "--unsafe-action-protection",
             if unsafe_action_protection {
                 "yes"
             } else {
                 "no"
-            }
-        ));
+            },
+        );
         self.run(&args)
     }
 
@@ -144,10 +151,10 @@ impl<'a> IbcmdDsl<'a> {
         ];
         args.extend(self.base_args());
         if let Some(extension) = extension {
-            args.push(format!("--extension={extension}"));
+            push_option_value(&mut args, "--extension", extension);
         }
         args.push("--partial".to_owned());
-        args.push(format!("--base-dir={}", base_dir.display()));
+        push_option_value(&mut args, "--base-dir", base_dir.display().to_string());
         args.extend(files.iter().map(|path| path.display().to_string()));
         self.run(&args)
     }
@@ -164,10 +171,10 @@ impl<'a> IbcmdDsl<'a> {
         ];
         args.extend(self.base_args());
         if let Some(extension) = extension {
-            args.push(format!("--extension={extension}"));
+            push_option_value(&mut args, "--extension", extension);
         }
         args.push("--force".to_owned());
-        args.push(format!("--dynamic={}", dynamic.as_str()));
+        push_option_value(&mut args, "--dynamic", dynamic.as_str());
         self.run(&args)
     }
 
@@ -183,7 +190,7 @@ impl<'a> IbcmdDsl<'a> {
         ];
         args.extend(self.base_args());
         if let Some(extension) = extension {
-            args.push(format!("--extension={extension}"));
+            push_option_value(&mut args, "--extension", extension);
         }
         args.push("--force".to_owned());
         args.push(target_dir.display().to_string());
@@ -202,7 +209,7 @@ impl<'a> IbcmdDsl<'a> {
         ];
         args.extend(self.base_args());
         if let Some(extension) = extension {
-            args.push(format!("--extension={extension}"));
+            push_option_value(&mut args, "--extension", extension);
         }
         args.push("--sync".to_owned());
         args.push(target_dir.display().to_string());
@@ -233,6 +240,11 @@ impl<'a> IbcmdDsl<'a> {
             platform_log_read_error: None,
         })
     }
+}
+
+fn push_option_value(args: &mut Vec<String>, key: &str, value: impl ToString) {
+    args.push(key.to_owned());
+    args.push(value.to_string());
 }
 
 #[cfg(test)]
@@ -274,7 +286,7 @@ mod tests {
         let conn = V8Connection::from_connection_string("File=/tmp/ib");
         let ibcmd = IbcmdConnection::from_v8_connection(&conn).expect("connection");
 
-        assert_eq!(ibcmd.args(), vec!["--database-path=/tmp/ib"]);
+        assert_eq!(ibcmd.args(), vec!["--database-path", "/tmp/ib"]);
     }
 
     #[test]
@@ -297,9 +309,12 @@ mod tests {
         assert_eq!(
             ibcmd.args(),
             vec![
-                "--database-path=/tmp/ib",
-                "--user=admin",
-                "--password=secret"
+                "--database-path",
+                "/tmp/ib",
+                "--user",
+                "admin",
+                "--password",
+                "secret"
             ]
         );
     }
@@ -326,8 +341,8 @@ mod tests {
         let args = fs::read_to_string(args_log).expect("args");
         assert!(args.contains("config"));
         assert!(args.contains("import"));
-        assert!(args.contains("--database-path=/ib"));
-        assert!(args.contains("--extension=Ext"));
+        assert!(args.contains("--database-path\n/ib"));
+        assert!(args.contains("--extension\nExt"));
     }
 
     #[cfg(unix)]
@@ -354,7 +369,7 @@ mod tests {
         assert!(args.contains("import"));
         assert!(args.contains("files"));
         assert!(args.contains("--partial"));
-        assert!(args.contains("--base-dir="));
+        assert!(args.contains("--base-dir\n"));
         assert!(args.contains("Catalogs/Items.xml"));
     }
 
@@ -380,7 +395,7 @@ mod tests {
         let args = fs::read_to_string(args_log).expect("args");
         assert!(args.contains("apply"));
         assert!(args.contains("--force"));
-        assert!(args.contains("--dynamic=auto"));
+        assert!(args.contains("--dynamic\nauto"));
     }
 
     #[cfg(unix)]
@@ -501,7 +516,7 @@ mod tests {
         let args = fs::read_to_string(args_log).expect("args");
         assert!(args.contains("infobase"));
         assert!(args.contains("create"));
-        assert!(args.contains("--database-path=/ib"));
+        assert!(args.contains("--database-path\n/ib"));
     }
 
     #[cfg(unix)]
@@ -526,8 +541,8 @@ mod tests {
         let args = fs::read_to_string(args_log).expect("args");
         assert!(args.contains("extension"));
         assert!(args.contains("update"));
-        assert!(args.contains("--name=client_mcp"));
-        assert!(args.contains("--safe-mode=no"));
-        assert!(args.contains("--unsafe-action-protection=no"));
+        assert!(args.contains("--name\nclient_mcp"));
+        assert!(args.contains("--safe-mode\nno"));
+        assert!(args.contains("--unsafe-action-protection\nno"));
     }
 }

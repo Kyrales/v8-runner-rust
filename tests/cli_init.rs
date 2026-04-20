@@ -85,7 +85,7 @@ fn setup_edt_init_project(
     fs::create_dir_all(base_path.join("ext")).expect("ext");
     fs::create_dir_all(&work_path).expect("work");
     let platform_body = if builder == "IBCMD" {
-        "if [ \"$1\" = \"infobase\" ] && [ \"$2\" = \"create\" ]; then\n  for arg in \"$@\"; do\n    case \"$arg\" in --database-path=*) path=${arg#--database-path=} ;; esac\n  done\n  mkdir -p \"$path\" && : > \"$path/1Cv8.1CD\"\nfi\nexit 0"
+        "if [ \"$1\" = \"infobase\" ] && [ \"$2\" = \"create\" ]; then\n  shift 2\n  while [ \"$#\" -gt 0 ]; do\n    case \"$1\" in --database-path) shift; path=$1 ;; --database-path=*) path=${1#--database-path=} ;; esac\n    shift\n  done\n  mkdir -p \"$path\" && : > \"$path/1Cv8.1CD\"\nfi\nexit 0"
             .to_owned()
     } else {
         "if [ \"$1\" = \"CREATEINFOBASE\" ]; then\n  path=\"$2\"\n  path=${path#File=\\'}\n  path=${path%\\'}\n  mkdir -p \"$path\" && : > \"$path/1Cv8.1CD\"\nfi\nexit 0"
@@ -246,10 +246,10 @@ fn init_non_file_connection_keeps_running_workspace_step_and_returns_payload() {
         .output()
         .expect("run command");
 
-    assert!(!output.status.success());
+    assert!(output.status.success());
     let payload: Value = serde_json::from_slice(&output.stdout).expect("json");
     assert_eq!(payload["command"], "init");
-    assert_eq!(payload["data"]["steps"][0]["status"], "failed");
+    assert_eq!(payload["data"]["steps"][0]["status"], "skipped");
     assert_eq!(payload["data"]["steps"][1]["status"], "ok");
     assert!(work_path.join("edt-workspace").exists());
     let calls = fs::read_to_string(edt_calls_log).expect("calls");

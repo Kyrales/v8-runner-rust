@@ -83,10 +83,10 @@ fn extensions_command_updates_all_extension_properties() {
 
     let calls = fs::read_to_string(calls_log).expect("calls");
     assert!(calls.contains("extension update"));
-    assert!(calls.contains("--name=client_mcp"));
-    assert!(calls.contains("--name=tests"));
-    assert!(calls.contains("--safe-mode=no"));
-    assert!(calls.contains("--unsafe-action-protection=no"));
+    assert!(calls.contains("--name client_mcp"));
+    assert!(calls.contains("--name tests"));
+    assert!(calls.contains("--safe-mode no"));
+    assert!(calls.contains("--unsafe-action-protection no"));
 }
 
 #[test]
@@ -108,8 +108,8 @@ fn extensions_command_filters_by_requested_source_set_names() {
 
     assert!(output.status.success());
     let calls = fs::read_to_string(calls_log).expect("calls");
-    assert!(calls.contains("--name=client_mcp"));
-    assert!(!calls.contains("--name=tests"));
+    assert!(calls.contains("--name client_mcp"));
+    assert!(!calls.contains("--name tests"));
 }
 
 #[test]

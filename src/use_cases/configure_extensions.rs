@@ -93,9 +93,8 @@ pub fn execute(
                 ));
             }
             Err(error) => {
-                let message = format!(
-                    "ibcmd extension update failed for extension '{target}': {error}"
-                );
+                let message =
+                    format!("ibcmd extension update failed for extension '{target}': {error}");
                 steps.push(ExtensionsStep {
                     target: target.clone(),
                     action: DISABLE_SAFETY_ACTION.to_owned(),
@@ -289,9 +288,9 @@ mod tests {
         assert!(result.ok);
         let calls_text = fs::read_to_string(calls).expect("calls");
         assert!(calls_text.contains("extension update"));
-        assert!(calls_text.contains("--name=client_mcp"));
-        assert!(calls_text.contains("--safe-mode=no"));
-        assert!(calls_text.contains("--unsafe-action-protection=no"));
+        assert!(calls_text.contains("--name client_mcp"));
+        assert!(calls_text.contains("--safe-mode no"));
+        assert!(calls_text.contains("--unsafe-action-protection no"));
     }
 
     #[cfg(unix)]
@@ -316,9 +315,10 @@ mod tests {
         .expect_err("failure");
 
         assert_eq!(failure.error.kind(), UseCaseErrorKind::Platform);
-        assert!(failure.error.message().contains(
-            "extension update failed for extension 'client_mcp' with exit code 17"
-        ));
+        assert!(failure
+            .error
+            .message()
+            .contains("extension update failed for extension 'client_mcp' with exit code 17"));
         assert!(failure
             .error
             .message()

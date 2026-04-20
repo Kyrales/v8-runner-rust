@@ -1882,7 +1882,7 @@ mod tests {
         assert_eq!(result.mode, DumpMode::Partial);
         let calls = fs::read_to_string(calls).expect("calls");
         assert!(calls.contains("--sync"));
-        assert!(calls.contains("--extension=ext"));
+        assert!(calls.contains("--extension ext"));
         assert!(result
             .message
             .as_deref()

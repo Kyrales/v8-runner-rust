@@ -1,6 +1,6 @@
 use crate::config::model::AppConfig;
 use crate::platform::locator::{
-    EdtVersion, Locator, PlatformVersion, UtilityLocation, UtilityType,
+    EdtVersion, Locator, PlatformVersionRequirement, UtilityLocation, UtilityType,
 };
 use crate::platform::process::{ProcessExecutor, ProcessRunner};
 use tracing::debug;
@@ -44,7 +44,7 @@ impl PlatformUtilities {
                     .platform
                     .version
                     .as_deref()
-                    .and_then(PlatformVersion::parse_strict),
+                    .and_then(PlatformVersionRequirement::parse),
                 edt_hint,
                 edt_version,
             ),

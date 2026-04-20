@@ -369,8 +369,8 @@ fn build_ibcmd_passes_credentials_to_import_and_apply() {
     let calls = fs::read_to_string(calls_log).expect("calls");
     assert!(calls.contains("infobase config import"));
     assert!(calls.contains("infobase config apply"));
-    assert!(calls.contains("--user=Admin"));
-    assert!(calls.contains("--password=secret"));
+    assert!(calls.contains("--user Admin"));
+    assert!(calls.contains("--password secret"));
 }
 
 #[test]
@@ -405,7 +405,7 @@ fn build_ibcmd_partial_uses_relative_positional_args_and_base_dir() {
     let calls = fs::read_to_string(calls_log).expect("calls");
     assert!(calls.contains("config import files"));
     assert!(calls.contains("--partial"));
-    assert!(calls.contains("--base-dir="));
+    assert!(calls.contains("--base-dir "));
     assert!(calls.contains("Catalogs.Items/ObjectModule.bsl"));
 }
 
@@ -456,6 +456,6 @@ fn build_ibcmd_accepts_raw_f_connection() {
 
     assert!(output.status.success());
     let calls = fs::read_to_string(calls_log).expect("calls");
-    assert!(calls.contains("--database-path=/tmp/ib"));
+    assert!(calls.contains("--database-path /tmp/ib"));
     assert!(calls.contains("config apply"));
 }
