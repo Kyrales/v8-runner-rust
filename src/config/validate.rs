@@ -6,7 +6,7 @@ use thiserror::Error;
 use crate::config::model::{
     AppConfig, BuilderBackend, SourceFormat, SourceSetPurpose, VanessaProfileConfig,
 };
-use crate::platform::locator::PlatformVersion;
+use crate::platform::locator::PlatformVersionRequirement;
 use crate::support::path::is_safe_path_segment;
 
 #[derive(Debug, Error)]
@@ -68,7 +68,7 @@ pub enum ConfigValidationError {
         generated_path: String,
     },
 
-    #[error("platform version must use exact format major.minor.patch.build: {0}")]
+    #[error("platform version must use format major.minor, major.minor.patch or major.minor.patch.build: {0}")]
     InvalidPlatformVersion(String),
 
     #[error("build.partialLoadThreshold must be greater than or equal to 1")]
@@ -334,7 +334,7 @@ fn validate_matrix(_config: &AppConfig) -> Result<(), ConfigValidationError> {
 
 fn validate_platform_version(config: &AppConfig) -> Result<(), ConfigValidationError> {
     if let Some(version) = config.tools.platform.version.as_deref() {
-        if PlatformVersion::parse_strict(version).is_none() {
+        if PlatformVersionRequirement::parse(version).is_none() {
             return Err(ConfigValidationError::InvalidPlatformVersion(
                 version.to_owned(),
             ));
@@ -506,7 +506,7 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
-    fn rejects_platform_versions_without_four_parts() {
+    fn accepts_platform_version_prefix_without_build() {
         let base = tempdir().expect("base");
         let work = tempdir().expect("work");
         let source_dir = base.path().join("src");
@@ -532,6 +532,80 @@ mod tests {
                 platform: PlatformToolConfig {
                     path: None,
                     version: Some("8.3.25".to_owned()),
+                },
+                ..ToolsConfig::default()
+            },
+            mcp: Default::default(),
+            tests: TestsConfig::default(),
+        };
+
+        validate(&config).expect("expected valid version prefix");
+    }
+
+    #[test]
+    fn accepts_platform_version_minor_prefix() {
+        let base = tempdir().expect("base");
+        let work = tempdir().expect("work");
+        let source_dir = base.path().join("src");
+        std::fs::create_dir_all(&source_dir).expect("source dir");
+
+        let config = AppConfig {
+            base_path: base.path().to_path_buf(),
+            work_path: work.path().to_path_buf(),
+            format: SourceFormat::Designer,
+            builder: BuilderBackend::Designer,
+            connection: "File=/tmp/ib".to_owned(),
+            credentials: Default::default(),
+            source_sets: vec![SourceSetConfig {
+                name: "main".to_owned(),
+                purpose: SourceSetPurpose::Configuration,
+                path: source_dir
+                    .strip_prefix(base.path())
+                    .expect("relative")
+                    .to_path_buf(),
+            }],
+            build: BuildConfig::default(),
+            tools: ToolsConfig {
+                platform: PlatformToolConfig {
+                    path: None,
+                    version: Some("8.3".to_owned()),
+                },
+                ..ToolsConfig::default()
+            },
+            mcp: Default::default(),
+            tests: TestsConfig::default(),
+        };
+
+        validate(&config).expect("expected valid minor version prefix");
+    }
+
+    #[test]
+    fn rejects_platform_versions_with_too_few_parts() {
+        let base = tempdir().expect("base");
+        let work = tempdir().expect("work");
+        let source_dir = base.path().join("src");
+        std::fs::create_dir_all(&source_dir).expect("source dir");
+
+        let config = AppConfig {
+            base_path: base.path().to_path_buf(),
+            work_path: work.path().to_path_buf(),
+            format: SourceFormat::Designer,
+            builder: BuilderBackend::Designer,
+            connection: "File=/tmp/ib".to_owned(),
+            credentials: Default::default(),
+            source_sets: vec![SourceSetConfig {
+                name: "main".to_owned(),
+                purpose: SourceSetPurpose::Configuration,
+                path: source_dir
+                    .strip_prefix(base.path())
+                    .expect("relative")
+                    .to_path_buf(),
+            }],
+            build: BuildConfig::default(),
+            tools: ToolsConfig {
+                platform: PlatformToolConfig {
+                    path: None,
+                    version: Some("8".to_owned()),
                 },
                 ..ToolsConfig::default()
             },

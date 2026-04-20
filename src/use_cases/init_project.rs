@@ -131,13 +131,11 @@ impl StepOutcome {
 fn ensure_infobase(config: &AppConfig, utilities: &mut PlatformUtilities) -> StepOutcome {
     let started = Instant::now();
     let Some(infobase_dir) = config.v8_connection().file_path().map(PathBuf::from) else {
-        return StepOutcome::failed(
+        return StepOutcome::skipped(
             "infobase",
             "create",
             started,
-            AppError::Runtime(
-                "init currently supports only file-based infobase connections".to_owned(),
-            ),
+            "server infobase connection detected; database creation is skipped",
         );
     };
 
@@ -432,7 +430,9 @@ fn ensure_platform_success(
 
 #[cfg(test)]
 mod tests {
-    use super::{edt_workspace_marker_path, infobase_marker_path, ordered_source_sets};
+    use super::{
+        edt_workspace_marker_path, infobase_marker_path, ordered_source_sets, InitStepStatus,
+    };
     use crate::config::model::{
         AppConfig, BuildConfig, BuilderBackend, SourceFormat, SourceSetConfig, SourceSetPurpose,
         TestsConfig, ToolsConfig,
@@ -488,5 +488,26 @@ mod tests {
         let ordered = ordered_source_sets(&config);
         assert_eq!(ordered[0].name, "main");
         assert_eq!(ordered[1].name, "ext");
+    }
+
+    #[test]
+    fn init_skips_infobase_creation_for_server_connection() {
+        let mut config = sample_config();
+        config.format = SourceFormat::Designer;
+        config.connection = "Srvr=server;Ref=demo".to_owned();
+
+        let result = super::run_init(&config).expect("server init should skip infobase create");
+
+        assert!(result.ok);
+        assert_eq!(result.steps.len(), 2);
+        assert_eq!(result.steps[0].target, "infobase");
+        assert_eq!(result.steps[0].action, "create");
+        assert_eq!(result.steps[0].status, InitStepStatus::Skipped);
+        assert_eq!(
+            result.steps[0].message.as_deref(),
+            Some("server infobase connection detected; database creation is skipped")
+        );
+        assert_eq!(result.steps[1].target, "edt_workspace");
+        assert_eq!(result.steps[1].status, InitStepStatus::Skipped);
     }
 }

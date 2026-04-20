@@ -21,7 +21,7 @@
 
 - `build`: загружать изменённые исходники в ИБ, выбирая частичное или полное выполнение в зависимости от формата исходников и бэкенда.
 - `config init`: создавать `v8project.yaml` в текущем каталоге и добавлять найденные исходники в `source-set`.
-- `init`: первично создавать файловую ИБ и, для EDT-проектов, инициализировать workspace импортом всех настроенных `source-set`.
+- `init`: первично создавать файловую ИБ или пропускать создание для заранее созданной серверной ИБ; для EDT-проектов инициализировать workspace импортом всех настроенных `source-set`.
 - `extensions`: обновлять свойства расширений в информационной базе по настроенным `source-set`.
 - `test yaxunit`: сначала выполнять `build`, затем запускать все YaXUnit-тесты или один модуль.
 - `test va`: сначала выполнять `build`, затем запускать Vanessa Automation по выбранному профилю.
@@ -170,17 +170,22 @@ v8-runner launch thin --raw-key /WA- --raw-key /DisplayAllFunctions
 - [docs/DEEP_DIVE.md](docs/DEEP_DIVE.md): объяснение внутренних эксплуатационных потоков без дублирования полного справочника команд.
 - [examples/v8project.yaml](examples/v8project.yaml): полный пример конфига с опциональными секциями и значениями по умолчанию.
 - [ARCHITECTURE.md](ARCHITECTURE.md): карта модулей и внутренних границ для контрибьюторов.
-- [docs/decisions/0001-granitsy-podderzhki-ibcmd-kak-ogranichennogo-backend.md](docs/decisions/0001-granitsy-podderzhki-ibcmd-kak-ogranichennogo-backend.md): принятая граница поддержки `IBCMD` как ограниченного backend.
+- [docs/decisions/0001-granitsy-podderzhki-ibcmd-kak-ogranichennogo-backend.md](docs/decisions/0001-granitsy-podderzhki-ibcmd-kak-ogranichennogo-backend.md): текущая граница поддержки `IBCMD` и целевой принцип взаимозаменяемости builder backend.
+- [docs/decisions/0003-podderzhivat-servernye-ib-dlya-vseh-instrumentov.md](docs/decisions/0003-podderzhivat-servernye-ib-dlya-vseh-instrumentov.md): целевой контракт поддержки серверных ИБ для всех инструментов.
+- [docs/decisions/0004-avtoobnaruzhivat-komponenty-platformy-1s-po-versii-maske.md](docs/decisions/0004-avtoobnaruzhivat-komponenty-platformy-1s-po-versii-maske.md): автопоиск компонентов платформы 1С по точной версии или версии-маске.
 
 <details>
 <summary>Текущие ограничения и оговорки</summary>
 
 - `IBCMD` требует файловое подключение к информационной базе.
 - `IBCMD` поддерживается как ограниченный backend для сценариев `init`, `build`, `dump`, `extensions`.
+- Builder-сценарии должны развиваться как взаимозаменяемые между `DESIGNER`, `IBCMD` и будущим Designer agent mode; временные отличия фиксируются как явные gaps.
+- Все инструменты должны развиваться с поддержкой серверных ИБ; текущие ограничения на файловую ИБ считаются gaps, а не целевой архитектурной нормой.
 - `load` не поддерживает `IBCMD`, EDT-формат, `.epf` и `.erf`.
 - `load --mode update` зарезервирован CLI-интерфейсом, но текущая реализация его отклоняет; используйте `load` или `merge`.
 - MCP-поверхность намеренно уже CLI: `init`, `extensions`, `load` и `make`/`artifacts` не опубликованы как MCP-инструменты.
 - `init` считает файловую ИБ существующей только по наличию файла `1Cv8.1CD` в каталоге базы и не валидирует содержимое глубже.
+- Для серверной строки подключения `init` пропускает создание ИБ; серверная база должна быть создана вручную заранее. EDT workspace при этом всё равно должен инициализироваться для `format=EDT`.
 - `init` для EDT считает workspace завершённым только после успешного полного импорта; незавершённый каталог без внутреннего marker-файла будет импортирован повторно.
 - Точечная частичная выгрузка по объектам нативно не реализована для `IBCMD`; запрос `partial` деградирует в инкрементальную выгрузку с предупреждением.
 - При деградации `partial` для `IBCMD` запрошенный режим `PARTIAL` сохраняется в результирующем payload.

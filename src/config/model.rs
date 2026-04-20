@@ -289,7 +289,11 @@ pub struct PlatformToolConfig {
     /// directory, or to a platform root that contains versioned subdirectories.
     pub path: Option<PathBuf>,
 
-    /// Exact platform version in `major.minor.patch.build` format, for example `8.3.25.1234`.
+    /// Platform version requirement in `major.minor`, `major.minor.patch`, or
+    /// `major.minor.patch.build` format.
+    ///
+    /// A 2- or 3-part value selects the highest matching version; a 4-part value
+    /// selects an exact build.
     pub version: Option<String>,
 }
 

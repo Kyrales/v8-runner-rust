@@ -6,7 +6,7 @@
 
 Если этот документ расходится со старыми внутренними заметками в `spec/*`, доверяйте текущему коду и CLI-интерфейсу.
 
-Граница поддержки `IBCMD` зафиксирована в [ADR-0001](decisions/0001-granitsy-podderzhki-ibcmd-kak-ogranichennogo-backend.md): это ограниченный backend для `init`, `build`, `dump`, `extensions`, только с файловой ИБ.
+Граница поддержки `IBCMD` зафиксирована в [ADR-0001](decisions/0001-granitsy-podderzhki-ibcmd-kak-ogranichennogo-backend.md): сейчас это ограниченный backend для `init`, `build`, `dump`, `extensions`, только с файловой ИБ. Целевой принцип builder-слоя: реализованные builder-сценарии должны быть взаимозаменяемы между `DESIGNER`, `IBCMD` и будущим Designer agent mode либо иметь явно описанный gap. Целевой контракт по [ADR-0003](decisions/0003-podderzhivat-servernye-ib-dlya-vseh-instrumentov.md): все инструменты должны развиваться с поддержкой серверных ИБ; текущие file-only ограничения считаются gaps.
 
 ## Матрица сценариев
 
@@ -89,12 +89,15 @@ v8-runner init
 
 Поведение:
 
-- Всегда выполняет два независимых шага: создание файловой ИБ и инициализацию EDT workspace.
+- Всегда выполняет два независимых шага: подготовку ИБ и инициализацию EDT workspace.
+- Создание ИБ выполняется только для файловой строки подключения.
+- Для серверной строки подключения шаг создания ИБ пропускается без ошибки; серверная база должна быть создана вручную заранее.
 - Падение шага создания ИБ не блокирует EDT-шаг; общий результат остаётся неуспешным, если любой шаг завершился ошибкой.
 - Файловая ИБ считается существующей только при наличии файла `1Cv8.1CD` в каталоге базы.
 - Для `builder=DESIGNER` создание ИБ идёт через `1cv8 CREATEINFOBASE`.
 - Для `builder=IBCMD` создание ИБ идёт через `ibcmd infobase create`.
 - Для `format=EDT` workspace создаётся в `workPath/edt-workspace`, а импорт проектов идёт в порядке `CONFIGURATION`, затем `EXTENSION`.
+- EDT workspace должен создаваться и импортироваться даже при серверной строке подключения, потому что серверная ИБ является внешним prerequisite.
 - Если `workPath/edt-workspace` уже существует и содержит внутренний marker успешной инициализации, EDT-шаг пропускается.
 - Если каталог workspace уже есть, но marker успешной инициализации отсутствует, `init` повторяет импорт всех EDT-проектов.
 
@@ -287,6 +290,7 @@ v8-runner mcp serve http
 - `build.partialLoadThreshold`
 - `tests.execution_timeout_seconds`
 - `tools.platform.*`, `tools.enterprise.*`, `tools.edt_cli.*`
+- По [ADR-0004](decisions/0004-avtoobnaruzhivat-komponenty-platformy-1s-po-versii-maske.md) компоненты платформы 1С должны находиться самим `v8-runner` по `tools.platform.version`; допустимы точная версия `8.3.27.1789` и маски `8.3.20` / `8.3` с выбором максимальной установленной версии под маску.
 - `mcp.http.*`, `mcp.execution.*`
 
 ## Артефакты выполнения

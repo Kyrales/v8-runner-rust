@@ -86,6 +86,69 @@ impl fmt::Display for PlatformVersion {
     }
 }
 
+/// 1C platform version requirement from configuration.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct PlatformVersionRequirement {
+    /// Major version component.
+    pub major: u32,
+    /// Minor version component.
+    pub minor: u32,
+    /// Optional patch version component.
+    pub patch: Option<u32>,
+    /// Optional build version component.
+    pub build: Option<u32>,
+}
+
+impl PlatformVersionRequirement {
+    /// Parse `major.minor`, `major.minor.patch`, or `major.minor.patch.build`.
+    pub fn parse(value: &str) -> Option<Self> {
+        let parts = value
+            .split('.')
+            .map(str::trim)
+            .map(str::parse::<u32>)
+            .collect::<Result<Vec<_>, _>>()
+            .ok()?;
+
+        if !(2..=4).contains(&parts.len()) {
+            return None;
+        }
+
+        Some(Self {
+            major: parts[0],
+            minor: parts[1],
+            patch: parts.get(2).copied(),
+            build: parts.get(3).copied(),
+        })
+    }
+
+    /// Returns `true` when a discovered platform version satisfies this requirement.
+    pub fn matches(&self, version: &PlatformVersion) -> bool {
+        self.major == version.major
+            && self.minor == version.minor
+            && self
+                .patch
+                .map(|patch| patch == version.patch)
+                .unwrap_or(true)
+            && self
+                .build
+                .map(|build| build == version.build)
+                .unwrap_or(true)
+    }
+}
+
+impl fmt::Display for PlatformVersionRequirement {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match (self.patch, self.build) {
+            (Some(patch), Some(build)) => {
+                write!(f, "{}.{}.{}.{}", self.major, self.minor, patch, build)
+            }
+            (Some(patch), None) => write!(f, "{}.{}.{}", self.major, self.minor, patch),
+            (None, None) => write!(f, "{}.{}", self.major, self.minor),
+            (None, Some(_)) => unreachable!("build cannot be parsed without patch"),
+        }
+    }
+}
+
 /// EDT discovery version parsed leniently from numeric tokens.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct EdtVersion {
@@ -145,7 +208,7 @@ struct Candidate {
 /// Stateful utility locator with per-instance cache.
 pub struct Locator {
     platform_hint: Option<PathBuf>,
-    platform_version: Option<PlatformVersion>,
+    platform_version: Option<PlatformVersionRequirement>,
     edt_hint: Option<PathBuf>,
     edt_version: Option<EdtVersion>,
     cache: HashMap<(UtilityType, Option<String>), UtilityLocation>,
@@ -157,7 +220,7 @@ impl Locator {
     /// Build a locator using default OS-specific search roots.
     pub fn new(
         platform_hint: Option<PathBuf>,
-        platform_version: Option<PlatformVersion>,
+        platform_version: Option<PlatformVersionRequirement>,
         edt_hint: Option<PathBuf>,
         edt_version: Option<EdtVersion>,
     ) -> Self {
@@ -204,7 +267,7 @@ impl Locator {
     #[cfg(test)]
     pub(crate) fn with_roots(
         platform_hint: Option<PathBuf>,
-        platform_version: Option<PlatformVersion>,
+        platform_version: Option<PlatformVersionRequirement>,
         edt_hint: Option<PathBuf>,
         edt_version: Option<EdtVersion>,
         platform_roots: Vec<PathBuf>,
@@ -332,11 +395,14 @@ impl Locator {
             if let Some(required) = &self.platform_version {
                 candidates
                     .into_iter()
-                    .find(|candidate| {
+                    .filter(|candidate| {
                         matches!(
                             candidate.version.as_ref(),
-                            Some(UtilityVersion::Platform(version)) if version == required
+                            Some(UtilityVersion::Platform(version)) if required.matches(version)
                         )
+                    })
+                    .max_by(|left, right| {
+                        compare_versions(left.version.as_ref(), right.version.as_ref())
                     })
                     .ok_or(LocatorError::NotFound(utility))?
             } else {
@@ -406,23 +472,16 @@ fn resolve_from_hint(hint: &Path, utility: UtilityType) -> Option<PathBuf> {
 
 fn platform_candidates_for_version(
     utility: UtilityType,
-    version: &PlatformVersion,
+    required: &PlatformVersionRequirement,
     roots: &[PathBuf],
 ) -> Vec<Candidate> {
-    let version_dir = version.to_string();
-    roots
-        .iter()
-        .flat_map(|root| {
-            [
-                root.join(&version_dir).join(utility.executable_name()),
-                root.join(&version_dir)
-                    .join("bin")
-                    .join(utility.executable_name()),
-            ]
-        })
-        .map(|path| Candidate {
-            path,
-            version: Some(UtilityVersion::Platform(version.clone())),
+    platform_candidates_any_version(utility, roots)
+        .into_iter()
+        .filter(|candidate| {
+            matches!(
+                candidate.version.as_ref(),
+                Some(UtilityVersion::Platform(version)) if required.matches(version)
+            )
         })
         .collect()
 }
@@ -644,7 +703,10 @@ fn default_edt_roots() -> Vec<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::{EdtVersion, Locator, PlatformVersion, UtilityType, UtilityVersion};
+    use super::{
+        EdtVersion, Locator, PlatformVersion, PlatformVersionRequirement, UtilityType,
+        UtilityVersion,
+    };
     use std::fs;
     use std::path::{Path, PathBuf};
     use tempfile::tempdir;
@@ -671,6 +733,28 @@ mod tests {
     fn parse_strict_platform_version_requires_four_parts() {
         assert!(PlatformVersion::parse_strict("8.3.25").is_none());
         assert!(PlatformVersion::parse_strict("8.3.25.1234").is_some());
+    }
+
+    #[test]
+    fn parse_platform_version_requirement_accepts_prefix_or_exact_version() {
+        let minor_prefix = PlatformVersionRequirement::parse("8.3").expect("minor prefix");
+        assert_eq!(minor_prefix.to_string(), "8.3");
+        assert!(
+            minor_prefix.matches(&PlatformVersion::parse_strict("8.3.25.1234").expect("version"))
+        );
+        assert!(
+            !minor_prefix.matches(&PlatformVersion::parse_strict("8.4.25.1234").expect("version"))
+        );
+
+        let prefix = PlatformVersionRequirement::parse("8.3.25").expect("prefix");
+        assert_eq!(prefix.to_string(), "8.3.25");
+        assert!(prefix.matches(&PlatformVersion::parse_strict("8.3.25.1234").expect("version")));
+        assert!(!prefix.matches(&PlatformVersion::parse_strict("8.3.24.9999").expect("version")));
+
+        let exact = PlatformVersionRequirement::parse("8.3.25.1234").expect("exact");
+        assert_eq!(exact.to_string(), "8.3.25.1234");
+        assert!(exact.matches(&PlatformVersion::parse_strict("8.3.25.1234").expect("version")));
+        assert!(!exact.matches(&PlatformVersion::parse_strict("8.3.25.9999").expect("version")));
     }
 
     #[test]
@@ -714,7 +798,7 @@ mod tests {
     fn explicit_root_hint_searches_versioned_children() {
         let dir = tempdir().expect("tempdir");
         let root = dir.path().join("platform-root");
-        let version = PlatformVersion::parse_strict("8.3.25.1234").expect("version");
+        let version = PlatformVersionRequirement::parse("8.3.25.1234").expect("version");
         let thin = root.join("8.3.25.1234").join("bin").join("1cv8c");
         touch_executable(&thin);
 
@@ -736,7 +820,7 @@ mod tests {
 
         let mut locator = Locator::with_roots(
             None,
-            Some(PlatformVersion::parse_strict("8.3.25.1234").expect("version")),
+            Some(PlatformVersionRequirement::parse("8.3.25.1234").expect("version")),
             None,
             None,
             vec![root],
@@ -749,6 +833,70 @@ mod tests {
             location.version,
             Some(UtilityVersion::Platform(_))
         ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn platform_search_prefix_picks_highest_matching_build() {
+        let dir = tempdir().expect("tempdir");
+        let root = dir.path().join("platform");
+        let wanted = root.join("8.3.25.9999").join("1cv8");
+        let older = root.join("8.3.25.1234").join("1cv8");
+        let other_patch = root.join("8.3.24.9999").join("1cv8");
+        touch_executable(&wanted);
+        touch_executable(&older);
+        touch_executable(&other_patch);
+
+        let mut locator = Locator::with_roots(
+            None,
+            Some(PlatformVersionRequirement::parse("8.3.25").expect("version")),
+            None,
+            None,
+            vec![root],
+            vec![],
+        );
+
+        let location = locator.locate(UtilityType::V8).expect("locate");
+        assert_eq!(location.path, wanted);
+        assert_eq!(
+            location.version,
+            Some(UtilityVersion::Platform(
+                PlatformVersion::parse_strict("8.3.25.9999").expect("version")
+            ))
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn platform_search_minor_prefix_picks_highest_matching_version() {
+        let dir = tempdir().expect("tempdir");
+        let root = dir.path().join("platform");
+        let wanted = root.join("8.3.27.1789").join("1cv8");
+        let older_build = root.join("8.3.27.1000").join("1cv8");
+        let older_patch = root.join("8.3.20.9999").join("1cv8");
+        let other_minor = root.join("8.4.1.1").join("1cv8");
+        touch_executable(&wanted);
+        touch_executable(&older_build);
+        touch_executable(&older_patch);
+        touch_executable(&other_minor);
+
+        let mut locator = Locator::with_roots(
+            None,
+            Some(PlatformVersionRequirement::parse("8.3").expect("version")),
+            None,
+            None,
+            vec![root],
+            vec![],
+        );
+
+        let location = locator.locate(UtilityType::V8).expect("locate");
+        assert_eq!(location.path, wanted);
+        assert_eq!(
+            location.version,
+            Some(UtilityVersion::Platform(
+                PlatformVersion::parse_strict("8.3.27.1789").expect("version")
+            ))
+        );
     }
 
     #[cfg(unix)]
@@ -780,7 +928,7 @@ mod tests {
     fn invalidates_broken_cache_entries_and_relocates() {
         let dir = tempdir().expect("tempdir");
         let root = dir.path().join("platform");
-        let version = PlatformVersion::parse_strict("8.3.25.1234").expect("version");
+        let version = PlatformVersionRequirement::parse("8.3.25.1234").expect("version");
         let first = root.join("8.3.25.1234").join("1cv8");
         touch_executable(&first);
 
