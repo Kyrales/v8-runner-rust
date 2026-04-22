@@ -264,9 +264,37 @@ fn scrub_snapshot(value: &mut Value) {
     value["data"]["retained_paths"]["yaxunit_log"] = Value::String("<yaxunit_log>".to_owned());
     value["data"]["retained_paths"]["platform_log"] = Value::String("<platform_log>".to_owned());
     value["data"]["retained_paths"]["sentinel"] = Value::String("<sentinel>".to_owned());
+    if value["data"]["execution"]["artifacts"]["root_dir"].is_string() {
+        value["data"]["execution"]["artifacts"]["root_dir"] = Value::String("<run_dir>".to_owned());
+    }
+    if let Some(items) = value["data"]["execution"]["artifacts"]["items"].as_array_mut() {
+        for item in items {
+            let replacement = match item["role"].as_str() {
+                Some("run_dir") => "<run_dir>",
+                Some("config") => "<config_json>",
+                Some("report") => "<junit_xml>",
+                Some("runner_log") => "<yaxunit_log>",
+                Some("platform_log") => "<platform_log>",
+                Some("sentinel") => "<sentinel>",
+                _ => continue,
+            };
+            item["path"] = Value::String(replacement.to_owned());
+        }
+    }
     if let Some(steps) = value["steps"].as_array_mut() {
         for step in steps {
             step["duration_ms"] = Value::String("<duration>".to_owned());
+            if step["target"].is_string() {
+                let replacement = match step["name"].as_str() {
+                    Some("prepare_artifacts") => "<run_dir>",
+                    Some("prepare_runner") => "<config_json>",
+                    Some("run") => "<platform_log>",
+                    Some("parse_junit") => "<junit_xml>",
+                    Some("parse_log") => "<yaxunit_log>",
+                    _ => "<target>",
+                };
+                step["target"] = Value::String(replacement.to_owned());
+            }
             if step["name"] == "prepare_artifacts" {
                 step["message"] = Value::String("created <run_dir>".to_owned());
             }

@@ -141,8 +141,7 @@ pub struct TestRunResult {
     pub steps: Vec<StepResult>,
     #[serde(skip)]
     pub duration_ms: u64,
-    #[serde(skip)]
-    pub outcome: ExecutionOutcome<TestReport>,
+    pub execution: ExecutionOutcome<TestReport>,
 }
 
 impl TestRunResult {
@@ -177,13 +176,13 @@ impl TestRunResult {
             warnings,
             steps,
             duration_ms,
-            outcome,
+            execution: outcome,
         }
     }
 
     #[cfg(test)]
     pub fn to_outcome(&self) -> ExecutionOutcome<TestReport> {
-        self.outcome.clone()
+        self.execution.clone()
     }
 }
 
@@ -369,7 +368,7 @@ mod tests {
     }
 
     #[test]
-    fn serde_shape_keeps_legacy_fields_only() {
+    fn serde_shape_keeps_legacy_fields_and_serialized_execution() {
         let result = TestRunResult::from_outcome(
             ExecutionOutcome::new(ExecutionStatus::Succeeded).with_payload(TestReport {
                 summary: TestSummary {
@@ -395,6 +394,7 @@ mod tests {
         assert!(value.get("warnings").is_none());
         assert!(value.get("steps").is_none());
         assert!(value.get("duration_ms").is_none());
+        assert!(value.get("execution").is_some());
         assert!(value.get("outcome").is_none());
     }
 }

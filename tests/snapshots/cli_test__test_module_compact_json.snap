@@ -1,5 +1,6 @@
 ---
 source: tests/cli_test.rs
+assertion_line: 693
 expression: compact_snapshot
 ---
 Object {
@@ -9,6 +10,88 @@ Object {
             String("platform <path> *** uri http:<path>:***@example"),
         ],
         "error_kind": String("test_failures"),
+        "execution": Object {
+            "artifacts": Object {
+                "items": Array [
+                    Object {
+                        "kind": String("run_directory"),
+                        "path": String("<run_dir>"),
+                        "role": String("run_dir"),
+                    },
+                    Object {
+                        "kind": String("config"),
+                        "path": String("<config_json>"),
+                        "role": String("config"),
+                    },
+                    Object {
+                        "kind": String("report"),
+                        "path": String("<junit_xml>"),
+                        "role": String("report"),
+                    },
+                    Object {
+                        "kind": String("runner_log"),
+                        "path": String("<yaxunit_log>"),
+                        "role": String("runner_log"),
+                    },
+                    Object {
+                        "kind": String("platform_log"),
+                        "path": String("<platform_log>"),
+                        "role": String("platform_log"),
+                    },
+                    Object {
+                        "kind": String("sentinel"),
+                        "path": String("<sentinel>"),
+                        "role": String("sentinel"),
+                    },
+                ],
+                "root_dir": String("<run_dir>"),
+            },
+            "diagnostics": Array [
+                String("platform <path> *** uri http:<path>:***@example"),
+            ],
+            "errors": Array [
+                Object {
+                    "code": String("test_failures"),
+                    "message": String("test run reported failures"),
+                },
+            ],
+            "metrics": Object {
+                "errors": Number(0),
+                "failed": Number(1),
+                "passed": Number(1),
+                "skipped": Number(0),
+                "total": Number(2),
+            },
+            "payload": Object {
+                "extracted_errors": Array [
+                    String("12:00:01.000 [ERR] failed block\nmore details"),
+                ],
+                "suites": Array [
+                    Object {
+                        "cases": Array [
+                            Object {
+                                "class_name": String("Sample"),
+                                "duration_ms": Number(200),
+                                "failure_message": String("boom"),
+                                "name": String("bad"),
+                                "stack_trace": String("stack trace line 1\nstack trace line 2"),
+                                "status": String("FAILED"),
+                            },
+                        ],
+                        "duration_ms": Number(0),
+                        "name": String("suite"),
+                    },
+                ],
+                "summary": Object {
+                    "errors": Number(0),
+                    "failed": Number(1),
+                    "passed": Number(1),
+                    "skipped": Number(0),
+                    "total": Number(2),
+                },
+            },
+            "status": String("failed"),
+        },
         "mode": String("compact"),
         "ok": Bool(false),
         "report": Object {
@@ -58,39 +141,56 @@ Object {
     "steps": Array [
         Object {
             "duration_ms": String("<duration>"),
+            "kind": String("platform_command"),
             "message": String("build completed"),
             "name": String("build"),
             "ok": Bool(true),
+            "status": String("succeeded"),
         },
         Object {
             "duration_ms": String("<duration>"),
+            "kind": String("prepare_workspace"),
             "message": String("created <run_dir>"),
             "name": String("prepare_artifacts"),
             "ok": Bool(true),
+            "status": String("succeeded"),
+            "target": String("<run_dir>"),
         },
         Object {
             "duration_ms": String("<duration>"),
+            "kind": String("prepare_workspace"),
             "message": String("YaXUnit config written"),
             "name": String("prepare_runner"),
             "ok": Bool(true),
+            "status": String("succeeded"),
+            "target": String("<config_json>"),
         },
         Object {
             "duration_ms": String("<duration>"),
+            "kind": String("platform_command"),
             "message": String("enterprise exit code 0"),
             "name": String("run"),
             "ok": Bool(true),
+            "status": String("succeeded"),
+            "target": String("<platform_log>"),
         },
         Object {
             "duration_ms": String("<duration>"),
+            "kind": String("parse_output"),
             "message": String("parsed 2 test cases"),
             "name": String("parse_junit"),
             "ok": Bool(true),
+            "status": String("succeeded"),
+            "target": String("<junit_xml>"),
         },
         Object {
             "duration_ms": String("<duration>"),
+            "kind": String("parse_output"),
             "message": String("extracted 1 YaXUnit error block(s)"),
             "name": String("parse_log"),
             "ok": Bool(true),
+            "status": String("succeeded"),
+            "target": String("<yaxunit_log>"),
         },
     ],
     "warnings": Array [],

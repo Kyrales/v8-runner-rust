@@ -14,7 +14,10 @@ use crate::domain::artifact::{
     ARTIFACT_ROLE_STAGE_FILE,
 };
 use crate::domain::artifacts::{ArtifactBuildMetadata, ArtifactBuildMode, ArtifactsResult};
-use crate::domain::execution::{ExecutionError, ExecutionOutcome, ExecutionStatus};
+use crate::domain::execution::{
+    ExecutionError, ExecutionInterruptionDetails, ExecutionInterruptionKind, ExecutionOutcome,
+    ExecutionStatus,
+};
 use crate::domain::runner::RunnerKind;
 use crate::platform::designer::DesignerDsl;
 use crate::platform::locator::UtilityType;
@@ -31,7 +34,7 @@ use crate::support::path::{
     hashed_lock_path, is_filesystem_root, nearest_existing_canonical_path, stable_path_identity,
 };
 use crate::support::temp::platform_logs_dir;
-use crate::use_cases::context::{ExecutionContext, InterruptionSafetyClass};
+use crate::use_cases::context::{ExecutionContext, ExecutionInterruption, InterruptionSafetyClass};
 use crate::use_cases::dump_config::run_external_dump_designer;
 use crate::use_cases::external_artifacts::{
     discover_designer_external_artifacts, prepare_edt_external_artifacts, resolve_source_set_path,
@@ -76,6 +79,30 @@ struct ResolvedArtifactsTarget {
     canonical_work_path: PathBuf,
     target_identity: String,
     lock_path: PathBuf,
+}
+
+fn command_interruption_status(interruption: ExecutionInterruption) -> ExecutionStatus {
+    match interruption {
+        ExecutionInterruption::Cancelled => ExecutionStatus::Cancelled,
+        ExecutionInterruption::TimedOut => ExecutionStatus::TimedOut,
+    }
+}
+
+fn command_interruption_details(
+    interruption: ExecutionInterruption,
+    phase: &str,
+    deferred: bool,
+    message: impl Into<String>,
+) -> ExecutionInterruptionDetails {
+    ExecutionInterruptionDetails::new(
+        match interruption {
+            ExecutionInterruption::Cancelled => ExecutionInterruptionKind::Cancelled,
+            ExecutionInterruption::TimedOut => ExecutionInterruptionKind::TimedOut,
+        },
+        deferred,
+    )
+    .with_phase(phase)
+    .with_message(message)
 }
 
 fn run_artifacts(
@@ -213,6 +240,24 @@ fn run_artifacts(
                 published: true,
             };
             let diagnostics = message.clone().into_iter().collect::<Vec<_>>();
+            let mut execution = ExecutionOutcome::new(ExecutionStatus::Succeeded)
+                .with_diagnostics(diagnostics)
+                .with_artifacts(artifacts.clone())
+                .with_payload(metadata);
+            if let Some(interruption) = context.interruption().filter(|_| {
+                message
+                    .as_deref()
+                    .is_some_and(|value| value.contains("critical phase"))
+            }) {
+                execution = execution.with_interruptions(vec![command_interruption_details(
+                    interruption,
+                    "publish",
+                    true,
+                    publication_warning(context.command(), Some(interruption)).unwrap_or_else(
+                        || "artifact publication completed after deferred interruption".to_owned(),
+                    ),
+                )]);
+            }
             Ok(ArtifactsResult {
                 ok: true,
                 mode: resolved.mode,
@@ -223,10 +268,7 @@ fn run_artifacts(
                 artifacts: artifacts.clone(),
                 duration_ms: started.elapsed().as_millis() as u64,
                 message,
-                execution: ExecutionOutcome::new(ExecutionStatus::Succeeded)
-                    .with_diagnostics(diagnostics)
-                    .with_artifacts(artifacts)
-                    .with_payload(metadata),
+                execution,
             })
         }
         Err((error, artifacts, platform_log_path)) => {
@@ -241,6 +283,32 @@ fn run_artifacts(
                 .get_by_role(ARTIFACT_ROLE_PLATFORM_LOG)
                 .or_else(|| artifacts.get_by_role(ARTIFACT_ROLE_STAGE_FILE))
                 .map(|path| ArtifactRef::new(ArtifactKind::Other("diagnostic".to_owned()), path));
+            let mut execution = ExecutionOutcome::new(
+                context
+                    .interruption()
+                    .map(command_interruption_status)
+                    .unwrap_or(ExecutionStatus::Failed),
+            )
+            .with_artifacts(artifacts.clone())
+            .with_payload(metadata);
+            if let Some(interruption) = context.interruption() {
+                execution = execution
+                    .with_diagnostics(vec![message.clone()])
+                    .with_interruptions(vec![command_interruption_details(
+                        interruption,
+                        "export_or_publish",
+                        false,
+                        message.clone(),
+                    )]);
+            } else {
+                execution = execution.with_errors(vec![ExecutionError {
+                    code: "designer_export_failed".to_owned(),
+                    message: message.clone(),
+                    details: Vec::new(),
+                    artifact: artifact_for_error,
+                    retryable: false,
+                }]);
+            }
             let payload = ArtifactsResult {
                 ok: false,
                 mode: resolved.mode,
@@ -251,16 +319,7 @@ fn run_artifacts(
                 artifacts: artifacts.clone(),
                 duration_ms: started.elapsed().as_millis() as u64,
                 message: Some(message.clone()),
-                execution: ExecutionOutcome::new(ExecutionStatus::Failed)
-                    .with_errors(vec![ExecutionError {
-                        code: "designer_export_failed".to_owned(),
-                        message,
-                        details: Vec::new(),
-                        artifact: artifact_for_error,
-                        retryable: false,
-                    }])
-                    .with_artifacts(artifacts)
-                    .with_payload(metadata),
+                execution,
             };
             Err(ArtifactsExecutionFailure::with_payload(error, payload))
         }
@@ -1250,6 +1309,7 @@ mod tests {
     };
     use crate::domain::artifact::{ARTIFACT_ROLE_PACKAGE_FILE, ARTIFACT_ROLE_PLATFORM_LOG};
     use crate::domain::artifacts::ArtifactBuildMode;
+    use crate::domain::execution::ExecutionStatus;
     use crate::support::fs::{
         metadata_sidecar_path, read_temp_dir_metadata, write_temp_dir_metadata, TempDirKind,
     };
@@ -1482,11 +1542,12 @@ mod tests {
         let context = ExecutionContext::cli(CommandName::Artifacts).with_cancellation(cancellation);
 
         let failure = run_artifacts(&context, &config, &request).expect_err("failure");
+        let error_text = failure.error.to_string();
+        let payload = failure.payload.expect("payload");
 
-        assert!(failure
-            .error
-            .to_string()
-            .contains("before entering artifact export"));
+        assert!(error_text.contains("before entering artifact export"));
+        assert_eq!(payload.execution.status, ExecutionStatus::Cancelled);
+        assert_eq!(payload.execution.interruptions.len(), 1);
     }
 
     #[test]

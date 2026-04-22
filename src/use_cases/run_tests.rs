@@ -10,7 +10,10 @@ use uuid::Uuid;
 
 use crate::config::model::{AppConfig, VanessaProfileConfig};
 use crate::domain::artifact::ArtifactSet;
-use crate::domain::execution::{ExecutionMetrics, ExecutionOutcome, ExecutionStatus, StepResult};
+use crate::domain::execution::{
+    ExecutionInterruptionDetails, ExecutionInterruptionKind, ExecutionMetrics, ExecutionOutcome,
+    ExecutionStatus, ExecutionStepKind, StepResult,
+};
 use crate::domain::runner::{LaunchClientModeRequest, LaunchOptions, RunnerKind};
 use crate::domain::test::{
     test_execution_error, test_execution_status, TestErrorKind, TestOutputMode, TestReport,
@@ -22,7 +25,7 @@ use crate::parsers::yaxunit_log;
 use crate::platform::enterprise::EnterpriseDsl;
 use crate::platform::enterprise::EnterpriseError;
 use crate::platform::locator::UtilityType;
-use crate::platform::process::ProcessError;
+use crate::platform::process::{ProcessError, ProcessInterruptionReason};
 use crate::platform::utilities::PlatformUtilities;
 use crate::support::error::AppError;
 use crate::support::path::is_safe_path_segment;
@@ -108,6 +111,89 @@ fn make_test_result(
     TestRunResult::from_outcome(outcome, target, mode, warnings, steps, duration_ms)
 }
 
+fn command_interruption_status(interruption: ExecutionInterruption) -> ExecutionStatus {
+    match interruption {
+        ExecutionInterruption::Cancelled => ExecutionStatus::Cancelled,
+        ExecutionInterruption::TimedOut => ExecutionStatus::TimedOut,
+    }
+}
+
+fn command_interruption_details(
+    interruption: ExecutionInterruption,
+    phase: &str,
+    message: impl Into<String>,
+) -> ExecutionInterruptionDetails {
+    ExecutionInterruptionDetails::new(
+        match interruption {
+            ExecutionInterruption::Cancelled => ExecutionInterruptionKind::Cancelled,
+            ExecutionInterruption::TimedOut => ExecutionInterruptionKind::TimedOut,
+        },
+        false,
+    )
+    .with_phase(phase)
+    .with_message(message)
+}
+
+fn process_interruption_details(
+    interruption: ProcessInterruptionReason,
+    phase: &str,
+    deferred: bool,
+    message: impl Into<String>,
+) -> ExecutionInterruptionDetails {
+    ExecutionInterruptionDetails::new(
+        match interruption {
+            ProcessInterruptionReason::Cancelled => ExecutionInterruptionKind::Cancelled,
+            ProcessInterruptionReason::TimedOut => ExecutionInterruptionKind::TimedOut,
+        },
+        deferred,
+    )
+    .with_phase(phase)
+    .with_message(message)
+}
+
+fn succeeded_step(
+    name: &str,
+    kind: ExecutionStepKind,
+    duration_ms: u64,
+    message: impl Into<String>,
+) -> StepResult {
+    StepResult::succeeded(name, kind, duration_ms).with_message(message)
+}
+
+fn failed_step(
+    name: &str,
+    kind: ExecutionStepKind,
+    duration_ms: u64,
+    message: impl Into<String>,
+) -> StepResult {
+    let message = message.into();
+    StepResult::failed(name, kind, duration_ms)
+        .with_message(message.clone())
+        .with_diagnostics(vec![message])
+}
+
+fn degraded_step(
+    name: &str,
+    kind: ExecutionStepKind,
+    duration_ms: u64,
+    message: impl Into<String>,
+) -> StepResult {
+    let message = message.into();
+    StepResult::degraded(name, kind, duration_ms)
+        .with_message(message.clone())
+        .with_diagnostics(vec![message])
+}
+
+fn with_retained_artifacts(
+    mut outcome: ExecutionOutcome<TestReport>,
+    retained_paths: Option<ArtifactSet>,
+) -> ExecutionOutcome<TestReport> {
+    if let Some(retained_paths) = retained_paths {
+        outcome = outcome.with_artifacts(retained_paths);
+    }
+    outcome
+}
+
 fn interrupted_test_failure(
     context: &ExecutionContext,
     target: &TestTarget,
@@ -118,11 +204,13 @@ fn interrupted_test_failure(
 ) -> Option<TestExecutionFailure> {
     let interruption = context.interruption()?;
     let message = interruption_message(context, interruption);
-    let status = match interruption {
-        ExecutionInterruption::Cancelled => ExecutionStatus::Failed,
-        ExecutionInterruption::TimedOut => ExecutionStatus::TimedOut,
-    };
-    let outcome = ExecutionOutcome::new(status).with_diagnostics(vec![message.clone()]);
+    let outcome = ExecutionOutcome::new(command_interruption_status(interruption))
+        .with_diagnostics(vec![message.clone()])
+        .with_interruptions(vec![command_interruption_details(
+            interruption,
+            "command_boundary",
+            message.clone(),
+        )]);
     let result = make_test_result(
         target.clone(),
         mode.clone(),
@@ -238,12 +326,18 @@ fn run_tests(
                 .as_ref()
                 .map(build_summary)
                 .unwrap_or_else(|| failure.error.to_string());
-            steps.push(StepResult {
-                name: "build".to_owned(),
-                ok: false,
-                duration_ms: build_started.elapsed().as_millis() as u64,
-                message: Some(summary.clone()),
-            });
+            steps.push(
+                failed_step(
+                    "build",
+                    ExecutionStepKind::PlatformCommand,
+                    build_started.elapsed().as_millis() as u64,
+                    summary.clone(),
+                )
+                .with_errors(vec![test_execution_error(
+                    TestErrorKind::BuildFailed,
+                    summary.clone(),
+                )]),
+            );
             let outcome = ExecutionOutcome::new(ExecutionStatus::Failed)
                 .with_diagnostics(vec![summary.clone()])
                 .with_errors(vec![test_execution_error(
@@ -261,12 +355,12 @@ fn run_tests(
             return Err(TestExecutionFailure::with_payload(failure.error, result));
         }
     };
-    steps.push(StepResult {
-        name: "build".to_owned(),
-        ok: true,
-        duration_ms: build_started.elapsed().as_millis() as u64,
-        message: Some(build_summary(&build_result)),
-    });
+    steps.push(succeeded_step(
+        "build",
+        ExecutionStepKind::PlatformCommand,
+        build_started.elapsed().as_millis() as u64,
+        build_summary(&build_result),
+    ));
 
     debug!("preparing test run artifacts");
     let prepare_artifacts_started = Instant::now();
@@ -275,12 +369,18 @@ fn run_tests(
         Err(error) => {
             let app_error =
                 AppError::Runtime(format!("failed to prepare test run directory: {error}"));
-            steps.push(StepResult {
-                name: "prepare_artifacts".to_owned(),
-                ok: false,
-                duration_ms: prepare_artifacts_started.elapsed().as_millis() as u64,
-                message: Some(app_error.to_string()),
-            });
+            steps.push(
+                failed_step(
+                    "prepare_artifacts",
+                    ExecutionStepKind::PrepareWorkspace,
+                    prepare_artifacts_started.elapsed().as_millis() as u64,
+                    app_error.to_string(),
+                )
+                .with_errors(vec![test_execution_error(
+                    TestErrorKind::EnterpriseSpawnFailed,
+                    app_error.to_string(),
+                )]),
+            );
             let outcome = ExecutionOutcome::new(ExecutionStatus::Failed)
                 .with_diagnostics(vec![app_error.to_string()])
                 .with_errors(vec![test_execution_error(
@@ -298,12 +398,15 @@ fn run_tests(
             return Err(TestExecutionFailure::with_payload(app_error, result));
         }
     };
-    steps.push(StepResult {
-        name: "prepare_artifacts".to_owned(),
-        ok: true,
-        duration_ms: prepare_artifacts_started.elapsed().as_millis() as u64,
-        message: Some(format!("created {}", artifacts.run_dir.display())),
-    });
+    steps.push(
+        succeeded_step(
+            "prepare_artifacts",
+            ExecutionStepKind::PrepareWorkspace,
+            prepare_artifacts_started.elapsed().as_millis() as u64,
+            format!("created {}", artifacts.run_dir.display()),
+        )
+        .with_target(artifacts.run_dir.display().to_string()),
+    );
 
     let prepare_runner_started = Instant::now();
     if let Some(failure) =
@@ -313,31 +416,41 @@ fn run_tests(
     }
     let prepared_run = match prepare_runner_artifacts(config, args, &target, &mut artifacts) {
         Ok(prepared_run) => {
-            steps.push(StepResult {
-                name: "prepare_runner".to_owned(),
-                ok: true,
-                duration_ms: prepare_runner_started.elapsed().as_millis() as u64,
-                message: Some(prepared_run_summary(&prepared_run)),
-            });
+            steps.push(
+                succeeded_step(
+                    "prepare_runner",
+                    ExecutionStepKind::PrepareWorkspace,
+                    prepare_runner_started.elapsed().as_millis() as u64,
+                    prepared_run_summary(&prepared_run),
+                )
+                .with_target(artifacts.config_json.display().to_string()),
+            );
             prepared_run
         }
         Err(error) => {
-            steps.push(StepResult {
-                name: "prepare_runner".to_owned(),
-                ok: false,
-                duration_ms: prepare_runner_started.elapsed().as_millis() as u64,
-                message: Some(error.to_string()),
-            });
-            let retained_paths = retain_run_artifacts(config, &artifacts).ok();
-            let mut outcome = ExecutionOutcome::new(ExecutionStatus::Failed)
-                .with_diagnostics(vec![error.to_string()])
+            steps.push(
+                failed_step(
+                    "prepare_runner",
+                    ExecutionStepKind::PrepareWorkspace,
+                    prepare_runner_started.elapsed().as_millis() as u64,
+                    error.to_string(),
+                )
+                .with_target(artifacts.config_json.display().to_string())
                 .with_errors(vec![test_execution_error(
                     TestErrorKind::EnterpriseSpawnFailed,
                     error.to_string(),
-                )]);
-            if let Some(retained_paths) = retained_paths {
-                outcome = outcome.with_artifacts(retained_paths);
-            }
+                )]),
+            );
+            let retained_paths = retain_run_artifacts(config, &artifacts).ok();
+            let outcome = with_retained_artifacts(
+                ExecutionOutcome::new(ExecutionStatus::Failed)
+                    .with_diagnostics(vec![error.to_string()])
+                    .with_errors(vec![test_execution_error(
+                        TestErrorKind::EnterpriseSpawnFailed,
+                        error.to_string(),
+                    )]),
+                retained_paths,
+            );
             let result = make_test_result(
                 target.clone(),
                 mode,
@@ -365,22 +478,29 @@ fn run_tests(
     ) {
         Ok(dsl) => dsl,
         Err(error) => {
-            steps.push(StepResult {
-                name: "run".to_owned(),
-                ok: false,
-                duration_ms: run_started.elapsed().as_millis() as u64,
-                message: Some(error.to_string()),
-            });
-            let retained_paths = retain_run_artifacts(config, &artifacts).ok();
-            let mut outcome = ExecutionOutcome::new(ExecutionStatus::Failed)
-                .with_diagnostics(vec![error.to_string()])
+            steps.push(
+                failed_step(
+                    "run",
+                    ExecutionStepKind::PlatformCommand,
+                    run_started.elapsed().as_millis() as u64,
+                    error.to_string(),
+                )
+                .with_target(artifacts.platform_log.display().to_string())
                 .with_errors(vec![test_execution_error(
                     TestErrorKind::EnterpriseSpawnFailed,
                     error.to_string(),
-                )]);
-            if let Some(retained_paths) = retained_paths {
-                outcome = outcome.with_artifacts(retained_paths);
-            }
+                )]),
+            );
+            let retained_paths = retain_run_artifacts(config, &artifacts).ok();
+            let outcome = with_retained_artifacts(
+                ExecutionOutcome::new(ExecutionStatus::Failed)
+                    .with_diagnostics(vec![error.to_string()])
+                    .with_errors(vec![test_execution_error(
+                        TestErrorKind::EnterpriseSpawnFailed,
+                        error.to_string(),
+                    )]),
+                retained_paths,
+            );
             let result = make_test_result(
                 target,
                 mode,
@@ -402,30 +522,50 @@ fn run_tests(
     }
     let platform_result = match enterprise.run_launch(&platform_launch) {
         Ok(result) => {
-            steps.push(StepResult {
-                name: "run".to_owned(),
-                ok: result.process.exit_code == 0,
-                duration_ms: run_started.elapsed().as_millis() as u64,
-                message: Some(format!("enterprise exit code {}", result.process.exit_code)),
-            });
+            steps.push(
+                if result.process.exit_code == 0 {
+                    succeeded_step(
+                        "run",
+                        ExecutionStepKind::PlatformCommand,
+                        run_started.elapsed().as_millis() as u64,
+                        format!("enterprise exit code {}", result.process.exit_code),
+                    )
+                } else {
+                    failed_step(
+                        "run",
+                        ExecutionStepKind::PlatformCommand,
+                        run_started.elapsed().as_millis() as u64,
+                        format!("enterprise exit code {}", result.process.exit_code),
+                    )
+                }
+                .with_target(artifacts.platform_log.display().to_string()),
+            );
             result
         }
         Err(error) => {
-            let (kind, app_error) = enterprise_error_kind(error);
-            steps.push(StepResult {
-                name: "run".to_owned(),
-                ok: false,
-                duration_ms: run_started.elapsed().as_millis() as u64,
-                message: Some(app_error.to_string()),
-            });
+            let (kind, app_error, interruption, status) = enterprise_error_kind(error);
+            let mut step = failed_step(
+                "run",
+                ExecutionStepKind::PlatformCommand,
+                run_started.elapsed().as_millis() as u64,
+                app_error.to_string(),
+            )
+            .with_target(artifacts.platform_log.display().to_string());
+            if let Some(kind) = kind.clone() {
+                step = step.with_errors(vec![test_execution_error(kind, app_error.to_string())]);
+            }
+            steps.push(step);
             let retained_paths = retain_run_artifacts(config, &artifacts).ok();
             let mut outcome =
-                ExecutionOutcome::new(test_execution_status(Some(kind.clone()), false))
-                    .with_diagnostics(vec![app_error.to_string()])
-                    .with_errors(vec![test_execution_error(kind, app_error.to_string())]);
-            if let Some(retained_paths) = retained_paths {
-                outcome = outcome.with_artifacts(retained_paths);
+                ExecutionOutcome::new(status).with_diagnostics(vec![app_error.to_string()]);
+            if let Some(kind) = kind {
+                outcome =
+                    outcome.with_errors(vec![test_execution_error(kind, app_error.to_string())]);
             }
+            if let Some(interruption) = interruption {
+                outcome = outcome.with_interruptions(vec![interruption]);
+            }
+            let outcome = with_retained_artifacts(outcome, retained_paths);
             let result = make_test_result(
                 target,
                 mode,
@@ -450,12 +590,15 @@ fn run_tests(
     let junit_parse = parse_junit_report(&artifacts);
     let mut report = match junit_parse.payload {
         Some(report) => {
-            steps.push(StepResult {
-                name: "parse_junit".to_owned(),
-                ok: true,
-                duration_ms: parse_junit_started.elapsed().as_millis() as u64,
-                message: Some(format!("parsed {} test cases", report.summary.total)),
-            });
+            steps.push(
+                succeeded_step(
+                    "parse_junit",
+                    ExecutionStepKind::ParseOutput,
+                    parse_junit_started.elapsed().as_millis() as u64,
+                    format!("parsed {} test cases", report.summary.total),
+                )
+                .with_target(artifacts.junit_xml.display().to_string()),
+            );
             report
         }
         None => {
@@ -467,21 +610,26 @@ fn run_tests(
             let kind =
                 TestErrorKind::from_code(&error.code).unwrap_or(TestErrorKind::JunitMalformed);
             let message = error.message.clone();
-            steps.push(StepResult {
-                name: "parse_junit".to_owned(),
-                ok: false,
-                duration_ms: parse_junit_started.elapsed().as_millis() as u64,
-                message: Some(message.clone()),
-            });
+            steps.push(
+                failed_step(
+                    "parse_junit",
+                    ExecutionStepKind::ParseOutput,
+                    parse_junit_started.elapsed().as_millis() as u64,
+                    message.clone(),
+                )
+                .with_target(artifacts.junit_xml.display().to_string())
+                .with_errors(vec![error
+                    .clone()
+                    .with_details(junit_parse.diagnostics.clone())]),
+            );
             let retained_paths = retain_run_artifacts(config, &artifacts).ok();
             let diagnostics = collect_diagnostics(&platform_result, vec![message.clone()], config);
-            let mut outcome =
+            let outcome = with_retained_artifacts(
                 ExecutionOutcome::new(test_execution_status(Some(kind.clone()), false))
                     .with_diagnostics(diagnostics)
-                    .with_errors(vec![error.with_details(junit_parse.diagnostics)]);
-            if let Some(retained_paths) = retained_paths {
-                outcome = outcome.with_artifacts(retained_paths);
-            }
+                    .with_errors(vec![error.with_details(junit_parse.diagnostics)]),
+                retained_paths,
+            );
             let result = make_test_result(
                 target,
                 mode,
@@ -525,24 +673,24 @@ fn run_tests(
         } else {
             TestErrorKind::TestFailures
         };
-        let mut outcome = ExecutionOutcome::new(test_execution_status(Some(kind.clone()), false))
-            .with_diagnostics(diagnostics)
-            .with_errors(vec![test_execution_error(
-                kind,
-                if process_failed {
-                    format!(
-                        "enterprise test run exited with code {}",
-                        platform_result.process.exit_code
-                    )
-                } else {
-                    "test run reported failures".to_owned()
-                },
-            )])
-            .with_metrics(ExecutionMetrics::from(&report.summary))
-            .with_payload(rendered_report);
-        if let Some(retained_paths) = retained_paths {
-            outcome = outcome.with_artifacts(retained_paths);
-        }
+        let outcome = with_retained_artifacts(
+            ExecutionOutcome::new(test_execution_status(Some(kind.clone()), false))
+                .with_diagnostics(diagnostics)
+                .with_errors(vec![test_execution_error(
+                    kind,
+                    if process_failed {
+                        format!(
+                            "enterprise test run exited with code {}",
+                            platform_result.process.exit_code
+                        )
+                    } else {
+                        "test run reported failures".to_owned()
+                    },
+                )])
+                .with_metrics(ExecutionMetrics::from(&report.summary))
+                .with_payload(rendered_report),
+            retained_paths,
+        );
         let result = make_test_result(
             target,
             mode,
@@ -901,24 +1049,30 @@ fn parse_runner_log(
                     report.extracted_errors = errors;
                 }
                 warnings.extend(parsed.warnings);
-                steps.push(StepResult {
-                    name: "parse_log".to_owned(),
-                    ok: true,
-                    duration_ms: parse_log_started.elapsed().as_millis() as u64,
-                    message: Some(format!(
-                        "extracted {} YaXUnit error block(s)",
-                        report.extracted_errors.len()
-                    )),
-                });
+                steps.push(
+                    succeeded_step(
+                        "parse_log",
+                        ExecutionStepKind::ParseOutput,
+                        parse_log_started.elapsed().as_millis() as u64,
+                        format!(
+                            "extracted {} YaXUnit error block(s)",
+                            report.extracted_errors.len()
+                        ),
+                    )
+                    .with_target(runner_log_path.display().to_string()),
+                );
             }
             Err(error) => {
                 warnings.push(format!("failed to read YaXUnit log: {error}"));
-                steps.push(StepResult {
-                    name: "parse_log".to_owned(),
-                    ok: false,
-                    duration_ms: parse_log_started.elapsed().as_millis() as u64,
-                    message: Some(format!("failed to read YaXUnit log: {error}")),
-                });
+                steps.push(
+                    degraded_step(
+                        "parse_log",
+                        ExecutionStepKind::ParseOutput,
+                        parse_log_started.elapsed().as_millis() as u64,
+                        format!("failed to read YaXUnit log: {error}"),
+                    )
+                    .with_target(runner_log_path.display().to_string()),
+                );
             }
         },
         PreparedRun::Vanessa { .. } => match vanessa_log::normalize_file(runner_log_path) {
@@ -927,24 +1081,30 @@ fn parse_runner_log(
                     report.extracted_errors = errors;
                 }
                 warnings.extend(parsed.warnings);
-                steps.push(StepResult {
-                    name: "parse_log".to_owned(),
-                    ok: true,
-                    duration_ms: parse_log_started.elapsed().as_millis() as u64,
-                    message: Some(format!(
-                        "extracted {} Vanessa Automation log line(s)",
-                        report.extracted_errors.len()
-                    )),
-                });
+                steps.push(
+                    succeeded_step(
+                        "parse_log",
+                        ExecutionStepKind::ParseOutput,
+                        parse_log_started.elapsed().as_millis() as u64,
+                        format!(
+                            "extracted {} Vanessa Automation log line(s)",
+                            report.extracted_errors.len()
+                        ),
+                    )
+                    .with_target(runner_log_path.display().to_string()),
+                );
             }
             Err(error) => {
                 warnings.push(format!("failed to read Vanessa Automation log: {error}"));
-                steps.push(StepResult {
-                    name: "parse_log".to_owned(),
-                    ok: false,
-                    duration_ms: parse_log_started.elapsed().as_millis() as u64,
-                    message: Some(format!("failed to read Vanessa Automation log: {error}")),
-                });
+                steps.push(
+                    degraded_step(
+                        "parse_log",
+                        ExecutionStepKind::ParseOutput,
+                        parse_log_started.elapsed().as_millis() as u64,
+                        format!("failed to read Vanessa Automation log: {error}"),
+                    )
+                    .with_target(runner_log_path.display().to_string()),
+                );
             }
         },
     }
@@ -1073,24 +1233,49 @@ fn collect_diagnostics(
     diagnostics
 }
 
-fn enterprise_error_kind(error: EnterpriseError) -> (TestErrorKind, AppError) {
+fn enterprise_error_kind(
+    error: EnterpriseError,
+) -> (
+    Option<TestErrorKind>,
+    AppError,
+    Option<ExecutionInterruptionDetails>,
+    ExecutionStatus,
+) {
     match error {
         EnterpriseError::Spawn(ProcessError::Cancelled { .. }) => (
-            TestErrorKind::EnterpriseSpawnFailed,
+            None,
             AppError::Runtime("enterprise test run cancelled".to_owned()),
+            Some(process_interruption_details(
+                ProcessInterruptionReason::Cancelled,
+                "run",
+                false,
+                "enterprise test run cancelled",
+            )),
+            ExecutionStatus::Cancelled,
         ),
         EnterpriseError::Spawn(ProcessError::TimedOut { .. }) => (
-            TestErrorKind::EnterpriseTimedOut,
+            None,
             AppError::Runtime("enterprise test run timed out".to_owned()),
+            Some(process_interruption_details(
+                ProcessInterruptionReason::TimedOut,
+                "run",
+                false,
+                "enterprise test run timed out",
+            )),
+            ExecutionStatus::TimedOut,
         ),
         EnterpriseError::Spawn(process_error @ ProcessError::SpawnFailed { .. })
         | EnterpriseError::Spawn(process_error @ ProcessError::ExitedEarly { .. }) => (
-            TestErrorKind::EnterpriseSpawnFailed,
+            Some(TestErrorKind::EnterpriseSpawnFailed),
             AppError::Platform(process_error.to_string()),
+            None,
+            ExecutionStatus::Failed,
         ),
         EnterpriseError::Spawn(process_error) => (
-            TestErrorKind::EnterpriseSpawnFailed,
+            Some(TestErrorKind::EnterpriseSpawnFailed),
             AppError::Platform(process_error.to_string()),
+            None,
+            ExecutionStatus::Failed,
         ),
     }
 }
@@ -1222,23 +1407,26 @@ fn set_file_permissions(path: &Path) -> std::io::Result<()> {
 mod tests {
     use super::{
         build_yaxunit_config, compact_report, create_run_artifacts, materialize_vanessa_runner_log,
-        parse_junit_report, retain_run_artifacts, sanitize_text, sanitize_text_full,
+        parse_junit_report, retain_run_artifacts, run_tests, sanitize_text, sanitize_text_full,
         truncate_stack_trace, RunArtifacts,
     };
     use crate::config::model::{
         AppConfig, BuildConfig, BuilderBackend, PlatformToolConfig, SourceFormat, SourceSetConfig,
         SourceSetPurpose, TestsConfig, ToolsConfig, VanessaProfileConfig,
     };
-    use crate::domain::execution::ExecutionTimeouts;
+    use crate::domain::execution::{ExecutionStatus, ExecutionTimeouts};
     use crate::domain::runner::{
         ExecutionPolicy, LaunchClientModeRequest, LaunchOptions, RunnerKind, RunnerProfile,
+        ScenarioExecutionRequest,
     };
     use crate::domain::test::{
         TestCase, TestErrorKind, TestReport, TestStatus, TestSuite, TestSummary, TestTarget,
     };
     use crate::use_cases::context::{CommandName, ExecutionContext};
+    use crate::use_cases::request::{TestRequest, TestScopeRequest};
     use std::path::PathBuf;
     use tempfile::tempdir;
+    use tokio_util::sync::CancellationToken;
 
     fn config(work_path: &std::path::Path) -> AppConfig {
         let base = work_path.join("base");
@@ -1428,6 +1616,38 @@ mod tests {
         assert!(result.is_err());
         let error = result.err().expect("error");
         assert!(error.error.to_string().contains("unsafe path characters"));
+    }
+
+    #[test]
+    fn run_tests_reports_cancelled_execution_before_first_safe_point() {
+        let dir = tempdir().expect("tempdir");
+        let config = config(dir.path());
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+        let context = ExecutionContext::cli(CommandName::Test).with_cancellation(cancellation);
+        let args = TestRequest {
+            full: false,
+            scope: TestScopeRequest::All,
+            execution: ScenarioExecutionRequest {
+                profile: RunnerProfile {
+                    id: "yaxunit".to_owned(),
+                    kind: RunnerKind::YaXUnit,
+                    output_formats: vec![],
+                    backend_hint: Some("enterprise".to_owned()),
+                },
+                client_mode: Some(LaunchClientModeRequest::Thin),
+                timeouts: ExecutionTimeouts::default(),
+                policy: ExecutionPolicy::default(),
+                launch: LaunchOptions::default(),
+            },
+        };
+
+        let failure = run_tests(&context, &config, &args).expect_err("cancelled");
+        let payload = failure.payload.expect("payload");
+
+        assert_eq!(payload.execution.status, ExecutionStatus::Cancelled);
+        assert_eq!(payload.execution.interruptions.len(), 1);
+        assert!(payload.execution.errors.is_empty());
     }
 
     fn create_artifacts(root: &std::path::Path) -> RunArtifacts {

@@ -5,18 +5,21 @@ use tracing::debug;
 
 use crate::config::model::{AppConfig, BuilderBackend, SourceFormat};
 use crate::domain::artifacts::ArtifactBuildMode;
-use crate::domain::execution::{ExecutionError, ExecutionOutcome, ExecutionStatus};
+use crate::domain::execution::{
+    ExecutionError, ExecutionInterruptionDetails, ExecutionInterruptionKind, ExecutionOutcome,
+    ExecutionStatus,
+};
 use crate::domain::load::{
     CompatibilityState, LoadExecutionMetadata, LoadMode, LoadResult, LoadTargetKind,
 };
 use crate::platform::designer::DesignerDsl;
 use crate::platform::locator::UtilityType;
-use crate::platform::process::ProcessRunner;
+use crate::platform::process::{ProcessInterruptionReason, ProcessRunner};
 use crate::platform::result::PlatformCommandResult;
 use crate::platform::utilities::PlatformUtilities;
 use crate::support::error::AppError;
 use crate::support::temp::platform_logs_dir;
-use crate::use_cases::context::{ExecutionContext, InterruptionSafetyClass};
+use crate::use_cases::context::{ExecutionContext, ExecutionInterruption, InterruptionSafetyClass};
 use crate::use_cases::ibcmd_diagnostics::format_ibcmd_failure_details;
 use crate::use_cases::request::LoadRequest;
 use crate::use_cases::result::{UseCaseFailure, UseCaseResult};
@@ -54,6 +57,52 @@ struct ResolvedLoadRequest {
     target_kind: LoadTargetKind,
     settings_path: Option<PathBuf>,
     extension: Option<String>,
+}
+
+fn command_interruption_status(interruption: ExecutionInterruption) -> ExecutionStatus {
+    match interruption {
+        ExecutionInterruption::Cancelled => ExecutionStatus::Cancelled,
+        ExecutionInterruption::TimedOut => ExecutionStatus::TimedOut,
+    }
+}
+
+fn command_interruption_details(
+    interruption: ExecutionInterruption,
+    phase: &str,
+    message: impl Into<String>,
+) -> ExecutionInterruptionDetails {
+    ExecutionInterruptionDetails::new(
+        match interruption {
+            ExecutionInterruption::Cancelled => ExecutionInterruptionKind::Cancelled,
+            ExecutionInterruption::TimedOut => ExecutionInterruptionKind::TimedOut,
+        },
+        false,
+    )
+    .with_phase(phase)
+    .with_message(message)
+}
+
+fn deferred_interruption_details(
+    action: &str,
+    result: &PlatformCommandResult,
+) -> Option<ExecutionInterruptionDetails> {
+    result.process.interruption.map(|interruption| {
+        ExecutionInterruptionDetails::new(
+            match interruption.reason {
+                ProcessInterruptionReason::Cancelled => ExecutionInterruptionKind::Cancelled,
+                ProcessInterruptionReason::TimedOut => ExecutionInterruptionKind::TimedOut,
+            },
+            true,
+        )
+        .with_phase(action)
+        .with_message(format!(
+            "{action} completed successfully after {} request during critical phase; unsafe interruption was not performed",
+            match interruption.reason {
+                ProcessInterruptionReason::Cancelled => "cancellation",
+                ProcessInterruptionReason::TimedOut => "timeout",
+            }
+        ))
+    })
 }
 
 fn run_load(
@@ -103,6 +152,25 @@ fn run_load(
             ));
         }
     };
+
+    if let Some(interruption) = context.interruption() {
+        let message = format!(
+            "{} for command '{}' before entering load probe safe point",
+            interruption.message(context.command()),
+            context.command().as_str()
+        );
+        return Err(LoadExecutionFailure::with_payload(
+            AppError::Runtime(message.clone()),
+            interrupted_result_from_resolved(
+                &resolved,
+                CompatibilityState::Unknown,
+                started,
+                interruption,
+                message,
+                None,
+            ),
+        ));
+    }
 
     let mut utilities = PlatformUtilities::from_config(config);
     let location = match utilities.locate(UtilityType::V8) {
@@ -261,6 +329,7 @@ fn run_load(
                 &resolved,
                 compatibility_state,
                 started,
+                interruption,
                 message,
                 apply_result.platform_log_path.or(probe_log_path),
             ),
@@ -341,6 +410,13 @@ fn run_load(
     .into_iter()
     .flatten()
     .collect::<Vec<_>>();
+    let deferred_interruptions = [
+        deferred_interruption_details("apply", &apply_result),
+        deferred_interruption_details("update_db_cfg", &update_result),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>();
     let message = success_message(&resolved, compatibility_state, &deferred_warnings);
     let mut execution =
         ExecutionOutcome::new(ExecutionStatus::Succeeded).with_payload(LoadExecutionMetadata {
@@ -351,6 +427,9 @@ fn run_load(
         });
     if !deferred_warnings.is_empty() {
         execution = execution.with_diagnostics(deferred_warnings);
+    }
+    if !deferred_interruptions.is_empty() {
+        execution = execution.with_interruptions(deferred_interruptions);
     }
     Ok(LoadResult {
         ok: true,
@@ -754,6 +833,7 @@ fn interrupted_result_from_resolved(
     resolved: &ResolvedLoadRequest,
     compatibility_state: CompatibilityState,
     started: Instant,
+    interruption: ExecutionInterruption,
     message: String,
     platform_log_path: Option<PathBuf>,
 ) -> LoadResult {
@@ -768,10 +848,15 @@ fn interrupted_result_from_resolved(
         platform_log_path,
         duration_ms: started.elapsed().as_millis() as u64,
         message: Some(message.clone()),
-        execution: ExecutionOutcome::new(ExecutionStatus::Failed)
+        execution: ExecutionOutcome::new(command_interruption_status(interruption))
             .with_diagnostics(vec![message.clone()])
             .with_errors(vec![ExecutionError::new(
                 "artifact_load_interrupted",
+                message.clone(),
+            )])
+            .with_interruptions(vec![command_interruption_details(
+                interruption,
+                "update_db_cfg_safe_point",
                 message,
             )])
             .with_payload(LoadExecutionMetadata {
@@ -784,15 +869,7 @@ fn interrupted_result_from_resolved(
 }
 
 fn deferred_interruption_warning(action: &str, result: &PlatformCommandResult) -> Option<String> {
-    result.process.interruption.map(|interruption| {
-        let reason = match interruption.reason {
-            crate::platform::process::ProcessInterruptionReason::Cancelled => "cancellation",
-            crate::platform::process::ProcessInterruptionReason::TimedOut => "timeout",
-        };
-        format!(
-            "{action} completed successfully after {reason} request during critical phase; unsafe interruption was not performed"
-        )
-    })
+    deferred_interruption_details(action, result).and_then(|details| details.message)
 }
 
 fn empty_result_from_resolved(
@@ -865,6 +942,7 @@ mod tests {
         ToolsConfig,
     };
     use crate::domain::artifacts::ArtifactBuildMode;
+    use crate::domain::execution::ExecutionStatus;
     use crate::domain::load::{CompatibilityState, LoadMode};
     use crate::use_cases::context::{CommandName, ExecutionContext};
     use crate::use_cases::request::LoadRequest;
@@ -872,6 +950,7 @@ mod tests {
     use std::fs;
     use std::path::Path;
     use tempfile::tempdir;
+    use tokio_util::sync::CancellationToken;
 
     #[cfg(unix)]
     fn make_executable(path: &Path) {
@@ -1028,6 +1107,37 @@ mod tests {
             .as_deref()
             .expect("message")
             .contains("builder=DESIGNER and format=DESIGNER"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn execute_reports_cancelled_status_before_load_probe() {
+        let dir = tempdir().expect("tempdir");
+        let root = dir.path();
+        fs::create_dir_all(root.join("work")).expect("work");
+        let binary = root.join("1cv8");
+        let calls = root.join("calls.log");
+        fs::write(root.join("main.cf"), "cf").expect("artifact");
+        write_designer_script(&binary, &calls);
+        let config = sample_config(root, &binary);
+        let request = LoadRequest {
+            mode: LoadMode::Load,
+            artifact_path: "main.cf".to_owned(),
+            settings_path: None,
+            extension: None,
+        };
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+        let context = ExecutionContext::cli(CommandName::Load).with_cancellation(cancellation);
+
+        let failure = execute(&context, &config, &request).expect_err("cancelled");
+        let payload = failure.payload.expect("payload");
+
+        assert_eq!(payload.execution.status, ExecutionStatus::Cancelled);
+        assert_eq!(payload.execution.interruptions.len(), 1);
+        assert!(payload.execution.errors[0]
+            .message
+            .contains("before entering load probe"));
     }
 
     #[cfg(unix)]

@@ -1,7 +1,10 @@
 use crate::config::model::AppConfig;
+use crate::domain::artifact::{ARTIFACT_ROLE_PLATFORM_LOG, ARTIFACT_ROLE_RUNNER_LOG};
 use crate::domain::build::{BuildMode, BuildResult, BuildStep};
 use crate::domain::dump::{DumpMode, DumpResult};
-use crate::domain::execution::StepResult;
+use crate::domain::execution::{
+    ExecutionStatus, ExecutionStepKind, ExecutionStepStatus, StepResult,
+};
 use crate::domain::issue::{EdtIssue, Issue, IssueSeverity, ModuleIssue, ObjectIssue};
 use crate::domain::launch::{LaunchMode, LaunchResult};
 use crate::domain::runner::LaunchOptions;
@@ -19,8 +22,9 @@ use crate::mcp::request::{
 };
 use crate::mcp::response::{
     McpBuildMode, McpBuildResponse, McpBuildStep, McpDumpResponse, McpEdtIssue, McpIssue,
-    McpIssueSeverity, McpLaunchResponse, McpModuleIssue, McpObjectIssue, McpStepResult,
-    McpSyntaxCheckResponse, McpTestCase, McpTestResponse, McpTestStatus, McpTestSuite,
+    McpIssueSeverity, McpLaunchResponse, McpModuleIssue, McpObjectIssue, McpStepKind,
+    McpStepResult, McpStepStatus, McpSyntaxCheckResponse, McpTestCase, McpTestResponse,
+    McpTestStatus, McpTestSuite,
 };
 use crate::use_cases::context::{CommandName, ExecutionContext, ExecutionTransport};
 use crate::use_cases::request::{
@@ -574,34 +578,83 @@ fn map_build_response(result: BuildResult) -> McpBuildResponse {
 }
 
 fn map_test_response(result: TestRunResult) -> McpTestResponse {
-    let summary = result.report.as_ref().map(|report| &report.summary);
+    let execution = &result.execution;
+    let summary = execution
+        .metrics
+        .as_ref()
+        .map(|metrics| (metrics.total, metrics.passed, metrics.failed))
+        .or_else(|| {
+            result.report.as_ref().map(|report| {
+                (
+                    report.summary.total,
+                    report.summary.passed,
+                    report.summary.failed,
+                )
+            })
+        });
     let detail = result.report.as_ref().map(|report| report.suites.clone());
     let extracted_errors = result
         .report
         .as_ref()
         .map(|report| report.extracted_errors.clone())
         .unwrap_or_default();
-    let mut errors = result.diagnostics.clone();
-    errors.extend(extracted_errors);
-    let retained_paths = result.retained_paths.as_ref();
-    let success = result.ok;
+    let mut errors = Vec::new();
+    for error in &execution.errors {
+        push_unique(&mut errors, error.message.clone());
+        for detail in &error.details {
+            push_unique(&mut errors, detail.clone());
+        }
+    }
+    for diagnostic in &execution.diagnostics {
+        push_unique(&mut errors, diagnostic.clone());
+    }
+    for extracted in extracted_errors {
+        push_unique(&mut errors, extracted);
+    }
+    let artifacts = execution.artifacts.as_ref();
+    let success = execution.status.is_ok();
+    let include_steps = !result.steps.is_empty()
+        && result
+            .steps
+            .iter()
+            .any(|step| step.status != ExecutionStepStatus::Succeeded);
 
     McpTestResponse {
         success,
-        message: if success {
-            "Tests completed successfully".to_owned()
-        } else {
-            "Tests failed".to_owned()
-        },
-        total_tests: summary.map(|summary| summary.total),
-        passed_tests: summary.map(|summary| summary.passed),
-        failed_tests: summary.map(|summary| summary.failed),
+        message: test_status_message(execution.status).to_owned(),
+        total_tests: summary.map(|summary| summary.0),
+        passed_tests: summary.map(|summary| summary.1),
+        failed_tests: summary.map(|summary| summary.2),
         execution_time_ms: Some(result.duration_ms),
-        enterprise_log_path: retained_paths.map(|paths| paths.platform_log.display().to_string()),
-        log_file: retained_paths.map(|paths| paths.yaxunit_log.display().to_string()),
+        enterprise_log_path: artifacts.and_then(|artifacts| {
+            artifacts
+                .get_by_role(ARTIFACT_ROLE_PLATFORM_LOG)
+                .map(|path| path.display().to_string())
+        }),
+        log_file: artifacts.and_then(|artifacts| {
+            artifacts
+                .get_by_role(ARTIFACT_ROLE_RUNNER_LOG)
+                .map(|path| path.display().to_string())
+        }),
         test_detail: detail.map(map_test_suites),
-        steps: (!success && !result.steps.is_empty()).then(|| map_step_results(result.steps)),
+        steps: include_steps.then(|| map_step_results(result.steps)),
         errors: (!errors.is_empty()).then_some(errors),
+    }
+}
+
+fn test_status_message(status: ExecutionStatus) -> &'static str {
+    match status {
+        ExecutionStatus::Succeeded => "Tests completed successfully",
+        ExecutionStatus::Failed => "Tests failed",
+        ExecutionStatus::Cancelled => "Tests cancelled",
+        ExecutionStatus::TimedOut => "Tests timed out",
+        ExecutionStatus::InvalidOutput => "Tests produced invalid output",
+    }
+}
+
+fn push_unique(items: &mut Vec<String>, value: String) {
+    if !items.contains(&value) {
+        items.push(value);
     }
 }
 
@@ -724,8 +777,34 @@ fn map_step_results(steps: Vec<StepResult>) -> Vec<McpStepResult> {
         .map(|step| McpStepResult {
             name: step.name,
             ok: step.ok,
+            status: match step.status {
+                ExecutionStepStatus::Succeeded => McpStepStatus::Succeeded,
+                ExecutionStepStatus::Failed => McpStepStatus::Failed,
+                ExecutionStepStatus::Skipped => McpStepStatus::Skipped,
+                ExecutionStepStatus::Degraded => McpStepStatus::Degraded,
+            },
+            kind: match step.kind {
+                ExecutionStepKind::Validation => McpStepKind::Validation,
+                ExecutionStepKind::ResolveTarget => McpStepKind::ResolveTarget,
+                ExecutionStepKind::PrepareWorkspace => McpStepKind::PrepareWorkspace,
+                ExecutionStepKind::PlatformCommand => McpStepKind::PlatformCommand,
+                ExecutionStepKind::ParseOutput => McpStepKind::ParseOutput,
+                ExecutionStepKind::Publish => McpStepKind::Publish,
+                ExecutionStepKind::Cleanup => McpStepKind::Cleanup,
+                ExecutionStepKind::Diagnostics => McpStepKind::Diagnostics,
+                ExecutionStepKind::Other => McpStepKind::Other,
+            },
             duration_ms: step.duration_ms,
+            target: step.target,
             message: step.message,
+            diagnostics: step.diagnostics,
+            errors: step.errors.into_iter().map(|error| error.message).collect(),
+            artifacts: step
+                .artifacts
+                .into_iter()
+                .flat_map(|artifacts| artifacts.items.into_iter().map(|artifact| artifact.path))
+                .map(|path| path.display().to_string())
+                .collect(),
         })
         .collect()
 }
@@ -837,14 +916,16 @@ mod tests {
 
     use serde_json::json;
 
-    use super::{normalize_extension_scope, McpService, NormalizedExtensionScope};
+    use super::{
+        map_test_response, normalize_extension_scope, McpService, NormalizedExtensionScope,
+    };
     use crate::config::model::{
         AppConfig, BuildConfig, BuilderBackend, PlatformToolConfig, SourceFormat, SourceSetConfig,
         SourceSetPurpose, TestsConfig, ToolsConfig,
     };
     use crate::domain::build::{BuildMode, BuildResult, BuildStep};
     use crate::domain::dump::{DumpMode, DumpResult};
-    use crate::domain::execution::StepResult;
+    use crate::domain::execution::{ExecutionStepKind, StepResult};
     use crate::domain::issue::{Issue, IssueSeverity, ModuleIssue};
     use crate::domain::launch::{LaunchMode, LaunchResult};
     use crate::domain::syntax::{SyntaxCheckResult, SyntaxCheckStatus, SyntaxIssueSummary};
@@ -862,7 +943,7 @@ mod tests {
     };
     use crate::mcp::response::{
         McpBuildMode, McpBuildResponse, McpBuildStep, McpIssue, McpIssueSeverity, McpObjectIssue,
-        McpStepResult, McpSyntaxCheckResponse, McpTestResponse,
+        McpStepKind, McpStepResult, McpStepStatus, McpSyntaxCheckResponse, McpTestResponse,
     };
     use crate::use_cases::context::{CommandName, ExecutionContext, ExecutionTransport};
     use crate::use_cases::request::{
@@ -1103,9 +1184,40 @@ mod tests {
     }
 
     #[test]
+    fn map_test_response_prefers_execution_over_legacy_projection() {
+        let mut result = sample_test_result(false);
+        result.ok = true;
+        result.diagnostics.clear();
+        result.retained_paths = None;
+        if let Some(report) = result.report.as_mut() {
+            report.summary.total = 99;
+            report.summary.passed = 99;
+            report.summary.failed = 0;
+        }
+
+        let response = map_test_response(result);
+
+        assert!(!response.success);
+        assert_eq!(response.message, "Tests failed");
+        assert_eq!(response.total_tests, Some(3));
+        assert_eq!(response.passed_tests, Some(2));
+        assert_eq!(response.failed_tests, Some(1));
+        assert_eq!(
+            response.enterprise_log_path.as_deref(),
+            Some("/tmp/platform.log")
+        );
+        assert_eq!(response.log_file.as_deref(), Some("/tmp/yaxunit.log"));
+        assert!(response
+            .errors
+            .expect("errors")
+            .contains(&"Tests failed".to_owned()));
+    }
+
+    #[test]
     fn run_all_tests_maps_failure_payload_into_business_failure() {
         let mut result = sample_test_result(false);
         result
+            .execution
             .diagnostics
             .push("enterprise exited non-zero".to_owned());
         let port = StubPort::with_test_result(Err(UseCaseFailure::with_payload(
@@ -1997,8 +2109,14 @@ mod tests {
             steps: Some(vec![McpStepResult {
                 name: "build".to_owned(),
                 ok: false,
+                status: McpStepStatus::Failed,
+                kind: McpStepKind::PlatformCommand,
                 duration_ms: 10,
+                target: None,
                 message: Some("boom".to_owned()),
+                diagnostics: vec![],
+                errors: vec!["boom".to_owned()],
+                artifacts: vec![],
             }]),
             errors: Some(vec!["boom".to_owned()]),
         };
@@ -2019,8 +2137,11 @@ mod tests {
                 "steps": [{
                     "name": "build",
                     "ok": false,
+                    "status": "failed",
+                    "kind": "platform_command",
                     "duration_ms": 10,
-                    "message": "boom"
+                    "message": "boom",
+                    "errors": ["boom"]
                 }],
                 "errors": ["boom"]
             })
@@ -2188,12 +2309,14 @@ mod tests {
             if ok {
                 vec![]
             } else {
-                vec![StepResult {
-                    name: "test".to_owned(),
-                    ok: false,
-                    duration_ms: 120,
-                    message: Some("boom".to_owned()),
-                }]
+                vec![
+                    StepResult::failed("test", ExecutionStepKind::PlatformCommand, 120)
+                        .with_message("boom")
+                        .with_errors(vec![crate::domain::test::test_execution_error(
+                            crate::domain::test::TestErrorKind::TestFailures,
+                            "boom",
+                        )]),
+                ]
             },
             120,
         )

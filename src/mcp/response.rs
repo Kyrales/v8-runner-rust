@@ -24,12 +24,47 @@ pub struct McpBuildStep {
 
 /// MCP execution step result.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum McpStepStatus {
+    Succeeded,
+    Failed,
+    Skipped,
+    Degraded,
+}
+
+/// MCP execution step kind.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum McpStepKind {
+    Validation,
+    ResolveTarget,
+    PrepareWorkspace,
+    PlatformCommand,
+    ParseOutput,
+    Publish,
+    Cleanup,
+    Diagnostics,
+    Other,
+}
+
+/// MCP execution step result.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct McpStepResult {
     pub name: String,
     pub ok: bool,
+    pub status: McpStepStatus,
+    pub kind: McpStepKind,
     pub duration_ms: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub diagnostics: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub errors: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub artifacts: Vec<String>,
 }
 
 /// Stable MCP-facing test status.
