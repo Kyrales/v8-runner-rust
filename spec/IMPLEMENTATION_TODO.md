@@ -24,6 +24,10 @@
 ## P1
 
 - [ ] `ADR-TASK-005`: Закрыть follow-up gaps атомарной публикации по `ADR-0015`: neutral/caller-specific backup prefix, metadata sidecar на cleanup unit для staging directory внешних артефактов, `CriticalNonAbortable` publication phase после общей execution policy, cleanup warning в едином CLI output contract.
+
+  Частично выполнено `2026-04-22`: в `dump` и `artifacts` добавлены safe-point проверки перед publish; warning/degraded plumbing уже есть для `dump` и single-file artifacts publication; есть частичное regression coverage для orphan cleanup (`dump`: stale/malformed, `artifacts`: stale directory scan).
+
+  Остаются открытыми: neutral/caller-specific backup prefix в `replace_dir_atomically`, metadata sidecar на cleanup unit для `external artifacts` staging directory, фактический `CriticalNonAbortable` contract для publication phase, проброс cleanup warning для external directory publication и недостающее regression coverage для `foreign`/`recent` cleanup cases.
 - [ ] `ADR-TASK-006`: Довести `ExecutionOutcome<T>` и step contract до целевого состояния по `ADR-0016`: outcome-driven serialized status/errors/metrics/artifacts, `ExecutionStatus::Cancelled` для фактической terminal cancellation, command-level interruption diagnostics, richer `ExecutionStep` или расширенный `StepResult`.
 - [ ] `ADR-TASK-007`: Проработать CLI output по `ADR-0010` как единый high-signal contract для человека и AI-агента: применить критерии корректного output из `spec/ADR_DERIVED_BACKLOG.md`, убрать лишний шум из clean success path, явно показывать warnings/degraded/artifacts/diagnostics и покрыть rendering tests, не меняя JSON contract без отдельного решения.
 
