@@ -1,0 +1,173 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - "**"
+  pull_request:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  contract:
+    name: Contract (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry and build output
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run contract regression scope
+        run: |
+          V8_RUNNER_CI_SCOPE=contract bash scripts/test/ci-rust.sh
+
+  happy-path:
+    name: Happy Path (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
+    env:
+      V8TR_CI_TARGET_OS: ${{ runner.os }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Install Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.x"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry and build output
+        uses: Swatinem/rust-cache@v2
+
+      - name: Evaluate trusted live execution mode
+        id: trust
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          ACTOR: ${{ github.actor }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          trusted="true"
+
+          if [[ "$ACTOR" == "dependabot[bot]" ]]; then
+            trusted="false"
+          elif [[ "$EVENT_NAME" == "pull_request" && "$HEAD_REPO" != "$REPOSITORY" ]]; then
+            trusted="false"
+          fi
+
+          echo "trusted=$trusted" >> "$GITHUB_OUTPUT"
+
+          if [[ "$trusted" != "true" ]]; then
+            echo "V8TR_DESIGNER_ALLOW_MISSING_CONFIG=1" >> "$GITHUB_ENV"
+          fi
+
+      - name: Verify bash and python3 contract
+        run: |
+          bash --version
+          python3 --version
+
+      - name: Select platform bundle secret for trusted live path
+        if: steps.trust.outputs.trusted == 'true'
+        env:
+          MATRIX_OS: ${{ matrix.os }}
+          V8TR_PLATFORM_BUNDLE_URL_LINUX: ${{ secrets.V8TR_PLATFORM_BUNDLE_URL_LINUX }}
+          V8TR_PLATFORM_BUNDLE_SHA256_LINUX: ${{ secrets.V8TR_PLATFORM_BUNDLE_SHA256_LINUX }}
+          V8TR_PLATFORM_BUNDLE_URL_WINDOWS: ${{ secrets.V8TR_PLATFORM_BUNDLE_URL_WINDOWS }}
+          V8TR_PLATFORM_BUNDLE_SHA256_WINDOWS: ${{ secrets.V8TR_PLATFORM_BUNDLE_SHA256_WINDOWS }}
+        run: |
+          case "$MATRIX_OS" in
+            ubuntu-latest)
+              bundle_url="$V8TR_PLATFORM_BUNDLE_URL_LINUX"
+              bundle_sha256="$V8TR_PLATFORM_BUNDLE_SHA256_LINUX"
+              ;;
+            windows-latest)
+              bundle_url="$V8TR_PLATFORM_BUNDLE_URL_WINDOWS"
+              bundle_sha256="$V8TR_PLATFORM_BUNDLE_SHA256_WINDOWS"
+              ;;
+            *)
+              echo "Unsupported matrix.os: $MATRIX_OS" >&2
+              exit 2
+              ;;
+          esac
+
+          if [[ -z "$bundle_url" ]]; then
+            echo "Trusted happy-path requires a platform bundle URL secret for $MATRIX_OS" >&2
+            exit 2
+          fi
+
+          if [[ -z "$bundle_sha256" ]]; then
+            echo "Trusted happy-path requires a platform bundle SHA256 secret for $MATRIX_OS" >&2
+            exit 2
+          fi
+
+          {
+            echo "V8TR_PLATFORM_BUNDLE_URL<<__V8TR_ENV__"
+            echo "$bundle_url"
+            echo "__V8TR_ENV__"
+            echo "V8TR_PLATFORM_BUNDLE_SHA256<<__V8TR_ENV__"
+            echo "$bundle_sha256"
+            echo "__V8TR_ENV__"
+          } >> "$GITHUB_ENV"
+
+      - name: Install 1C platform bundle
+        if: steps.trust.outputs.trusted == 'true'
+        run: |
+          bash scripts/test/ci-platform-install.sh
+
+      - name: Materialize dedicated Designer config
+        if: steps.trust.outputs.trusted == 'true'
+        run: |
+          bash scripts/test/ci-designer-config.sh
+
+      - name: Bootstrap file infobase through ibsrv
+        if: steps.trust.outputs.trusted == 'true'
+        run: |
+          bash scripts/test/ci-ibsrv.sh start
+
+      - name: Run happy-path scope
+        run: |
+          V8_RUNNER_CI_SCOPE=happy-path bash scripts/test/ci-rust.sh
+
+      - name: Stop ibsrv sidecar
+        if: always() && steps.trust.outputs.trusted == 'true'
+        run: |
+          bash scripts/test/ci-ibsrv.sh stop
+
+      - name: Upload deploy-ready artifacts
+        if: success() && steps.trust.outputs.trusted == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: deploy-ready-${{ runner.os }}
+          path: |
+            target/manual-tests/live-cli-designer/artifacts/configuration.cf
+            target/manual-tests/live-cli-designer/artifacts/extension.cfe
+            target/manual-tests/live-cli-designer/artifacts/external-processor/*.epf
+            target/manual-tests/live-cli-designer/artifacts/external-report/*.erf
+          if-no-files-found: error
