@@ -36,11 +36,16 @@ Detailed ADR task decomposition remains in [ADR_DERIVED_BACKLOG.md](ADR_DERIVED_
   `src/use_cases/build_project/helpers.rs`, `src/use_cases/dump_config/helpers.rs`,
   `src/use_cases/run_tests/helpers.rs`, and `src/platform/edt_session/runtime.rs`; preserved
   public entrypoints, the nested `run_build_unlocked` lock contract, `artifacts` reuse of
-  `run_external_dump_designer`, and shared EDT session caller contracts. Guardrails, focused
-  CLI impact suites, shared EDT tests, and full `cargo test` passed.
-  Remaining: finish the thin-coordinator split for `run_build_*`, `run_dump_with_context`, and
-  `run_tests`, so new backend/mode branches move into dedicated coordinator/stage modules rather
-  than continuing to grow the top-level orchestrators.
+  `run_external_dump_designer`, and shared EDT session caller contracts. Completeness subagent
+  review confirmed the completed stages: helper/runtime extraction is in place for `build`,
+  `dump`, `test`, and shared EDT, and the shared EDT worker/factory runtime split is largely
+  complete. Guardrails, focused CLI impact suites, shared EDT tests, and full `cargo test`
+  passed on the current branch.
+  Remaining: `build`, `dump`, and `test` still need the thin-coordinator split for
+  `run_build_*`, `run_dump_with_context`, and `run_tests`, so new backend/mode branches move into
+  dedicated coordinator/stage modules rather than continuing to grow the top-level orchestrators.
+  Rust review note: production-path `expect(...)` invariants remain in `build_project.rs`; keep
+  them inside this still-open coordinator refactor rather than treating the task as complete.
 
 - [ ] `ADR-TASK-021`: Centralize source-set and config classification logic. Extract one
   canonical typed classifier/parser for EDT and Designer source sets plus external descriptors so
