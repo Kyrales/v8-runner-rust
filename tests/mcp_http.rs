@@ -156,6 +156,17 @@ fn write_ibcmd_script(path: &Path, calls_log: &Path, fail_pattern: Option<&str>)
     write_script(path, &body);
 }
 
+fn write_edt_configuration_source(path: &Path, project_name: &str) {
+    fs::create_dir_all(path.join("metadata")).expect("metadata");
+    fs::write(
+        path.join(".project"),
+        format!("<projectDescription><name>{project_name}</name></projectDescription>\n"),
+    )
+    .expect("project");
+    fs::write(path.join("metadata").join("Configuration.xml"), "<Configuration />\n")
+        .expect("descriptor");
+}
+
 fn write_http_edt_config(
     path: &Path,
     base_path: &Path,
@@ -291,7 +302,7 @@ fn setup_http_edt_project(
     let config_path = dir.path().join("v8project.yaml");
     let bind_address = reserve_local_address();
 
-    fs::create_dir_all(base_path.join("main-edt")).expect("main edt");
+    write_edt_configuration_source(&base_path.join("main-edt"), "main");
     fs::create_dir_all(&work_path).expect("work");
     fs::create_dir_all(&edt_dir).expect("edt dir");
     write_interactive_edt_script(

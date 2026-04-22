@@ -203,13 +203,33 @@ fn write_designer_external_source(path: &Path, names: &[&str]) {
     }
 }
 
-fn write_edt_source(path: &Path, name: &str) {
+fn write_edt_source(path: &Path, name: &str, descriptor_xml: &str) {
     fs::create_dir_all(path).expect("edt source");
     fs::write(
         path.join(".project"),
         format!("<projectDescription><name>{name}</name></projectDescription>\n"),
     )
     .expect("project");
+    fs::create_dir_all(path.join("metadata")).expect("metadata");
+    fs::write(path.join("metadata").join("Configuration.xml"), descriptor_xml)
+        .expect("descriptor");
+}
+
+fn write_edt_external_project(path: &Path, name: &str) {
+    fs::create_dir_all(path).expect("edt external source");
+    fs::write(
+        path.join(".project"),
+        format!("<projectDescription><name>{name}</name></projectDescription>\n"),
+    )
+    .expect("project");
+    fs::create_dir_all(path.join("metadata")).expect("metadata");
+    fs::write(
+        path.join("metadata").join(format!("{name}.xml")),
+        format!(
+            "<ExternalDataProcessor><Properties><Name>{name}</Name></Properties></ExternalDataProcessor>\n"
+        ),
+    )
+    .expect("descriptor");
 }
 
 #[test]
@@ -310,8 +330,12 @@ fn convert_single_source_set_uses_inferred_edt_to_designer_direction() {
         ],
         None,
     );
-    write_edt_source(&base_path.join("main"), "MainConfiguration");
-    write_edt_source(&base_path.join("ext-sales"), "SalesExtension");
+    write_edt_source(&base_path.join("main"), "MainConfiguration", "<Configuration />");
+    write_edt_source(
+        &base_path.join("ext-sales"),
+        "SalesExtension",
+        "<Configuration><ConfigurationExtensionPurpose>Extension</ConfigurationExtensionPurpose></Configuration>",
+    );
 
     let output = std::process::Command::cargo_bin("v8-runner")
         .expect("binary")
@@ -515,8 +539,8 @@ fn convert_external_edt_source_set_preserves_all_exported_descriptors() {
         }],
         None,
     );
-    write_edt_source(&base_path.join("processors/processor-a"), "ProcessorA");
-    write_edt_source(&base_path.join("processors/processor-b"), "ProcessorB");
+    write_edt_external_project(&base_path.join("processors/processor-a"), "ProcessorA");
+    write_edt_external_project(&base_path.join("processors/processor-b"), "ProcessorB");
 
     let output = std::process::Command::cargo_bin("v8-runner")
         .expect("binary")

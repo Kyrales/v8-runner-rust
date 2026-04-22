@@ -30,6 +30,17 @@ fn write_designer_script(path: &Path, calls_log: &Path) {
     write_script(path, &body);
 }
 
+fn write_edt_configuration_source(path: &Path, project_name: &str) {
+    fs::create_dir_all(path.join("metadata")).expect("metadata");
+    fs::write(
+        path.join(".project"),
+        format!("<projectDescription><name>{project_name}</name></projectDescription>"),
+    )
+    .expect("project");
+    fs::write(path.join("metadata").join("Configuration.xml"), "<Configuration />")
+        .expect("descriptor");
+}
+
 fn write_config(
     path: &Path,
     base_path: &Path,
@@ -242,6 +253,7 @@ fn load_text_failure_surfaces_structured_error() {
 fn load_rejects_edt_format_even_with_designer_builder() {
     let (_dir, config_path, _binary_path, base_path, _calls_log) = setup_project();
     fs::write(base_path.join("release.cf"), "cf").expect("artifact");
+    write_edt_configuration_source(&base_path.join("main"), "main");
     write_config(
         &config_path,
         &base_path,

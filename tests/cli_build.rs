@@ -264,6 +264,15 @@ fn setup_edt_ibcmd_project() -> (tempfile::TempDir, PathBuf, PathBuf, PathBuf) {
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<projectDescription>\n  <name>configuration</name>\n</projectDescription>\n",
     )
     .expect("project file");
+    fs::create_dir_all(base_path.join("configuration").join("metadata")).expect("metadata");
+    fs::write(
+        base_path
+            .join("configuration")
+            .join("metadata")
+            .join("Configuration.xml"),
+        "<Configuration />",
+    )
+    .expect("configuration descriptor");
     fs::write(
         base_path
             .join("configuration")
@@ -305,6 +314,15 @@ fn setup_edt_extension_project() -> (tempfile::TempDir, PathBuf, PathBuf) {
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<projectDescription>\n  <name>configuration</name>\n</projectDescription>\n",
     )
     .expect("configuration project");
+    fs::create_dir_all(base_path.join("configuration").join("metadata")).expect("config metadata");
+    fs::write(
+        base_path
+            .join("configuration")
+            .join("metadata")
+            .join("Configuration.xml"),
+        "<Configuration />",
+    )
+    .expect("configuration descriptor");
     fs::write(
         base_path
             .join("configuration")
@@ -326,6 +344,17 @@ fn setup_edt_extension_project() -> (tempfile::TempDir, PathBuf, PathBuf) {
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<projectDescription>\n  <name>client_mcp</name>\n</projectDescription>\n",
     )
     .expect("extension project");
+    fs::create_dir_all(base_path.join("exts").join("client-mcp").join("metadata"))
+        .expect("extension metadata");
+    fs::write(
+        base_path
+            .join("exts")
+            .join("client-mcp")
+            .join("metadata")
+            .join("Configuration.xml"),
+        "<Configuration><ConfigurationExtensionPurpose>Extension</ConfigurationExtensionPurpose></Configuration>",
+    )
+    .expect("extension descriptor");
     fs::write(
         base_path.join("exts").join("client-mcp").join("Module.bsl"),
         "procedure Test() endprocedure",

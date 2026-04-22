@@ -22,6 +22,31 @@ fn write_script(path: &Path, body: &str) {
     make_executable(path);
 }
 
+fn write_edt_configuration_source(path: &Path, project_name: &str) {
+    fs::create_dir_all(path.join("metadata")).expect("metadata");
+    fs::write(
+        path.join(".project"),
+        format!("<projectDescription><name>{project_name}</name></projectDescription>"),
+    )
+    .expect("project");
+    fs::write(path.join("metadata").join("Configuration.xml"), "<Configuration />")
+        .expect("descriptor");
+}
+
+fn write_edt_extension_source(path: &Path, project_name: &str) {
+    fs::create_dir_all(path.join("metadata")).expect("metadata");
+    fs::write(
+        path.join(".project"),
+        format!("<projectDescription><name>{project_name}</name></projectDescription>"),
+    )
+    .expect("project");
+    fs::write(
+        path.join("metadata").join("Configuration.xml"),
+        "<Configuration><ConfigurationExtensionPurpose>Extension</ConfigurationExtensionPurpose></Configuration>",
+    )
+    .expect("descriptor");
+}
+
 fn setup_designer_init_project() -> (tempfile::TempDir, PathBuf, PathBuf, PathBuf) {
     setup_designer_init_project_with_body(
         "if [ \"$1\" = \"CREATEINFOBASE\" ]; then mkdir -p \"$ib_path\" && : > \"$ib_path/1Cv8.1CD\"; fi\nexit 0",
@@ -85,8 +110,13 @@ fn setup_edt_init_project(
         connection.to_owned()
     };
 
-    fs::create_dir_all(base_path.join("main")).expect("main");
-    fs::create_dir_all(base_path.join("ext")).expect("ext");
+    if format == "EDT" {
+        write_edt_configuration_source(&base_path.join("main"), "main");
+        write_edt_extension_source(&base_path.join("ext"), "ext");
+    } else {
+        fs::create_dir_all(base_path.join("main")).expect("main");
+        fs::create_dir_all(base_path.join("ext")).expect("ext");
+    }
     fs::create_dir_all(&work_path).expect("work");
     let platform_body = if builder == "IBCMD" {
         "if [ \"$1\" = \"infobase\" ]; then\n  shift\n  command=\"\"\n  path=\"\"\n  while [ \"$#\" -gt 0 ]; do\n    case \"$1\" in\n      create) command=create ;;\n      --db-path|--database-path) shift; path=$1 ;;\n      --db-path=*|--database-path=*) path=${1#*=} ;;\n    esac\n    shift\n  done\n  if [ \"$command\" = \"create\" ]; then\n    mkdir -p \"$path\" && : > \"$path/1Cv8.1CD\"\n  fi\nfi\nexit 0"

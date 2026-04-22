@@ -22,6 +22,17 @@ fn write_script(path: &Path, body: &str) {
     make_executable(path);
 }
 
+fn write_edt_configuration_source(path: &Path, project_name: &str) {
+    fs::create_dir_all(path.join("metadata")).expect("metadata");
+    fs::write(
+        path.join(".project"),
+        format!("<projectDescription><name>{project_name}</name></projectDescription>"),
+    )
+    .expect("project");
+    fs::write(path.join("metadata").join("Configuration.xml"), "<Configuration />")
+        .expect("descriptor");
+}
+
 fn write_config(
     path: &Path,
     base_path: &Path,
@@ -75,6 +86,7 @@ fn setup_edt_project(script_body: &str) -> (tempfile::TempDir, PathBuf) {
     let config_path = dir.path().join("v8project.yaml");
 
     fs::create_dir_all(&base_path).expect("base");
+    write_edt_configuration_source(&base_path, "main");
     fs::create_dir_all(&work_path).expect("work");
     write_script(&install_dir.join("bin").join("1cv8"), "exit 0");
     write_script(&edt_cli, script_body);

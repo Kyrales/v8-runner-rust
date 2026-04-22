@@ -87,6 +87,17 @@ fn write_edt_config_with_platform(
     fs::write(path, config).expect("hybrid edt config");
 }
 
+fn write_edt_configuration_source(path: &Path, project_name: &str) {
+    fs::create_dir_all(path.join("metadata")).expect("metadata");
+    fs::write(
+        path.join(".project"),
+        format!("<projectDescription><name>{project_name}</name></projectDescription>\n"),
+    )
+    .expect("project");
+    fs::write(path.join("metadata").join("Configuration.xml"), "<Configuration />\n")
+        .expect("descriptor");
+}
+
 fn setup_project() -> (tempfile::TempDir, PathBuf) {
     let dir = tempdir().expect("tempdir");
     let base_path = dir.path().join("project");
@@ -118,7 +129,7 @@ fn setup_edt_project_with_options(
     let edt_path = edt_dir.join("1cedtcli");
     let config_path = dir.path().join("v8project.yaml");
 
-    fs::create_dir_all(base_path.join("main-edt")).expect("main edt");
+    write_edt_configuration_source(&base_path.join("main-edt"), "main");
     fs::create_dir_all(&work_path).expect("work");
     fs::create_dir_all(&edt_dir).expect("edt dir");
     write_interactive_edt_script(
@@ -179,7 +190,7 @@ fn setup_hybrid_edt_project_with_options(
     let platform_dir = dir.path().join("platform");
     let config_path = dir.path().join("v8project.yaml");
 
-    fs::create_dir_all(base_path.join("main-edt")).expect("main edt");
+    write_edt_configuration_source(&base_path.join("main-edt"), "main");
     fs::create_dir_all(&work_path).expect("work");
     fs::create_dir_all(&edt_dir).expect("edt dir");
     write_interactive_edt_script(

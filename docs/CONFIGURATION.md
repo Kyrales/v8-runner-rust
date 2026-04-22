@@ -208,9 +208,11 @@ tests:
 
 Поведение:
 
-- должен быть хотя бы один `CONFIGURATION`;
+- `EXTENSION` требует хотя бы один `CONFIGURATION`, но external-only конфиг допустим;
 - `name` должен быть уникальным;
-- для `format=EDT` путь должен существовать;
+- для `format=EDT` ordinary `CONFIGURATION`/`EXTENSION` path должен быть valid EDT project root: каталог с `.project` и project-local XML descriptors, совпадающими с объявленным `type`;
+- для `format=EDT` external path должен быть каталогом и содержать хотя бы один child project с `.project`, а все найденные child projects должны совпадать с объявленным external `type`;
+- для `format=DESIGNER` external path должен быть aggregate root с top-level XML descriptors, совпадающими с объявленным `type`;
 - для `format=EDT` generated Designer copy идёт в `workPath/designer/<name>`.
 
 ## Базовые режимы

@@ -25,6 +25,31 @@ fn write_script(path: &Path, body: &str) {
     make_executable(path);
 }
 
+fn write_edt_configuration_source(path: &Path, project_name: &str) {
+    fs::create_dir_all(path.join("metadata")).expect("metadata");
+    fs::write(
+        path.join(".project"),
+        format!("<projectDescription><name>{project_name}</name></projectDescription>"),
+    )
+    .expect("project");
+    fs::write(path.join("metadata").join("Configuration.xml"), "<Configuration />")
+        .expect("descriptor");
+}
+
+fn write_edt_extension_source(path: &Path, project_name: &str) {
+    fs::create_dir_all(path.join("metadata")).expect("metadata");
+    fs::write(
+        path.join(".project"),
+        format!("<projectDescription><name>{project_name}</name></projectDescription>"),
+    )
+    .expect("project");
+    fs::write(
+        path.join("metadata").join("Configuration.xml"),
+        "<Configuration><ConfigurationExtensionPurpose>Extension</ConfigurationExtensionPurpose></Configuration>",
+    )
+    .expect("descriptor");
+}
+
 fn setup_extensions_project() -> (tempfile::TempDir, PathBuf, PathBuf, PathBuf) {
     let dir = tempdir().expect("tempdir");
     let base_path = dir.path().join("project");
@@ -37,16 +62,9 @@ fn setup_extensions_project() -> (tempfile::TempDir, PathBuf, PathBuf, PathBuf) 
     fs::create_dir_all(base_path.join("exts").join("client-mcp")).expect("client_mcp dir");
     fs::create_dir_all(base_path.join("tests")).expect("tests dir");
     fs::create_dir_all(&work_path).expect("work");
-    fs::write(
-        base_path.join("exts").join("client-mcp").join(".project"),
-        "<projectDescription><name>client_mcp</name></projectDescription>",
-    )
-    .expect("client_mcp project");
-    fs::write(
-        base_path.join("tests").join(".project"),
-        "<projectDescription><name>tests</name></projectDescription>",
-    )
-    .expect("tests project");
+    write_edt_configuration_source(&base_path.join("configuration"), "configuration");
+    write_edt_extension_source(&base_path.join("exts").join("client-mcp"), "client_mcp");
+    write_edt_extension_source(&base_path.join("tests"), "tests");
     write_script(
         &ibcmd_path,
         &format!("printf '%s\\n' \"$*\" >> '{}'\nexit 0", calls_log.display()),

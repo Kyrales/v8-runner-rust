@@ -55,6 +55,17 @@ fn write_edt_import_script(path: &Path, calls_log: &Path) {
     write_script(path, &body);
 }
 
+fn write_edt_configuration_source(path: &Path, project_name: &str) {
+    fs::create_dir_all(path.join("metadata")).expect("metadata");
+    fs::write(
+        path.join(".project"),
+        format!("<projectDescription><name>{project_name}</name></projectDescription>\n"),
+    )
+    .expect("project");
+    fs::write(path.join("metadata").join("Configuration.xml"), "<Configuration />\n")
+        .expect("descriptor");
+}
+
 fn write_config(path: &Path, base_path: &Path, work_path: &Path, platform_path: &Path) {
     write_config_with_infobase(
         path,
@@ -154,11 +165,7 @@ fn setup_edt_project() -> (
 
     fs::create_dir_all(base_path.join("main")).expect("main");
     fs::create_dir_all(&work_path).expect("work");
-    fs::write(
-        base_path.join("main").join(".project"),
-        "<projectDescription><name>BaseProject</name></projectDescription>\n",
-    )
-    .expect("project");
+    write_edt_configuration_source(&base_path.join("main"), "BaseProject");
     fs::write(base_path.join("main").join("old.txt"), "old").expect("old");
 
     write_designer_dump_script_for_edt(&platform_path, &designer_calls);

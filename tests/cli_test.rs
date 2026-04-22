@@ -693,6 +693,15 @@ fn test_module_edt_extension_build_uses_full_load_before_enterprise_launch() {
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<projectDescription>\n  <name>configuration</name>\n</projectDescription>\n",
     )
     .expect("configuration project");
+    fs::create_dir_all(base_path.join("configuration").join("metadata")).expect("config metadata");
+    fs::write(
+        base_path
+            .join("configuration")
+            .join("metadata")
+            .join("Configuration.xml"),
+        "<Configuration />",
+    )
+    .expect("configuration descriptor");
     fs::write(
         base_path
             .join("configuration")
@@ -714,17 +723,24 @@ fn test_module_edt_extension_build_uses_full_load_before_enterprise_launch() {
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<projectDescription>\n  <name>client_mcp</name>\n</projectDescription>\n",
     )
     .expect("extension project");
+    fs::create_dir_all(base_path.join("exts").join("client-mcp").join("metadata"))
+        .expect("extension metadata");
+    fs::write(
+        base_path
+            .join("exts")
+            .join("client-mcp")
+            .join("metadata")
+            .join("Configuration.xml"),
+        "<Configuration><ConfigurationExtensionPurpose>Extension</ConfigurationExtensionPurpose></Configuration>",
+    )
+    .expect("extension descriptor");
     fs::write(
         base_path.join("exts").join("client-mcp").join("Module.bsl"),
         "procedure Test() endprocedure",
     )
     .expect("extension bsl");
 
-    write_build_script(
-        &install_dir.join("bin").join("1cv8"),
-        &build_calls,
-        false,
-    );
+    write_build_script(&install_dir.join("bin").join("1cv8"), &build_calls, false);
     write_test_script(
         &install_dir.join("bin").join("1cv8c"),
         &test_calls,
@@ -784,7 +800,10 @@ fn test_module_edt_extension_build_uses_full_load_before_enterprise_launch() {
     assert!(edt_calls_text.contains("export --project-name client_mcp"));
     assert!(test_calls_text.contains("RunUnitTests="));
     assert_eq!(payload["ok"], true);
-    assert_eq!(payload["data"]["target"]["module"]["name"], "ClientMcpSmoke");
+    assert_eq!(
+        payload["data"]["target"]["module"]["name"],
+        "ClientMcpSmoke"
+    );
 }
 
 #[test]

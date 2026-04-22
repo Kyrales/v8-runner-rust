@@ -1,10 +1,13 @@
 use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::path::Path;
+use quick_xml::events::Event;
+use quick_xml::Reader;
 use thiserror::Error;
 
 use crate::config::model::{
-    AppConfig, BuilderBackend, SourceFormat, SourceSetPurpose, VanessaProfileConfig,
+    AppConfig, BuilderBackend, SourceFormat, SourceSetConfig, SourceSetPurpose,
+    VanessaProfileConfig,
 };
 use crate::platform::locator::PlatformVersionRequirement;
 use crate::support::path::is_safe_path_segment;
@@ -28,6 +31,9 @@ pub enum ConfigValidationError {
 
     #[error("source-set entry '{name}' path does not exist: {path}")]
     SourceSetPathInvalid { name: String, path: String },
+
+    #[error("source-set '{name}' has invalid layout: {details}")]
+    SourceSetLayoutInvalid { name: String, details: String },
 
     #[error("source-set name must be unique, duplicate: {0}")]
     DuplicateSourceSetName(String),
@@ -235,6 +241,12 @@ fn validate_source_sets(config: &AppConfig) -> Result<(), ConfigValidationError>
                 path: full_path.display().to_string(),
             });
         }
+        if path_must_exist && !full_path.is_dir() {
+            return Err(source_set_layout_error(
+                &ss.name,
+                format!("path must be a directory: {}", full_path.display()),
+            ));
+        }
 
         if ss.purpose.is_external() && config.builder != BuilderBackend::Designer {
             return Err(ConfigValidationError::ExternalSourceSetRequiresDesigner {
@@ -242,14 +254,7 @@ fn validate_source_sets(config: &AppConfig) -> Result<(), ConfigValidationError>
             });
         }
 
-        if config.format == SourceFormat::Edt
-            && ss.purpose.is_external()
-            && !contains_child_project(&full_path)?
-        {
-            return Err(ConfigValidationError::ExternalEdtSourceSetHasNoProjects {
-                name: ss.name.clone(),
-            });
-        }
+        validate_source_set_layout(config.format, ss, &full_path)?;
 
         let normalized = std::fs::canonicalize(&full_path).unwrap_or(full_path.clone());
         let normalized_key = normalized.display().to_string();
@@ -271,19 +276,643 @@ fn validate_source_sets(config: &AppConfig) -> Result<(), ConfigValidationError>
     Ok(())
 }
 
-fn contains_child_project(path: &Path) -> Result<bool, ConfigValidationError> {
-    let entries =
-        std::fs::read_dir(path).map_err(|_| ConfigValidationError::SourceSetPathInvalid {
-            name: path.display().to_string(),
-            path: path.display().to_string(),
+fn validate_source_set_layout(
+    format: SourceFormat,
+    source_set: &SourceSetConfig,
+    full_path: &Path,
+) -> Result<(), ConfigValidationError> {
+    match format {
+        SourceFormat::Designer if source_set.purpose.is_external() => {
+            validate_designer_external_source_set_layout(source_set, full_path)
+        }
+        SourceFormat::Edt if source_set.purpose.is_external() => {
+            validate_edt_external_source_set_layout(source_set, full_path)
+        }
+        SourceFormat::Edt => validate_ordinary_edt_source_set_layout(source_set, full_path),
+        SourceFormat::Designer => Ok(()),
+    }
+}
+
+fn validate_ordinary_edt_source_set_layout(
+    source_set: &SourceSetConfig,
+    path: &Path,
+) -> Result<(), ConfigValidationError> {
+    let project_file = path.join(".project");
+    if !project_file.is_file() {
+        return Err(source_set_layout_error(
+            &source_set.name,
+            format!(
+                "EDT source-set must contain '.project': {}",
+                path.display()
+            ),
+        ));
+    }
+
+    let detected = detect_edt_project_purpose(path, &source_set.name, EdtProjectLayout::Ordinary)?;
+    match detected {
+        Some(detected) if detected == source_set.purpose => Ok(()),
+        Some(detected) => Err(source_set_layout_error(
+            &source_set.name,
+            format!(
+                "EDT project layout resolves to {} but source-set declares {}: {}",
+                source_set_type_label(detected),
+                source_set_type_label(source_set.purpose),
+                path.display()
+            ),
+        )),
+        None => Err(source_set_layout_error(
+            &source_set.name,
+            format!(
+                "EDT source-set must contain project-local descriptors for {}: {}",
+                source_set_type_label(source_set.purpose),
+                path.display()
+            ),
+        )),
+    }
+}
+
+fn validate_edt_external_source_set_layout(
+    source_set: &SourceSetConfig,
+    path: &Path,
+) -> Result<(), ConfigValidationError> {
+    let entries = std::fs::read_dir(path).map_err(|error| {
+        source_set_layout_error(
+            &source_set.name,
+            format!(
+                "failed to inspect EDT external source-set '{}': {error}",
+                path.display()
+            ),
+        )
+    })?;
+
+    let mut has_child_project = false;
+    for entry in entries {
+        let entry = entry.map_err(|error| {
+            source_set_layout_error(
+                &source_set.name,
+                format!(
+                    "failed to read EDT external source-set entry '{}': {error}",
+                    path.display()
+                ),
+            )
         })?;
-    for entry in entries.flatten() {
+        let file_type = entry.file_type().map_err(|error| {
+            source_set_layout_error(
+                &source_set.name,
+                format!(
+                    "failed to inspect EDT external source-set entry '{}': {error}",
+                    path.display()
+                ),
+            )
+        })?;
+        if file_type.is_symlink() || !file_type.is_dir() {
+            continue;
+        }
         let child = entry.path();
-        if child.is_dir() && child.join(".project").is_file() {
-            return Ok(true);
+        if !child.join(".project").is_file() {
+            continue;
+        }
+        has_child_project = true;
+        let detected =
+            detect_edt_project_purpose(&child, &source_set.name, EdtProjectLayout::External)?;
+        match detected {
+            Some(detected) if detected == source_set.purpose => {}
+            Some(detected) => {
+                return Err(source_set_layout_error(
+                    &source_set.name,
+                    format!(
+                        "EDT external child project '{}' resolves to {} but source-set declares {}",
+                        child.display(),
+                        source_set_type_label(detected),
+                        source_set_type_label(source_set.purpose)
+                    ),
+                ));
+            }
+            None => {
+                return Err(source_set_layout_error(
+                    &source_set.name,
+                    format!(
+                        "EDT external child project '{}' must contain descriptors for {}",
+                        child.display(),
+                        source_set_type_label(source_set.purpose)
+                    ),
+                ));
+            }
         }
     }
-    Ok(false)
+
+    if has_child_project {
+        Ok(())
+    } else {
+        Err(ConfigValidationError::ExternalEdtSourceSetHasNoProjects {
+            name: source_set.name.clone(),
+        })
+    }
+}
+
+fn validate_designer_external_source_set_layout(
+    source_set: &SourceSetConfig,
+    path: &Path,
+) -> Result<(), ConfigValidationError> {
+    let entries = std::fs::read_dir(path).map_err(|error| {
+        source_set_layout_error(
+            &source_set.name,
+            format!(
+                "failed to inspect Designer external root '{}': {error}",
+                path.display()
+            ),
+        )
+    })?;
+
+    let mut has_top_level_xml = false;
+    for entry in entries {
+        let entry = entry.map_err(|error| {
+            source_set_layout_error(
+                &source_set.name,
+                format!(
+                    "failed to read Designer external entry in '{}': {error}",
+                    path.display()
+                ),
+            )
+        })?;
+        let file_type = entry.file_type().map_err(|error| {
+            source_set_layout_error(
+                &source_set.name,
+                format!(
+                    "failed to inspect Designer external entry in '{}': {error}",
+                    path.display()
+                ),
+            )
+        })?;
+        if file_type.is_symlink() || !file_type.is_file() {
+            continue;
+        }
+        let descriptor = entry.path();
+        if descriptor
+            .extension()
+            .and_then(|value| value.to_str())
+            .is_none_or(|value| !value.eq_ignore_ascii_case("xml"))
+        {
+            continue;
+        }
+        has_top_level_xml = true;
+        let detected =
+            classify_external_descriptor_file(&descriptor, &source_set.name)?.ok_or_else(|| {
+                source_set_layout_error(
+                    &source_set.name,
+                    format!(
+                        "top-level XML descriptor '{}' is not a supported external descriptor",
+                        descriptor.display()
+                    ),
+                )
+            })?;
+        if detected != source_set.purpose {
+            return Err(source_set_layout_error(
+                &source_set.name,
+                format!(
+                    "top-level XML descriptor '{}' resolves to {} but source-set declares {}",
+                    descriptor.display(),
+                    source_set_type_label(detected),
+                    source_set_type_label(source_set.purpose)
+                ),
+            ));
+        }
+    }
+
+    if has_top_level_xml {
+        Ok(())
+    } else {
+        Err(source_set_layout_error(
+            &source_set.name,
+            format!(
+                "Designer external source-set must contain top-level XML descriptors for {}: {}",
+                source_set_type_label(source_set.purpose),
+                path.display()
+            ),
+        ))
+    }
+}
+
+fn detect_edt_project_purpose(
+    project_dir: &Path,
+    source_set_name: &str,
+    layout: EdtProjectLayout,
+) -> Result<Option<SourceSetPurpose>, ConfigValidationError> {
+    let project_file = project_dir.join(".project");
+    let content = std::fs::read_to_string(&project_file).map_err(|error| {
+        source_set_layout_error(
+            source_set_name,
+            format!(
+                "failed to read EDT project marker '{}': {error}",
+                project_file.display()
+            ),
+        )
+    })?;
+    if parse_edt_project_name(&content, &project_file, source_set_name)?.is_none() {
+        return Ok(None);
+    }
+
+    classify_edt_project_contents(project_dir, source_set_name, layout)
+}
+
+fn parse_edt_project_name(
+    content: &str,
+    source_path: &Path,
+    source_set_name: &str,
+) -> Result<Option<String>, ConfigValidationError> {
+    let mut reader = Reader::from_str(content);
+    reader.config_mut().trim_text(true);
+    let mut buf = Vec::new();
+    let mut root_tag = None::<String>;
+    let mut depth = 0usize;
+    let mut inside_name = false;
+    let mut project_name = None::<String>;
+
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(event)) => {
+                let tag = xml_local_name(event.name().as_ref());
+                if root_tag.is_none() {
+                    root_tag = Some(tag);
+                    depth = 1;
+                } else {
+                    if depth == 1 && tag == "name" {
+                        inside_name = true;
+                    }
+                    depth += 1;
+                }
+            }
+            Ok(Event::Empty(event)) => {
+                let tag = xml_local_name(event.name().as_ref());
+                if root_tag.is_none() {
+                    root_tag = Some(tag);
+                    break;
+                }
+            }
+            Ok(Event::Text(text)) if inside_name && project_name.is_none() => {
+                project_name = Some(
+                    text.unescape()
+                        .map_err(|error| {
+                            source_set_layout_error(
+                                source_set_name,
+                                format!(
+                                    "failed to decode EDT project marker '{}': {error}",
+                                    source_path.display()
+                                ),
+                            )
+                        })?
+                        .trim()
+                        .to_owned(),
+                );
+            }
+            Ok(Event::End(event)) => {
+                let tag = xml_local_name(event.name().as_ref());
+                if tag == "name" {
+                    inside_name = false;
+                }
+                depth = depth.saturating_sub(1);
+            }
+            Ok(Event::Eof) => break,
+            Err(error) => {
+                return Err(source_set_layout_error(
+                    source_set_name,
+                    format!(
+                        "failed to parse EDT project marker '{}': {error}",
+                        source_path.display()
+                    ),
+                ));
+            }
+            _ => {}
+        }
+        buf.clear();
+    }
+
+    if depth > 0 {
+        return Err(source_set_layout_error(
+            source_set_name,
+            format!(
+                "failed to parse EDT project marker '{}': unexpected EOF",
+                source_path.display()
+            ),
+        ));
+    }
+
+    if root_tag.as_deref() != Some("projectDescription") {
+        return Ok(None);
+    }
+
+    Ok(project_name.filter(|value| !value.is_empty()))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EdtProjectLayout {
+    Ordinary,
+    External,
+}
+
+fn classify_edt_project_contents(
+    project_dir: &Path,
+    source_set_name: &str,
+    layout: EdtProjectLayout,
+) -> Result<Option<SourceSetPurpose>, ConfigValidationError> {
+    let mut detected = None;
+    let mut conflict = false;
+    collect_edt_project_descriptor_kind(
+        project_dir,
+        project_dir,
+        source_set_name,
+        layout,
+        &mut detected,
+        &mut conflict,
+    )?;
+    if conflict {
+        Ok(None)
+    } else {
+        Ok(detected)
+    }
+}
+
+fn collect_edt_project_descriptor_kind(
+    project_root: &Path,
+    dir: &Path,
+    source_set_name: &str,
+    layout: EdtProjectLayout,
+    detected: &mut Option<SourceSetPurpose>,
+    conflict: &mut bool,
+) -> Result<(), ConfigValidationError> {
+    if *conflict {
+        return Ok(());
+    }
+
+    let entries = std::fs::read_dir(dir).map_err(|error| {
+        source_set_layout_error(
+            source_set_name,
+            format!(
+                "failed to inspect EDT project directory '{}': {error}",
+                dir.display()
+            ),
+        )
+    })?;
+    for entry in entries {
+        let entry = entry.map_err(|error| {
+            source_set_layout_error(
+                source_set_name,
+                format!(
+                    "failed to read EDT project entry '{}': {error}",
+                    dir.display()
+                ),
+            )
+        })?;
+        let file_type = entry.file_type().map_err(|error| {
+            source_set_layout_error(
+                source_set_name,
+                format!(
+                    "failed to inspect EDT project entry '{}': {error}",
+                    dir.display()
+                ),
+            )
+        })?;
+        // Layout validation must stay within the declared project root and never
+        // traverse symlinked directories or descriptor files that may point outside it.
+        if file_type.is_symlink() {
+            continue;
+        }
+        let path = entry.path();
+        if file_type.is_dir() {
+            if path != project_root && path.join(".project").is_file() {
+                continue;
+            }
+            if !should_skip_project_dir(project_root, &path) {
+                collect_edt_project_descriptor_kind(
+                    project_root,
+                    &path,
+                    source_set_name,
+                    layout,
+                    detected,
+                    conflict,
+                )?;
+            }
+            continue;
+        }
+        if !file_type.is_file() {
+            continue;
+        }
+        if !is_relevant_edt_descriptor(&path, layout) {
+            continue;
+        }
+        let Some(kind) = classify_source_descriptor_file(&path, source_set_name)? else {
+            continue;
+        };
+        match detected {
+            None => *detected = Some(kind),
+            Some(existing) if *existing != kind => {
+                *conflict = true;
+                return Ok(());
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn is_relevant_edt_descriptor(path: &Path, layout: EdtProjectLayout) -> bool {
+    match layout {
+        EdtProjectLayout::Ordinary => path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .is_some_and(|value| value.eq_ignore_ascii_case("Configuration.xml")),
+        EdtProjectLayout::External => path
+            .extension()
+            .and_then(|value| value.to_str())
+            .is_some_and(|value| value.eq_ignore_ascii_case("xml")),
+    }
+}
+
+fn should_skip_project_dir(project_root: &Path, dir: &Path) -> bool {
+    if dir == project_root {
+        return false;
+    }
+    let Some(name) = dir.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    matches!(
+        name,
+        ".git" | ".idea" | ".vscode" | ".v8-runner" | "target" | "node_modules" | "dist" | "build"
+    )
+}
+
+fn classify_external_descriptor_file(
+    path: &Path,
+    source_set_name: &str,
+) -> Result<Option<SourceSetPurpose>, ConfigValidationError> {
+    match classify_source_descriptor_file(path, source_set_name)? {
+        Some(kind) if kind.is_external() => Ok(Some(kind)),
+        _ => Ok(None),
+    }
+}
+
+fn classify_source_descriptor_file(
+    path: &Path,
+    source_set_name: &str,
+) -> Result<Option<SourceSetPurpose>, ConfigValidationError> {
+    let content = std::fs::read_to_string(path).map_err(|error| {
+        source_set_layout_error(
+            source_set_name,
+            format!(
+                "failed to read source descriptor '{}': {error}",
+                path.display()
+            ),
+        )
+    })?;
+    classify_source_descriptor_content(&content, path, source_set_name)
+}
+
+fn classify_source_descriptor_content(
+    content: &str,
+    source_path: &Path,
+    source_set_name: &str,
+) -> Result<Option<SourceSetPurpose>, ConfigValidationError> {
+    let scan = scan_xml_descriptor(content, source_path, source_set_name)?;
+    Ok(match scan.kind {
+        Some(XmlDescriptorKind::Configuration) => {
+            if scan.has_configuration_extension_purpose || scan.has_object_belonging {
+                Some(SourceSetPurpose::Extension)
+            } else {
+                Some(SourceSetPurpose::Configuration)
+            }
+        }
+        Some(XmlDescriptorKind::ExternalDataProcessor) => {
+            Some(SourceSetPurpose::ExternalDataProcessors)
+        }
+        Some(XmlDescriptorKind::ExternalReport) => Some(SourceSetPurpose::ExternalReports),
+        None => None,
+    })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum XmlDescriptorKind {
+    Configuration,
+    ExternalDataProcessor,
+    ExternalReport,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+struct XmlDescriptorScan {
+    kind: Option<XmlDescriptorKind>,
+    has_configuration_extension_purpose: bool,
+    has_object_belonging: bool,
+}
+
+fn scan_xml_descriptor(
+    content: &str,
+    source_path: &Path,
+    source_set_name: &str,
+) -> Result<XmlDescriptorScan, ConfigValidationError> {
+    let mut reader = Reader::from_str(content);
+    reader.config_mut().trim_text(true);
+    let mut buf = Vec::new();
+    let mut root_tag = None::<String>;
+    let mut first_child_tag = None::<String>;
+    let mut depth = 0usize;
+    let mut scan = XmlDescriptorScan::default();
+
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(event)) => {
+                let tag = xml_local_name(event.name().as_ref());
+                if root_tag.is_none() {
+                    root_tag = Some(tag.clone());
+                    depth = 1;
+                } else {
+                    if depth == 1 && first_child_tag.is_none() {
+                        first_child_tag = Some(tag.clone());
+                    }
+                    depth += 1;
+                }
+                if tag == "ConfigurationExtensionPurpose" {
+                    scan.has_configuration_extension_purpose = true;
+                } else if tag == "ObjectBelonging" {
+                    scan.has_object_belonging = true;
+                }
+            }
+            Ok(Event::Empty(event)) => {
+                let tag = xml_local_name(event.name().as_ref());
+                if root_tag.is_none() {
+                    root_tag = Some(tag.clone());
+                    break;
+                }
+                if depth == 1 && first_child_tag.is_none() {
+                    first_child_tag = Some(tag.clone());
+                }
+                if tag == "ConfigurationExtensionPurpose" {
+                    scan.has_configuration_extension_purpose = true;
+                } else if tag == "ObjectBelonging" {
+                    scan.has_object_belonging = true;
+                }
+            }
+            Ok(Event::End(_)) => {
+                depth = depth.saturating_sub(1);
+            }
+            Ok(Event::Eof) => break,
+            Err(error) => {
+                return Err(source_set_layout_error(
+                    source_set_name,
+                    format!(
+                        "failed to parse source descriptor '{}': {error}",
+                        source_path.display()
+                    ),
+                ));
+            }
+            _ => {}
+        }
+        buf.clear();
+    }
+
+    if depth > 0 {
+        return Err(source_set_layout_error(
+            source_set_name,
+            format!(
+                "failed to parse source descriptor '{}': unexpected EOF",
+                source_path.display()
+            ),
+        ));
+    }
+
+    let effective_tag = match root_tag.as_deref() {
+        Some("MetaDataObject") => first_child_tag.as_deref(),
+        other => other,
+    };
+    scan.kind = match effective_tag {
+        Some("Configuration") => Some(XmlDescriptorKind::Configuration),
+        Some("ExternalDataProcessor") => Some(XmlDescriptorKind::ExternalDataProcessor),
+        Some("ExternalReport") => Some(XmlDescriptorKind::ExternalReport),
+        _ => None,
+    };
+    Ok(scan)
+}
+
+fn xml_local_name(name: &[u8]) -> String {
+    let raw = String::from_utf8_lossy(name);
+    raw.rsplit(':').next().unwrap_or(raw.as_ref()).to_owned()
+}
+
+fn source_set_layout_error(
+    name: &str,
+    details: impl Into<String>,
+) -> ConfigValidationError {
+    ConfigValidationError::SourceSetLayoutInvalid {
+        name: name.to_owned(),
+        details: details.into(),
+    }
+}
+
+fn source_set_type_label(purpose: SourceSetPurpose) -> &'static str {
+    match purpose {
+        SourceSetPurpose::Configuration => "CONFIGURATION",
+        SourceSetPurpose::Extension => "EXTENSION",
+        SourceSetPurpose::ExternalDataProcessors => "EXTERNAL_DATA_PROCESSORS",
+        SourceSetPurpose::ExternalReports => "EXTERNAL_REPORTS",
+    }
 }
 
 fn validate_source_set_name(name: &str) -> Result<(), ConfigValidationError> {
@@ -555,7 +1184,57 @@ mod tests {
         AppConfig, BuildConfig, BuilderBackend, PlatformToolConfig, SourceFormat, SourceSetConfig,
         SourceSetPurpose, TestsConfig, ToolsConfig, VanessaProfileConfig,
     };
+    use std::path::{Path, PathBuf};
     use tempfile::tempdir;
+
+    fn relative_path(base: &Path, path: &Path) -> PathBuf {
+        path.strip_prefix(base)
+            .expect("relative path")
+            .to_path_buf()
+    }
+
+    fn single_source_set_config(
+        base: &Path,
+        work: &Path,
+        format: SourceFormat,
+        builder: BuilderBackend,
+        purpose: SourceSetPurpose,
+        name: &str,
+        path: &Path,
+    ) -> AppConfig {
+        AppConfig {
+            base_path: base.to_path_buf(),
+            work_path: work.to_path_buf(),
+            execution_timeout: 300_000,
+            format,
+            builder,
+            infobase: crate::config::model::InfobaseConfig::file("File=/tmp/ib"),
+            source_sets: vec![SourceSetConfig {
+                name: name.to_owned(),
+                purpose,
+                path: relative_path(base, path),
+            }],
+            build: BuildConfig::default(),
+            tools: ToolsConfig::default(),
+            mcp: Default::default(),
+            tests: TestsConfig::default(),
+        }
+    }
+
+    fn write_edt_project(project_dir: &Path, descriptor_xml: Option<&str>) {
+        std::fs::create_dir_all(project_dir).expect("project dir");
+        std::fs::write(
+            project_dir.join(".project"),
+            "<projectDescription><name>Project</name></projectDescription>",
+        )
+        .expect(".project");
+        if let Some(descriptor_xml) = descriptor_xml {
+            let metadata_dir = project_dir.join("metadata");
+            std::fs::create_dir_all(&metadata_dir).expect("metadata dir");
+            std::fs::write(metadata_dir.join("Configuration.xml"), descriptor_xml)
+                .expect("descriptor xml");
+        }
+    }
 
     #[test]
     fn accepts_platform_version_prefix_without_build() {
@@ -883,11 +1562,269 @@ mod tests {
     }
 
     #[test]
-    fn allows_edt_with_ibcmd_builder_for_file_connection() {
+    fn designer_external_source_set_accepts_matching_top_level_xml_descriptors() {
+        let base = tempdir().expect("base");
+        let work = tempdir().expect("work");
+        let source_dir = base.path().join("external");
+        std::fs::create_dir_all(&source_dir).expect("source dir");
+        std::fs::write(
+            source_dir.join("Alpha.xml"),
+            "<ExternalDataProcessor><Properties><Name>Alpha</Name></Properties></ExternalDataProcessor>",
+        )
+        .expect("descriptor");
+
+        let config = single_source_set_config(
+            base.path(),
+            work.path(),
+            SourceFormat::Designer,
+            BuilderBackend::Designer,
+            SourceSetPurpose::ExternalDataProcessors,
+            "external",
+            &source_dir,
+        );
+
+        validate(&config).expect("expected valid external-only designer config");
+    }
+
+    #[test]
+    fn designer_external_source_set_rejects_mismatched_top_level_xml_descriptors() {
+        let base = tempdir().expect("base");
+        let work = tempdir().expect("work");
+        let source_dir = base.path().join("external");
+        std::fs::create_dir_all(&source_dir).expect("source dir");
+        std::fs::write(
+            source_dir.join("Alpha.xml"),
+            "<ExternalReport><Properties><Name>Alpha</Name></Properties></ExternalReport>",
+        )
+        .expect("descriptor");
+
+        let config = single_source_set_config(
+            base.path(),
+            work.path(),
+            SourceFormat::Designer,
+            BuilderBackend::Designer,
+            SourceSetPurpose::ExternalDataProcessors,
+            "external",
+            &source_dir,
+        );
+
+        let err = validate(&config).expect_err("expected invalid designer external layout");
+        assert!(matches!(
+            err,
+            ConfigValidationError::SourceSetLayoutInvalid { name, details }
+                if name == "external" && details.contains("EXTERNAL_REPORTS")
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn designer_external_source_set_ignores_symlinked_top_level_descriptors() {
+        let base = tempdir().expect("base");
+        let work = tempdir().expect("work");
+        let source_dir = base.path().join("external");
+        std::fs::create_dir_all(&source_dir).expect("source dir");
+        std::fs::write(
+            source_dir.join("Alpha.xml"),
+            "<ExternalDataProcessor><Properties><Name>Alpha</Name></Properties></ExternalDataProcessor>",
+        )
+        .expect("descriptor");
+
+        let outside_dir = base.path().join("outside");
+        std::fs::create_dir_all(&outside_dir).expect("outside dir");
+        let outside_descriptor = outside_dir.join("Beta.xml");
+        std::fs::write(
+            &outside_descriptor,
+            "<ExternalReport><Properties><Name>Beta</Name></Properties></ExternalReport>",
+        )
+        .expect("outside descriptor");
+        std::os::unix::fs::symlink(&outside_descriptor, source_dir.join("Beta.xml"))
+            .expect("symlink");
+
+        let config = single_source_set_config(
+            base.path(),
+            work.path(),
+            SourceFormat::Designer,
+            BuilderBackend::Designer,
+            SourceSetPurpose::ExternalDataProcessors,
+            "external",
+            &source_dir,
+        );
+
+        validate(&config).expect("symlinked top-level descriptors should be ignored");
+    }
+
+    #[test]
+    fn edt_format_rejects_non_external_source_set_without_project_marker() {
         let base = tempdir().expect("base");
         let work = tempdir().expect("work");
         let source_dir = base.path().join("edt-main");
         std::fs::create_dir_all(&source_dir).expect("source dir");
+
+        let config = single_source_set_config(
+            base.path(),
+            work.path(),
+            SourceFormat::Edt,
+            BuilderBackend::Designer,
+            SourceSetPurpose::Configuration,
+            "main",
+            &source_dir,
+        );
+
+        let err = validate(&config).expect_err("expected missing EDT marker");
+        assert!(matches!(
+            err,
+            ConfigValidationError::SourceSetLayoutInvalid { name, details }
+                if name == "main" && details.contains(".project")
+        ));
+    }
+
+    #[test]
+    fn edt_format_rejects_non_external_source_set_without_project_local_descriptors() {
+        let base = tempdir().expect("base");
+        let work = tempdir().expect("work");
+        let source_dir = base.path().join("edt-main");
+        write_edt_project(&source_dir, None);
+
+        let config = single_source_set_config(
+            base.path(),
+            work.path(),
+            SourceFormat::Edt,
+            BuilderBackend::Designer,
+            SourceSetPurpose::Configuration,
+            "main",
+            &source_dir,
+        );
+
+        let err = validate(&config).expect_err("expected invalid EDT project layout");
+        assert!(matches!(
+            err,
+            ConfigValidationError::SourceSetLayoutInvalid { name, details }
+                if name == "main" && details.contains("project-local descriptors")
+        ));
+    }
+
+    #[test]
+    fn edt_format_ignores_malformed_non_descriptor_xml_for_ordinary_project_validation() {
+        let base = tempdir().expect("base");
+        let work = tempdir().expect("work");
+        let source_dir = base.path().join("edt-main");
+        write_edt_project(&source_dir, Some("<Configuration />"));
+        std::fs::create_dir_all(source_dir.join("misc")).expect("misc dir");
+        std::fs::write(source_dir.join("misc").join("broken.xml"), "<broken")
+            .expect("broken xml");
+
+        let config = single_source_set_config(
+            base.path(),
+            work.path(),
+            SourceFormat::Edt,
+            BuilderBackend::Designer,
+            SourceSetPurpose::Configuration,
+            "main",
+            &source_dir,
+        );
+
+        validate(&config).expect("malformed non-descriptor XML should be ignored");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn edt_format_ignores_symlinked_dirs_outside_project_root() {
+        let base = tempdir().expect("base");
+        let work = tempdir().expect("work");
+        let source_dir = base.path().join("edt-main");
+        write_edt_project(&source_dir, Some("<Configuration />"));
+
+        let outside_dir = base.path().join("outside");
+        std::fs::create_dir_all(outside_dir.join("foreign")).expect("outside dir");
+        std::fs::write(
+            outside_dir.join("foreign").join("Configuration.xml"),
+            "<Configuration><ConfigurationExtensionPurpose>Extension</ConfigurationExtensionPurpose></Configuration>",
+        )
+        .expect("outside descriptor");
+        std::os::unix::fs::symlink(&outside_dir, source_dir.join("leak")).expect("symlink");
+
+        let config = single_source_set_config(
+            base.path(),
+            work.path(),
+            SourceFormat::Edt,
+            BuilderBackend::Designer,
+            SourceSetPurpose::Configuration,
+            "main",
+            &source_dir,
+        );
+
+        validate(&config).expect("symlinked directories outside project root should be ignored");
+    }
+
+    #[test]
+    fn edt_external_source_set_rejects_child_project_with_mismatched_kind() {
+        let base = tempdir().expect("base");
+        let work = tempdir().expect("work");
+        let source_dir = base.path().join("external");
+        let child_project = source_dir.join("report-project");
+        write_edt_project(
+            &child_project,
+            Some("<ExternalReport><Properties><Name>Alpha</Name></Properties></ExternalReport>"),
+        );
+
+        let config = single_source_set_config(
+            base.path(),
+            work.path(),
+            SourceFormat::Edt,
+            BuilderBackend::Designer,
+            SourceSetPurpose::ExternalDataProcessors,
+            "external",
+            &source_dir,
+        );
+
+        let err = validate(&config).expect_err("expected invalid EDT external layout");
+        assert!(matches!(
+            err,
+            ConfigValidationError::SourceSetLayoutInvalid { name, details }
+                if name == "external" && details.contains("EXTERNAL_REPORTS")
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn edt_external_source_set_ignores_symlinked_child_projects() {
+        let base = tempdir().expect("base");
+        let work = tempdir().expect("work");
+        let source_dir = base.path().join("external");
+        let valid_child = source_dir.join("processor-project");
+        write_edt_project(
+            &valid_child,
+            Some(
+                "<ExternalDataProcessor><Properties><Name>Alpha</Name></Properties></ExternalDataProcessor>",
+            ),
+        );
+
+        let outside_project = base.path().join("outside-report");
+        write_edt_project(
+            &outside_project,
+            Some("<ExternalReport><Properties><Name>Beta</Name></Properties></ExternalReport>"),
+        );
+        std::os::unix::fs::symlink(&outside_project, source_dir.join("leak")).expect("symlink");
+
+        let config = single_source_set_config(
+            base.path(),
+            work.path(),
+            SourceFormat::Edt,
+            BuilderBackend::Designer,
+            SourceSetPurpose::ExternalDataProcessors,
+            "external",
+            &source_dir,
+        );
+
+        validate(&config).expect("symlinked child projects should be ignored");
+    }
+
+    #[test]
+    fn allows_edt_with_ibcmd_builder_for_file_connection() {
+        let base = tempdir().expect("base");
+        let work = tempdir().expect("work");
+        let source_dir = base.path().join("edt-main");
+        write_edt_project(&source_dir, Some("<Configuration />"));
 
         let config = AppConfig {
             base_path: base.path().to_path_buf(),
@@ -1036,7 +1973,7 @@ mod tests {
     fn rejects_edt_source_set_path_overlapping_generated_work_target() {
         let shared = tempdir().expect("shared");
         let source_dir = shared.path().join("designer").join("main");
-        std::fs::create_dir_all(&source_dir).expect("source dir");
+        write_edt_project(&source_dir, Some("<Configuration />"));
 
         let config = AppConfig {
             base_path: shared.path().to_path_buf(),
@@ -1107,7 +2044,7 @@ mod tests {
         let base = tempdir().expect("base");
         let work = tempdir().expect("work");
         let source_dir = base.path().join("edt-main");
-        std::fs::create_dir_all(&source_dir).expect("source dir");
+        write_edt_project(&source_dir, Some("<Configuration />"));
 
         let config = AppConfig {
             base_path: base.path().to_path_buf(),
@@ -1147,7 +2084,7 @@ mod tests {
         let base = tempdir().expect("base");
         let work = tempdir().expect("work");
         let source_dir = base.path().join("edt-main");
-        std::fs::create_dir_all(&source_dir).expect("source dir");
+        write_edt_project(&source_dir, Some("<Configuration />"));
 
         let config = AppConfig {
             base_path: base.path().to_path_buf(),
