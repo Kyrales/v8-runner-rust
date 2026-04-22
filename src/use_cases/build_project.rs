@@ -21,7 +21,7 @@ use crate::platform::result::PlatformCommandResult;
 use crate::platform::utilities::PlatformUtilities;
 use crate::support::error::AppError;
 use crate::support::temp::{partial_list_file, platform_logs_dir, reserved_source_set_dir};
-use crate::use_cases::context::ExecutionContext;
+use crate::use_cases::context::{ExecutionContext, InterruptionSafetyClass};
 use crate::use_cases::external_artifacts::{
     discover_designer_external_artifacts, prepare_edt_external_artifacts, resolve_source_set_path,
     source_set_external_kind,
@@ -48,7 +48,7 @@ pub fn execute(
         transport = ?context.transport(),
         "executing build use case"
     );
-    run_build_unlocked(config, args)
+    run_build_unlocked(context, config, args)
 }
 
 pub(crate) type BuildExecutionFailure = UseCaseFailure<BuildResult>;
@@ -92,16 +92,21 @@ impl TimelineStageStatus {
 
 #[cfg(test)]
 pub(crate) fn run_build(config: &AppConfig, args: &BuildArgs) -> UseCaseResult<BuildResult> {
-    run_build_unlocked(config, args)
+    run_build_unlocked(
+        &ExecutionContext::cli(crate::use_cases::context::CommandName::Build),
+        config,
+        args,
+    )
 }
 
 /// Caller must ensure exclusive ownership of `config.work_path`.
 pub(crate) fn run_build_unlocked(
+    context: &ExecutionContext,
     config: &AppConfig,
     args: &BuildArgs,
 ) -> UseCaseResult<BuildResult> {
     if config.format == SourceFormat::Edt {
-        return run_build_edt(config, args);
+        return run_build_edt(context, config, args);
     }
 
     if let Some(error) = validate_designer_supported_matrix(config) {
@@ -116,12 +121,13 @@ pub(crate) fn run_build_unlocked(
     }
 
     match config.builder {
-        BuilderBackend::Designer => run_build_designer(config, args),
-        BuilderBackend::Ibcmd => run_build_ibcmd(config, args),
+        BuilderBackend::Designer => run_build_designer(context, config, args),
+        BuilderBackend::Ibcmd => run_build_ibcmd(context, config, args),
     }
 }
 
 fn run_build_designer(
+    context: &ExecutionContext,
     config: &AppConfig,
     args: &BuildArgs,
 ) -> Result<BuildResult, BuildExecutionFailure> {
@@ -150,7 +156,7 @@ fn run_build_designer(
     let mut steps = Vec::new();
 
     for (index, source_set) in ordered_source_sets.iter().enumerate() {
-        let Some(context) = contexts_by_name.get(&source_set.name).cloned() else {
+        let Some(source_context) = contexts_by_name.get(&source_set.name).cloned() else {
             continue;
         };
 
@@ -244,7 +250,7 @@ fn run_build_designer(
                     log_change_analysis(source_set.name.as_str(), &changes);
                     match partial_load::decide(
                         &changes,
-                        context.path(),
+                        source_context.path(),
                         config.build.partial_load_threshold,
                     ) {
                         LoadDecision::Partial(paths) => {
@@ -358,22 +364,23 @@ fn run_build_designer(
 
                 let step_started = Instant::now();
                 match execute_source_set_step(
+                    context,
                     config,
                     &binary,
                     utilities.runner_for(UtilityType::V8),
                     source_set,
-                    &context,
-                    &context,
+                    &source_context,
+                    &source_context,
                     index,
                     partial_paths.as_deref(),
                     &commit,
                 ) {
-                    Ok(()) => push_build_step(
+                    Ok(warnings) => push_build_step(
                         &mut steps,
                         &source_set.name,
                         mode,
                         true,
-                        message,
+                        merge_step_message(message, &warnings),
                         step_started.elapsed().as_millis() as u64,
                     ),
                     Err(error) => {
@@ -521,6 +528,7 @@ fn first_message_line(message: &str) -> &str {
 }
 
 fn run_build_ibcmd(
+    context: &ExecutionContext,
     config: &AppConfig,
     args: &BuildArgs,
 ) -> Result<BuildResult, BuildExecutionFailure> {
@@ -552,7 +560,7 @@ fn run_build_ibcmd(
     let mut steps = Vec::new();
 
     for (index, source_set) in ordered_source_sets.iter().enumerate() {
-        let Some(context) = contexts_by_name.get(&source_set.name).cloned() else {
+        let Some(source_context) = contexts_by_name.get(&source_set.name).cloned() else {
             continue;
         };
 
@@ -608,7 +616,7 @@ fn run_build_ibcmd(
                     log_change_analysis(source_set.name.as_str(), &changes);
                     match partial_load::decide(
                         &changes,
-                        context.path(),
+                        source_context.path(),
                         config.build.partial_load_threshold,
                     ) {
                         LoadDecision::Partial(paths) => {
@@ -722,21 +730,22 @@ fn run_build_ibcmd(
 
                 let step_started = Instant::now();
                 match execute_source_set_step_ibcmd(
+                    context,
                     config,
                     &binary,
                     utilities.runner_for(UtilityType::Ibcmd),
                     source_set,
-                    &context,
-                    &context,
+                    &source_context,
+                    &source_context,
                     partial_paths.as_deref(),
                     &commit,
                 ) {
-                    Ok(()) => push_build_step(
+                    Ok(warnings) => push_build_step(
                         &mut steps,
                         &source_set.name,
                         mode,
                         true,
-                        message,
+                        merge_step_message(message, &warnings),
                         step_started.elapsed().as_millis() as u64,
                     ),
                     Err(error) => {
@@ -795,6 +804,7 @@ fn validate_edt_supported_matrix(config: &AppConfig) -> Option<AppError> {
 }
 
 fn run_build_edt(
+    context: &ExecutionContext,
     config: &AppConfig,
     args: &BuildArgs,
 ) -> Result<BuildResult, BuildExecutionFailure> {
@@ -957,6 +967,27 @@ fn run_build_edt(
                 }
             };
             let export_started = Instant::now();
+            if let Some(error) = interruption_before_safe_point(
+                context,
+                format!(
+                    "EDT external artifact export for source-set '{}'",
+                    source_set.name
+                ),
+            ) {
+                let result = fail_with_remaining_steps(
+                    started,
+                    steps,
+                    ordered_source_sets
+                        .iter()
+                        .skip(index)
+                        .copied()
+                        .collect::<Vec<_>>(),
+                    source_set,
+                    BuildMode::EdtExport,
+                    error.to_string(),
+                );
+                return Err(BuildExecutionFailure::with_payload(error, result));
+            }
             let export_result = if config.tools.edt_cli.interactive_mode {
                 if interactive_edt.is_none() {
                     interactive_edt = Some(
@@ -966,7 +997,12 @@ fn run_build_edt(
                             Duration::from_millis(config.tools.edt_cli.startup_timeout_ms),
                             Duration::from_millis(config.tools.edt_cli.command_timeout_ms),
                         ) {
-                            Ok(dsl) => dsl,
+                            Ok(dsl) => {
+                                dsl.with_execution_policy(context.process_policy(
+                                    InterruptionSafetyClass::GracefulThenKill,
+                                    None,
+                                ))
+                            }
                             Err(error) => {
                                 let app_error = AppError::Platform(error.to_string());
                                 let result = fail_with_remaining_steps(
@@ -996,6 +1032,9 @@ fn run_build_edt(
                     edt.clone(),
                     config.work_path.join("edt-workspace"),
                     utilities.runner_for(UtilityType::EdtCli),
+                )
+                .with_execution_policy(
+                    context.process_policy(InterruptionSafetyClass::GracefulThenKill, None),
                 );
                 prepare_edt_external_artifacts(config, source_set, &one_shot_edt)
             };
@@ -1058,9 +1097,12 @@ fn run_build_edt(
                         &source_set.name,
                         BuildMode::EdtExport,
                         true,
-                        format!(
-                            "exported {} external artifact(s) to designer runtime",
-                            descriptors.len()
+                        merge_step_message(
+                            format!(
+                                "exported {} external artifact(s) to designer runtime",
+                                descriptors.len()
+                            ),
+                            &[],
                         ),
                         export_started.elapsed().as_millis() as u64,
                     )
@@ -1148,7 +1190,10 @@ fn run_build_edt(
                                 Duration::from_millis(config.tools.edt_cli.startup_timeout_ms),
                                 Duration::from_millis(config.tools.edt_cli.command_timeout_ms),
                             ) {
-                                Ok(dsl) => dsl,
+                                Ok(dsl) => dsl.with_execution_policy(context.process_policy(
+                                    InterruptionSafetyClass::GracefulThenKill,
+                                    None,
+                                )),
                                 Err(error) => {
                                     let app_error = AppError::Platform(error.to_string());
                                     let result = fail_with_remaining_steps(
@@ -1171,6 +1216,7 @@ fn run_build_edt(
                         );
                     }
                     execute_edt_export_step(
+                        context,
                         config,
                         interactive_edt.as_ref().expect("interactive edt dsl"),
                         source_set,
@@ -1182,8 +1228,12 @@ fn run_build_edt(
                         edt.clone(),
                         config.work_path.join("edt-workspace"),
                         utilities.runner_for(UtilityType::EdtCli),
+                    )
+                    .with_execution_policy(
+                        context.process_policy(InterruptionSafetyClass::GracefulThenKill, None),
                     );
                     execute_edt_export_step(
+                        context,
                         config,
                         &one_shot_edt,
                         source_set,
@@ -1191,21 +1241,24 @@ fn run_build_edt(
                         &designer_context,
                     )
                 };
-                if let Err(error) = export_result {
-                    let result = fail_with_remaining_steps(
-                        started,
-                        steps,
-                        ordered_source_sets
-                            .iter()
-                            .skip(index)
-                            .copied()
-                            .collect::<Vec<_>>(),
-                        source_set,
-                        BuildMode::EdtExport,
-                        error.to_string(),
-                    );
-                    return Err(BuildExecutionFailure::with_payload(error, result));
-                }
+                let export_warnings = match export_result {
+                    Ok(warnings) => warnings,
+                    Err(error) => {
+                        let result = fail_with_remaining_steps(
+                            started,
+                            steps,
+                            ordered_source_sets
+                                .iter()
+                                .skip(index)
+                                .copied()
+                                .collect::<Vec<_>>(),
+                            source_set,
+                            BuildMode::EdtExport,
+                            error.to_string(),
+                        );
+                        return Err(BuildExecutionFailure::with_payload(error, result));
+                    }
+                };
                 match &commit {
                     StepCommit::Prepared(prepared) => {
                         if let Err(error) =
@@ -1253,7 +1306,7 @@ fn run_build_edt(
                     &source_set.name,
                     BuildMode::EdtExport,
                     true,
-                    "EDT export completed".to_owned(),
+                    merge_step_message("EDT export completed".to_owned(), &export_warnings),
                     export_started.elapsed().as_millis() as u64,
                 );
             }
@@ -1415,6 +1468,7 @@ fn run_build_edt(
                             }
                         };
                         execute_source_set_step(
+                            context,
                             config,
                             &designer,
                             utilities.runner_for(UtilityType::V8),
@@ -1456,6 +1510,7 @@ fn run_build_edt(
                             }
                         };
                         execute_source_set_step_ibcmd(
+                            context,
                             config,
                             &ibcmd,
                             utilities.runner_for(UtilityType::Ibcmd),
@@ -1468,12 +1523,12 @@ fn run_build_edt(
                     }
                 };
                 match load_result {
-                    Ok(()) => push_build_step(
+                    Ok(warnings) => push_build_step(
                         &mut steps,
                         &source_set.name,
                         mode,
                         true,
-                        message,
+                        merge_step_message(message, &warnings),
                         load_started.elapsed().as_millis() as u64,
                     ),
                     Err(error) => {
@@ -1536,12 +1591,19 @@ fn ordered_source_sets(config: &AppConfig) -> Vec<&SourceSetConfig> {
 }
 
 fn execute_edt_export_step(
+    context: &ExecutionContext,
     config: &AppConfig,
     dsl: &EdtDsl<'_>,
     source_set: &SourceSetConfig,
     edt_context: &SourceSetContext,
     designer_context: &SourceSetContext,
-) -> Result<(), AppError> {
+) -> Result<Vec<String>, AppError> {
+    if let Some(error) = interruption_before_safe_point(
+        context,
+        format!("EDT export for source-set '{}'", source_set.name),
+    ) {
+        return Err(error);
+    }
     let export_target = reserved_source_set_dir(&config.work_path, &source_set.name);
     let project_name = resolve_edt_project_name(source_set, edt_context);
     recreate_directory(&export_target).map_err(|error| {
@@ -1553,7 +1615,10 @@ fn execute_edt_export_step(
     let export_result = dsl
         .export_project(&project_name, designer_context.path())
         .map_err(|error| AppError::Platform(error.to_string()))?;
-    ensure_platform_success("edt_export", source_set, &export_result)
+    ensure_platform_success("edt_export", source_set, &export_result)?;
+    Ok(deferred_interruption_warning("edt_export", &export_result)
+        .into_iter()
+        .collect())
 }
 
 fn resolve_edt_project_name(
@@ -1583,6 +1648,7 @@ fn recreate_directory(path: &Path) -> std::io::Result<()> {
 }
 
 fn execute_source_set_step(
+    context: &ExecutionContext,
     config: &AppConfig,
     binary: &Path,
     runner: &dyn ProcessRunner,
@@ -1592,7 +1658,13 @@ fn execute_source_set_step(
     step_index: usize,
     partial_paths: Option<&[PathBuf]>,
     commit: &StepCommit,
-) -> Result<(), AppError> {
+) -> Result<Vec<String>, AppError> {
+    if let Some(error) = interruption_before_safe_point(
+        context,
+        format!("build load for source-set '{}'", source_set.name),
+    ) {
+        return Err(error);
+    }
     if let Some(paths) = partial_paths {
         log_timeline_stage(
             &source_set.name,
@@ -1617,31 +1689,58 @@ fn execute_source_set_step(
         partial_load::write_list_file(paths, load_context.path(), list_file.path()).map_err(
             |error| AppError::Runtime(format!("failed to write partial load list: {error}")),
         )?;
-        build_designer_dsl(config, binary, runner, &source_set.name, step_index, "load")?
-            .load_config_from_files_partial(
-                load_context.path(),
-                list_file.path(),
-                extension_name(source_set),
-            )
-            .map_err(|error| AppError::Platform(error.to_string()))?
+        build_designer_dsl(
+            context,
+            config,
+            binary,
+            runner,
+            &source_set.name,
+            step_index,
+            "load",
+            InterruptionSafetyClass::CriticalNonAbortable,
+        )?
+        .load_config_from_files_partial(
+            load_context.path(),
+            list_file.path(),
+            extension_name(source_set),
+        )
+        .map_err(|error| AppError::Platform(error.to_string()))?
     } else {
-        build_designer_dsl(config, binary, runner, &source_set.name, step_index, "load")?
-            .load_config_from_files_full(load_context.path(), extension_name(source_set))
-            .map_err(|error| AppError::Platform(error.to_string()))?
+        build_designer_dsl(
+            context,
+            config,
+            binary,
+            runner,
+            &source_set.name,
+            step_index,
+            "load",
+            InterruptionSafetyClass::CriticalNonAbortable,
+        )?
+        .load_config_from_files_full(load_context.path(), extension_name(source_set))
+        .map_err(|error| AppError::Platform(error.to_string()))?
     };
     ensure_platform_success("load", source_set, &load_result)?;
+
+    if let Some(error) = interruption_before_safe_point(
+        context,
+        format!("update_db_cfg for source-set '{}'", source_set.name),
+    ) {
+        return Err(error);
+    }
 
     debug!(
         source_set = source_set.name.as_str(),
         "updating database configuration after load"
     );
     let update_result = build_designer_dsl(
+        context,
         config,
         binary,
         runner,
         &source_set.name,
         step_index,
         "update",
+        InterruptionSafetyClass::CriticalNonAbortable,
     )?
     .update_db_cfg(extension_name(source_set))
     .map_err(|error| AppError::Platform(error.to_string()))?;
@@ -1654,19 +1753,28 @@ fn execute_source_set_step(
                 "committing prepared change-detection state"
             );
             analyzer::commit_success(commit_context, &config.work_path, prepared)
-                .map_err(|error| AppError::Runtime(error.to_string()))
+                .map_err(|error| AppError::Runtime(error.to_string()))?;
         }
         StepCommit::RescanFull { recover_storage } => {
             debug!(
                 source_set = source_set.name.as_str(),
                 recover_storage, "rescanning source-set state after full build"
             );
-            commit_full_rescan(commit_context, &config.work_path, *recover_storage)
+            commit_full_rescan(commit_context, &config.work_path, *recover_storage)?;
         }
     }
+
+    Ok([
+        deferred_interruption_warning("load", &load_result),
+        deferred_interruption_warning("update_db_cfg", &update_result),
+    ]
+    .into_iter()
+    .flatten()
+    .collect())
 }
 
 fn execute_source_set_step_ibcmd(
+    context: &ExecutionContext,
     config: &AppConfig,
     binary: &Path,
     runner: &dyn ProcessRunner,
@@ -1675,7 +1783,13 @@ fn execute_source_set_step_ibcmd(
     commit_context: &SourceSetContext,
     partial_paths: Option<&[PathBuf]>,
     commit: &StepCommit,
-) -> Result<(), AppError> {
+) -> Result<Vec<String>, AppError> {
+    if let Some(error) = interruption_before_safe_point(
+        context,
+        format!("ibcmd import for source-set '{}'", source_set.name),
+    ) {
+        return Err(error);
+    }
     if partial_paths.is_some() {
         debug!(
             source_set = source_set.name.as_str(),
@@ -1688,7 +1802,13 @@ fn execute_source_set_step_ibcmd(
         );
     }
 
-    let dsl = build_ibcmd_dsl(config, binary, runner)?;
+    let import_dsl = build_ibcmd_dsl(
+        context,
+        config,
+        binary,
+        runner,
+        InterruptionSafetyClass::CriticalNonAbortable,
+    )?;
     let extension = extension_name(source_set);
     let load_result = if let Some(paths) = partial_paths {
         let rel_paths =
@@ -1701,7 +1821,8 @@ fn execute_source_set_step_ibcmd(
             "[ibcmd] Загрузка изменений в базу",
             TimelineStageStatus::Running,
         );
-        dsl.config_import_partial(load_context.path(), &rel_paths, extension)
+        import_dsl
+            .config_import_partial(load_context.path(), &rel_paths, extension)
             .map_err(map_ibcmd_error)?
     } else {
         log_timeline_stage(
@@ -1710,22 +1831,37 @@ fn execute_source_set_step_ibcmd(
             "[ibcmd] Загрузка в базу",
             TimelineStageStatus::Running,
         );
-        dsl.config_import_full(load_context.path(), extension)
+        import_dsl
+            .config_import_full(load_context.path(), extension)
             .map_err(map_ibcmd_error)?
     };
     ensure_platform_success("load", source_set, &load_result)?;
+
+    if let Some(error) = interruption_before_safe_point(
+        context,
+        format!("ibcmd apply for source-set '{}'", source_set.name),
+    ) {
+        return Err(error);
+    }
 
     debug!(
         source_set = source_set.name.as_str(),
         "applying database configuration after ibcmd load"
     );
+    let apply_dsl = build_ibcmd_dsl(
+        context,
+        config,
+        binary,
+        runner,
+        InterruptionSafetyClass::CriticalNonAbortable,
+    )?;
     log_timeline_stage(
         &source_set.name,
         "ibcmd_apply",
         "[ibcmd] Применение изменений",
         TimelineStageStatus::Running,
     );
-    let apply_result = dsl
+    let apply_result = apply_dsl
         .config_apply(extension, DynamicUpdateMode::Auto)
         .map_err(map_ibcmd_error)?;
     ensure_platform_success("apply", source_set, &apply_result)?;
@@ -1737,16 +1873,24 @@ fn execute_source_set_step_ibcmd(
                 "committing prepared change-detection state"
             );
             analyzer::commit_success(commit_context, &config.work_path, prepared)
-                .map_err(|error| AppError::Runtime(error.to_string()))
+                .map_err(|error| AppError::Runtime(error.to_string()))?;
         }
         StepCommit::RescanFull { recover_storage } => {
             debug!(
                 source_set = source_set.name.as_str(),
                 recover_storage, "rescanning source-set state after full build"
             );
-            commit_full_rescan(commit_context, &config.work_path, *recover_storage)
+            commit_full_rescan(commit_context, &config.work_path, *recover_storage)?;
         }
     }
+
+    Ok([
+        deferred_interruption_warning("ibcmd_import", &load_result),
+        deferred_interruption_warning("apply", &apply_result),
+    ]
+    .into_iter()
+    .flatten()
+    .collect())
 }
 
 fn commit_full_rescan(
@@ -1796,12 +1940,14 @@ fn remove_storage_path(path: &Path) -> std::io::Result<()> {
 }
 
 fn build_designer_dsl<'a>(
+    context: &ExecutionContext,
     config: &AppConfig,
     binary: &Path,
     runner: &'a dyn ProcessRunner,
     source_set_name: &str,
     step_index: usize,
     action: &str,
+    safety: InterruptionSafetyClass,
 ) -> Result<DesignerDsl<'a>, AppError> {
     let log_dir = platform_logs_dir(&config.work_path).map_err(|error| {
         AppError::Runtime(format!("failed to create platform logs dir: {error}"))
@@ -1815,23 +1961,60 @@ fn build_designer_dsl<'a>(
         config.v8_connection(),
         runner,
         Some(log_file),
-    ))
+    )
+    .with_execution_policy(context.process_policy(safety, None)))
 }
 
 fn build_ibcmd_dsl<'a>(
+    context: &ExecutionContext,
     config: &AppConfig,
     binary: &Path,
     runner: &'a dyn ProcessRunner,
+    safety: InterruptionSafetyClass,
 ) -> Result<IbcmdDsl<'a>, AppError> {
     let connection = IbcmdConnection::from_infobase(&config.infobase).map_err(map_ibcmd_error)?;
 
-    Ok(IbcmdDsl::new(binary.to_path_buf(), connection, runner))
+    Ok(IbcmdDsl::new(binary.to_path_buf(), connection, runner)
+        .with_execution_policy(context.process_policy(safety, None)))
 }
 
 fn map_ibcmd_error(error: IbcmdError) -> AppError {
     match error {
         IbcmdError::MissingServerDbmsField(_) => AppError::Validation(error.to_string()),
         IbcmdError::Spawn(_) => AppError::Platform(error.to_string()),
+    }
+}
+
+fn interruption_before_safe_point(
+    context: &ExecutionContext,
+    safe_point: String,
+) -> Option<AppError> {
+    context.interruption().map(|interruption| {
+        AppError::Runtime(format!(
+            "{} for command '{}' before entering {safe_point} safe point",
+            interruption.message(context.command()),
+            context.command().as_str()
+        ))
+    })
+}
+
+fn deferred_interruption_warning(action: &str, result: &PlatformCommandResult) -> Option<String> {
+    result.process.interruption.map(|interruption| {
+        let reason = match interruption.reason {
+            crate::platform::process::ProcessInterruptionReason::Cancelled => "cancellation request",
+            crate::platform::process::ProcessInterruptionReason::TimedOut => "timeout",
+        };
+        format!(
+            "{action} completed successfully after {reason} during critical phase; unsafe interruption was not performed"
+        )
+    })
+}
+
+fn merge_step_message(message: String, warnings: &[String]) -> String {
+    if warnings.is_empty() {
+        message
+    } else {
+        format!("{message}; {}", warnings.join("; "))
     }
 }
 
@@ -1910,11 +2093,15 @@ mod tests {
     };
     use crate::domain::build::BuildMode;
     use crate::output::json::Envelope;
+    use crate::use_cases::context::{CommandName, ExecutionContext};
     use crate::use_cases::request::BuildRequest as BuildArgs;
     use crate::use_cases::result::UseCaseErrorKind;
     use std::fs;
     use std::path::{Path, PathBuf};
+    use std::thread;
+    use std::time::Duration;
     use tempfile::tempdir;
+    use tokio_util::sync::CancellationToken;
 
     #[cfg(unix)]
     fn make_executable(path: &Path) {
@@ -2125,6 +2312,108 @@ mod tests {
             mcp: Default::default(),
             tests: TestsConfig::default(),
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn execute_build_honors_interruption_before_load_safe_point() {
+        let dir = tempdir().expect("tempdir");
+        let base = dir.path().join("base");
+        let work = dir.path().join("work");
+        let platform = dir.path().join("1cv8");
+        let calls_log = dir.path().join("designer.calls.log");
+        fs::create_dir_all(base.join("main")).expect("main");
+        fs::create_dir_all(base.join("ext")).expect("ext");
+        fs::create_dir_all(&work).expect("work");
+        fs::write(base.join("main").join("Catalogs.xml"), "<Catalogs />").expect("catalog");
+        write_designer_script(&platform, &calls_log, None);
+        let config = build_config(
+            &base,
+            &work,
+            &platform,
+            20,
+            SourceFormat::Designer,
+            BuilderBackend::Designer,
+        );
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+
+        let failure = super::execute(
+            &ExecutionContext::cli(CommandName::Build).with_cancellation(cancellation),
+            &config,
+            &BuildArgs { full_rebuild: true },
+        )
+        .expect_err("build must stop before load");
+
+        assert!(failure
+            .error
+            .message()
+            .contains("before entering build load for source-set 'main' safe point"));
+        assert!(
+            !calls_log.exists()
+                || fs::read_to_string(&calls_log)
+                    .expect("calls")
+                    .trim()
+                    .is_empty()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn execute_ibcmd_build_honors_interruption_before_apply_safe_point() {
+        let dir = tempdir().expect("tempdir");
+        let base = dir.path().join("base");
+        let work = dir.path().join("work");
+        let ibcmd = dir.path().join("ibcmd");
+        let calls_log = dir.path().join("ibcmd.calls.log");
+        fs::create_dir_all(base.join("main")).expect("main");
+        fs::create_dir_all(base.join("ext")).expect("ext");
+        fs::create_dir_all(&work).expect("work");
+        fs::write(base.join("main").join("Catalogs.xml"), "<Catalogs />").expect("catalog");
+        if let Some(parent) = ibcmd.parent() {
+            fs::create_dir_all(parent).expect("create ibcmd dir");
+        }
+        fs::write(
+            &ibcmd,
+            format!(
+                "#!/bin/sh\nargs=\"$*\"\nprintf '%s\\n' \"$args\" >> \"{}\"\n\
+                 if printf '%s' \"$args\" | grep -F -q -- 'config import'; then sleep 0.1; fi\n\
+                 if printf '%s' \"$args\" | grep -F -q -- 'config apply'; then sleep 0.07; fi\n\
+                 exit 0\n",
+                calls_log.display()
+            ),
+        )
+        .expect("write ibcmd script");
+        make_executable(&ibcmd);
+        let config = build_config(
+            &base,
+            &work,
+            &ibcmd,
+            20,
+            SourceFormat::Designer,
+            BuilderBackend::Ibcmd,
+        );
+        let cancellation = CancellationToken::new();
+        let delayed_cancel = cancellation.clone();
+        thread::spawn(move || {
+            thread::sleep(Duration::from_millis(20));
+            delayed_cancel.cancel();
+        });
+
+        let failure = super::execute(
+            &ExecutionContext::cli(CommandName::Build).with_cancellation(cancellation),
+            &config,
+            &BuildArgs { full_rebuild: true },
+        )
+        .expect_err("build must stop before ibcmd apply");
+
+        assert!(failure
+            .error
+            .message()
+            .contains("before entering ibcmd apply for source-set 'main' safe point"));
+        let calls = fs::read_to_string(&calls_log).expect("calls");
+        assert!(calls.contains("config import"));
+        assert!(!calls.contains("config apply"));
     }
 
     fn create_source_tree(base_path: &Path) {

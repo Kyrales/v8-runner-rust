@@ -8,9 +8,7 @@ use crate::change_detection::source_sets::SourceSetsService;
 use crate::config::model::{AppConfig, BuilderBackend, SourceFormat, SourceSetConfig};
 use crate::domain::issue::{EdtIssue, Issue, IssueSeverity};
 use crate::domain::syntax::{SyntaxCheckResult, SyntaxCheckStatus, SyntaxIssueSummary};
-use crate::mcp::edt_session::{
-    EdtRequestCompletion, EdtSessionError, EdtSessionManager, EdtSessionRequest,
-};
+use crate::mcp::edt_session::{EdtSessionError, EdtSessionManager, EdtSessionRequest};
 use crate::parsers::edt_validation;
 use crate::platform::edt::render_interactive_validate_command;
 use crate::support::error::AppError;
@@ -24,9 +22,9 @@ static LOG_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 /// Executes MCP `check_syntax_edt` through the shared EDT session actor.
 ///
-/// Transport-level queued/running cancellation and timeout are returned separately so the
-/// MCP transport can preserve detached-capacity semantics. All other failures are converted
-/// into the normal use-case payload contract.
+/// Transport-level queued cancellation and timeout are returned separately so the
+/// MCP transport can preserve admission semantics. Running cancellation and timeout
+/// wait for terminal state and are converted into the normal use-case payload contract.
 pub async fn execute(
     manager: &EdtSessionManager,
     config: &AppConfig,
@@ -149,20 +147,46 @@ pub async fn execute(
                 return Err(EdtSyntaxTransportError::QueuedTimeout);
             }
             Err(EdtSessionError::RunningCancelled) => {
-                return Err(match execution.completion {
-                    Some(completion) => {
-                        EdtSyntaxTransportError::RunningCancelledDetached { completion }
-                    }
-                    None => EdtSyntaxTransportError::RunningCancelledCompleted,
-                });
+                if let Some(completion) = execution.completion {
+                    completion.wait().await;
+                }
+                let message = format!(
+                    "execution cancelled for command 'syntax' while shared EDT command was running; terminal state was observed before returning the result"
+                );
+                return Ok(Err(SyntaxExecutionFailure::with_payload(
+                    AppError::Runtime(message.clone()),
+                    failed_result(
+                        "edt",
+                        SyntaxCheckStatus::ToolFailed,
+                        -1,
+                        started,
+                        vec![],
+                        None,
+                        Some(message),
+                        single_source_set.then_some(log_path.clone()),
+                    ),
+                )));
             }
             Err(EdtSessionError::RunningTimeout) => {
-                return Err(match execution.completion {
-                    Some(completion) => {
-                        EdtSyntaxTransportError::RunningTimeoutDetached { completion }
-                    }
-                    None => EdtSyntaxTransportError::RunningTimeoutCompleted,
-                });
+                if let Some(completion) = execution.completion {
+                    completion.wait().await;
+                }
+                let message = format!(
+                    "execution timeout expired for command 'syntax' while shared EDT command was running; terminal state was observed before returning the result"
+                );
+                return Ok(Err(SyntaxExecutionFailure::with_payload(
+                    AppError::Runtime(message.clone()),
+                    failed_result(
+                        "edt",
+                        SyntaxCheckStatus::ToolFailed,
+                        -1,
+                        started,
+                        vec![],
+                        None,
+                        Some(message),
+                        single_source_set.then_some(log_path.clone()),
+                    ),
+                )));
             }
             Err(error) => {
                 let message = error.to_string();
@@ -461,8 +485,4 @@ fn elapsed_millis(started: Instant) -> u64 {
 pub(crate) enum EdtSyntaxTransportError {
     QueuedCancelled,
     QueuedTimeout,
-    RunningCancelledDetached { completion: EdtRequestCompletion },
-    RunningCancelledCompleted,
-    RunningTimeoutDetached { completion: EdtRequestCompletion },
-    RunningTimeoutCompleted,
 }

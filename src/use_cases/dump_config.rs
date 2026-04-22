@@ -378,21 +378,20 @@ fn run_full_dump_designer(
     )
     .map_err(|error| AppError::Runtime(format!("failed to write stage metadata: {error}")))?;
 
-    let dump_result =
-        match build_designer_dsl(
-            context,
-            config,
-            binary,
-            runner,
-            &resolved.source_set_name,
-            "full",
-        )?
-            .dump_config_to_files(&staging_dir, resolved.extension.as_deref())
-            .map_err(|error| AppError::Platform(error.to_string()))
-        {
-            Ok(result) => result,
-            Err(error) => return Err(cleanup_staging_on_platform_failure(&staging_dir, error)),
-        };
+    let dump_result = match build_designer_dsl(
+        context,
+        config,
+        binary,
+        runner,
+        &resolved.source_set_name,
+        "full",
+    )?
+    .dump_config_to_files(&staging_dir, resolved.extension.as_deref())
+    .map_err(|error| AppError::Platform(error.to_string()))
+    {
+        Ok(result) => result,
+        Err(error) => return Err(cleanup_staging_on_platform_failure(&staging_dir, error)),
+    };
     ensure_platform_success("dump", resolved, &dump_result)
         .map_err(|error| cleanup_staging_on_platform_failure(&staging_dir, error))?;
 
@@ -548,21 +547,20 @@ fn run_partial_dump_designer(
         .map_err(|error| AppError::Runtime(format!("failed to create target dir: {error}")))?;
 
     let list_file = create_dump_object_list_file(&config.work_path, objects)?;
-    let dump_result =
-        build_designer_dsl(
-            context,
-            config,
-            binary,
-            runner,
-            &resolved.source_set_name,
-            "partial",
-        )?
-            .dump_config_to_files_partial(
-                &resolved.target_path,
-                list_file.path(),
-                resolved.extension.as_deref(),
-            )
-            .map_err(|error| AppError::Platform(error.to_string()))?;
+    let dump_result = build_designer_dsl(
+        context,
+        config,
+        binary,
+        runner,
+        &resolved.source_set_name,
+        "partial",
+    )?
+    .dump_config_to_files_partial(
+        &resolved.target_path,
+        list_file.path(),
+        resolved.extension.as_deref(),
+    )
+    .map_err(|error| AppError::Platform(error.to_string()))?;
     ensure_platform_success("dump", resolved, &dump_result)?;
     Ok((dump_result, None))
 }
@@ -1015,8 +1013,11 @@ fn build_ibcmd_dsl<'a>(
 ) -> Result<IbcmdDsl<'a>, AppError> {
     let connection = IbcmdConnection::from_infobase(&config.infobase).map_err(map_ibcmd_error)?;
 
-    Ok(IbcmdDsl::new(binary.to_path_buf(), connection, runner)
-        .with_execution_policy(context.process_policy(InterruptionSafetyClass::GracefulThenKill, None)))
+    Ok(
+        IbcmdDsl::new(binary.to_path_buf(), connection, runner).with_execution_policy(
+            context.process_policy(InterruptionSafetyClass::GracefulThenKill, None),
+        ),
+    )
 }
 
 fn map_ibcmd_error(error: IbcmdError) -> AppError {
@@ -1196,11 +1197,11 @@ fn make_run_id() -> String {
 mod tests {
     use super::{
         build_designer_dsl, cleanup_orphan_dirs, cleanup_staging_on_interruption,
-        create_dump_object_list_file_with,
-        metadata_sidecar_path, parse_external_dump_descriptor, resolve_target, run_dump,
-        run_external_dump_designer, validate_publish_target, validate_supported_matrix,
-        DUMP_COMMAND, NON_PARTIAL_OBJECTS_ERROR, ORPHAN_TTL, PARTIAL_OBJECTS_REQUIRED_ERROR,
-        PARTIAL_OBJECT_BLANK_ERROR, PARTIAL_OBJECT_CONTROL_ERROR, SUPPORTED_DUMP_ERROR,
+        create_dump_object_list_file_with, metadata_sidecar_path, parse_external_dump_descriptor,
+        resolve_target, run_dump, run_external_dump_designer, validate_publish_target,
+        validate_supported_matrix, DUMP_COMMAND, NON_PARTIAL_OBJECTS_ERROR, ORPHAN_TTL,
+        PARTIAL_OBJECTS_REQUIRED_ERROR, PARTIAL_OBJECT_BLANK_ERROR, PARTIAL_OBJECT_CONTROL_ERROR,
+        SUPPORTED_DUMP_ERROR,
     };
     use crate::config::model::{
         AppConfig, BuildConfig, BuilderBackend, PlatformToolConfig, SourceFormat, SourceSetConfig,
@@ -1747,7 +1748,10 @@ mod tests {
             AppError::Runtime("interrupted before publish".to_owned()),
         );
 
-        assert_eq!(error.to_string(), "runtime error: interrupted before publish");
+        assert_eq!(
+            error.to_string(),
+            "runtime error: interrupted before publish"
+        );
         assert!(!stage_dir.exists());
         assert!(!meta_path.exists());
     }

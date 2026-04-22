@@ -18,9 +18,7 @@ use crate::support::error::AppError;
 use crate::support::temp::platform_logs_dir;
 #[cfg(test)]
 use crate::use_cases::context::CommandName;
-use crate::use_cases::context::{
-    ExecutionContext, ExecutionInterruption, InterruptionSafetyClass,
-};
+use crate::use_cases::context::{ExecutionContext, ExecutionInterruption, InterruptionSafetyClass};
 use crate::use_cases::request::{
     DesignerConfigSyntaxRequest as DesignerConfigSyntaxArgs,
     DesignerModulesSyntaxRequest as DesignerModulesSyntaxArgs, SyntaxRequest as SyntaxArgs,

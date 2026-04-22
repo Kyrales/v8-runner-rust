@@ -31,7 +31,7 @@ use crate::support::path::{
     hashed_lock_path, is_filesystem_root, nearest_existing_canonical_path, stable_path_identity,
 };
 use crate::support::temp::platform_logs_dir;
-use crate::use_cases::context::ExecutionContext;
+use crate::use_cases::context::{ExecutionContext, InterruptionSafetyClass};
 use crate::use_cases::dump_config::run_external_dump_designer;
 use crate::use_cases::external_artifacts::{
     discover_designer_external_artifacts, prepare_edt_external_artifacts, resolve_source_set_path,
@@ -57,7 +57,7 @@ pub fn execute(
         extension = args.extension.as_deref().unwrap_or("<none>"),
         "executing artifacts use case"
     );
-    run_artifacts(config, args)
+    run_artifacts(context, config, args)
 }
 
 type ArtifactsExecutionFailure = UseCaseFailure<ArtifactsResult>;
@@ -77,7 +77,11 @@ struct ResolvedArtifactsTarget {
     lock_path: PathBuf,
 }
 
-fn run_artifacts(config: &AppConfig, args: &ArtifactsRequest) -> UseCaseResult<ArtifactsResult> {
+fn run_artifacts(
+    context: &ExecutionContext,
+    config: &AppConfig,
+    args: &ArtifactsRequest,
+) -> UseCaseResult<ArtifactsResult> {
     let started = Instant::now();
     let mode = map_mode(args.mode);
 
@@ -184,6 +188,7 @@ fn run_artifacts(config: &AppConfig, args: &ArtifactsRequest) -> UseCaseResult<A
     }
 
     let execution_result = run_designer_export(
+        context,
         config,
         &resolved,
         location.path.as_path(),
@@ -200,12 +205,16 @@ fn run_artifacts(config: &AppConfig, args: &ArtifactsRequest) -> UseCaseResult<A
                         .with_role(ARTIFACT_ROLE_PLATFORM_LOG),
                 );
             }
+            let publication_warning = publication_warning(context);
             let metadata = ArtifactBuildMetadata {
                 artifact_type: resolved.mode,
                 output_path: resolved.output_path.clone(),
                 file_names: published_file_names(&artifacts),
                 published: true,
             };
+            let diagnostics = merge_optional_messages(message.clone(), publication_warning.clone())
+                .into_iter()
+                .collect::<Vec<_>>();
             Ok(ArtifactsResult {
                 ok: true,
                 mode: resolved.mode,
@@ -215,8 +224,9 @@ fn run_artifacts(config: &AppConfig, args: &ArtifactsRequest) -> UseCaseResult<A
                 platform_log_path,
                 artifacts: artifacts.clone(),
                 duration_ms: started.elapsed().as_millis() as u64,
-                message,
+                message: merge_optional_messages(message, publication_warning),
                 execution: ExecutionOutcome::new(ExecutionStatus::Succeeded)
+                    .with_diagnostics(diagnostics)
                     .with_artifacts(artifacts)
                     .with_payload(metadata),
             })
@@ -260,6 +270,7 @@ fn run_artifacts(config: &AppConfig, args: &ArtifactsRequest) -> UseCaseResult<A
 }
 
 fn run_designer_export(
+    context: &ExecutionContext,
     config: &AppConfig,
     resolved: &ResolvedArtifactsTarget,
     binary: &Path,
@@ -272,7 +283,18 @@ fn run_designer_export(
         resolved.mode,
         ArtifactBuildMode::ExternalDataProcessorEpf | ArtifactBuildMode::ExternalReportErf
     ) {
-        return run_external_designer_export(config, resolved, binary, runner);
+        return run_external_designer_export(context, config, resolved, binary, runner);
+    }
+
+    if let Some(error) = interruption_before_safe_point(
+        context,
+        format!(
+            "artifact export for source-set '{}' and output '{}'",
+            resolved.source_set_name,
+            resolved.output_path.display()
+        ),
+    ) {
+        return Err((error, ArtifactSet::default(), None));
     }
 
     let target_parent = resolved.output_path.parent().ok_or_else(|| {
@@ -314,6 +336,7 @@ fn run_designer_export(
     })?;
 
     let dsl = build_designer_dsl(
+        context,
         config,
         binary,
         runner,
@@ -361,6 +384,17 @@ fn run_designer_export(
         ));
     }
 
+    if let Some(error) = interruption_before_safe_point(
+        context,
+        format!(
+            "artifact publication for source-set '{}' and output '{}'",
+            resolved.source_set_name,
+            resolved.output_path.display()
+        ),
+    ) {
+        return Err((error, artifacts, dump_result.platform_log_path.clone()));
+    }
+
     let replace_outcome = replace_file_atomically(
         &staging_file,
         &resolved.output_path,
@@ -389,6 +423,7 @@ fn run_designer_export(
 }
 
 fn run_external_designer_export(
+    context: &ExecutionContext,
     config: &AppConfig,
     resolved: &ResolvedArtifactsTarget,
     binary: &Path,
@@ -397,6 +432,17 @@ fn run_external_designer_export(
     (PlatformCommandResult, ArtifactSet, Option<String>),
     (AppError, ArtifactSet, Option<PathBuf>),
 > {
+    if let Some(error) = interruption_before_safe_point(
+        context,
+        format!(
+            "external artifact export for source-set '{}' and output '{}'",
+            resolved.source_set_name,
+            resolved.output_path.display()
+        ),
+    ) {
+        return Err((error, ArtifactSet::default(), None));
+    }
+
     let target_parent = resolved.output_path.parent().ok_or_else(|| {
         (
             AppError::Runtime(format!(
@@ -425,6 +471,7 @@ fn run_external_designer_export(
     })?;
 
     let dsl = build_designer_dsl(
+        context,
         config,
         binary,
         runner,
@@ -432,7 +479,7 @@ fn run_external_designer_export(
         resolved.mode,
     )
     .map_err(|error| (error, ArtifactSet::default(), None))?;
-    let descriptors = external_descriptors(config, resolved, runner, binary)
+    let descriptors = external_descriptors(context, config, resolved, runner, binary)
         .map_err(|error| (error, ArtifactSet::default(), None))?;
     let mut artifacts = ArtifactSet::default();
     let mut last_result = PlatformCommandResult {
@@ -528,6 +575,17 @@ fn run_external_designer_export(
                 platform_log_path.or_else(|| result.platform_log_path.clone()),
             )
         })?;
+    }
+
+    if let Some(error) = interruption_before_safe_point(
+        context,
+        format!(
+            "external artifact publication for source-set '{}' and output '{}'",
+            resolved.source_set_name,
+            resolved.output_path.display()
+        ),
+    ) {
+        return Err((error, artifacts, last_result.platform_log_path.clone()));
     }
 
     replace_dir_atomically(
@@ -940,6 +998,7 @@ fn cleanup_orphan_files(resolved: &ResolvedArtifactsTarget) -> Result<(), AppErr
 }
 
 fn build_designer_dsl<'a>(
+    context: &ExecutionContext,
     config: &AppConfig,
     binary: &Path,
     runner: &'a dyn ProcessRunner,
@@ -956,7 +1015,8 @@ fn build_designer_dsl<'a>(
         config.v8_connection(),
         runner,
         Some(log_file),
-    ))
+    )
+    .with_execution_policy(context.process_policy(InterruptionSafetyClass::GracefulThenKill, None)))
 }
 
 fn ensure_platform_success(
@@ -1025,6 +1085,41 @@ fn empty_result(
     }
 }
 
+fn interruption_before_safe_point(
+    context: &ExecutionContext,
+    safe_point: String,
+) -> Option<AppError> {
+    context.interruption().map(|interruption| {
+        AppError::Runtime(format!(
+            "{} for command '{}' before entering {safe_point} safe point",
+            interruption.message(context.command()),
+            context.command().as_str()
+        ))
+    })
+}
+
+fn merge_optional_messages(left: Option<String>, right: Option<String>) -> Option<String> {
+    match (left, right) {
+        (Some(left), Some(right)) => Some(format!("{left}; {right}")),
+        (Some(left), None) => Some(left),
+        (None, Some(right)) => Some(right),
+        (None, None) => None,
+    }
+}
+
+fn publication_warning(context: &ExecutionContext) -> Option<String> {
+    context.interruption().map(|interruption| {
+        format!(
+            "artifact publication completed after {} for command '{}' during critical phase; unsafe interruption was not performed",
+            match interruption {
+                crate::use_cases::context::ExecutionInterruption::Cancelled => "cancellation request",
+                crate::use_cases::context::ExecutionInterruption::TimedOut => "timeout",
+            },
+            context.command().as_str()
+        )
+    })
+}
+
 fn map_mode(mode: ArtifactsModeRequest) -> ArtifactBuildMode {
     match mode {
         ArtifactsModeRequest::ConfigurationCf => ArtifactBuildMode::ConfigurationCf,
@@ -1037,6 +1132,7 @@ fn map_mode(mode: ArtifactsModeRequest) -> ArtifactBuildMode {
 }
 
 fn external_descriptors(
+    context: &ExecutionContext,
     config: &AppConfig,
     resolved: &ResolvedArtifactsTarget,
     _runner: &dyn ProcessRunner,
@@ -1070,6 +1166,9 @@ fn external_descriptors(
                 location.path,
                 config.work_path.join("edt-workspace"),
                 utilities.runner_for(UtilityType::EdtCli),
+            )
+            .with_execution_policy(
+                context.process_policy(InterruptionSafetyClass::GracefulThenKill, None),
             );
             prepare_edt_external_artifacts(config, source_set, &edt)
         }
@@ -1094,8 +1193,8 @@ fn make_run_id() -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        cleanup_orphan_files, resolve_target, run_artifacts, validate_supported_matrix,
-        ResolvedArtifactsTarget,
+        cleanup_orphan_files, publication_warning, resolve_target, run_artifacts,
+        validate_supported_matrix, ResolvedArtifactsTarget,
     };
     use crate::config::model::{
         AppConfig, BuildConfig, BuilderBackend, PlatformToolConfig, SourceFormat, SourceSetConfig,
@@ -1106,10 +1205,13 @@ mod tests {
     use crate::support::fs::{
         metadata_sidecar_path, read_temp_dir_metadata, write_temp_dir_metadata, TempDirKind,
     };
+    use crate::use_cases::context::{CommandName, ExecutionContext};
     use crate::use_cases::request::{ArtifactsModeRequest, ArtifactsRequest};
     use std::fs;
     use std::path::{Path, PathBuf};
+    use std::time::{Duration, Instant};
     use tempfile::tempdir;
+    use tokio_util::sync::CancellationToken;
 
     #[cfg(unix)]
     fn make_executable(path: &Path) {
@@ -1296,7 +1398,12 @@ mod tests {
         let config = sample_config(&base, &work, &script, SourceFormat::Designer);
         let request = cf_request(&dir.path().join("dist/release.cf").display().to_string());
 
-        let result = run_artifacts(&config, &request).expect("result");
+        let result = run_artifacts(
+            &ExecutionContext::cli(CommandName::Artifacts),
+            &config,
+            &request,
+        )
+        .expect("result");
 
         assert!(result.ok);
         assert!(result.output_path.is_file());
@@ -1308,6 +1415,42 @@ mod tests {
             .artifacts
             .get_by_role(ARTIFACT_ROLE_PLATFORM_LOG)
             .is_some());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_artifacts_honors_interruption_before_export_safe_point() {
+        let dir = tempdir().expect("tempdir");
+        fs::create_dir_all(dir.path().join("configuration")).expect("config dir");
+        let script = dir.path().join("1cv8");
+        write_script(&script, "printf 'unexpected invocation\\n' >&2\nexit 1");
+        let base = dir.path().join("base");
+        let work = dir.path().join("work");
+        fs::create_dir_all(base.join("configuration")).expect("base config");
+        fs::create_dir_all(&work).expect("work");
+        let config = sample_config(&base, &work, &script, SourceFormat::Designer);
+        let request = cf_request(&dir.path().join("dist/release.cf").display().to_string());
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+        let context = ExecutionContext::cli(CommandName::Artifacts).with_cancellation(cancellation);
+
+        let failure = run_artifacts(&context, &config, &request).expect_err("failure");
+
+        assert!(failure
+            .error
+            .to_string()
+            .contains("before entering artifact export"));
+    }
+
+    #[test]
+    fn publication_warning_reports_timed_out_context() {
+        let context = ExecutionContext::cli(CommandName::Artifacts)
+            .with_deadline(Some(Instant::now() - Duration::from_millis(1)));
+
+        let warning = publication_warning(&context).expect("warning");
+
+        assert!(warning.contains("timeout"));
+        assert!(warning.contains("critical phase"));
     }
 
     #[cfg(unix)]
@@ -1346,7 +1489,12 @@ mod tests {
             "external-processors",
         );
 
-        let result = run_artifacts(&config, &request).expect("result");
+        let result = run_artifacts(
+            &ExecutionContext::cli(CommandName::Artifacts),
+            &config,
+            &request,
+        )
+        .expect("result");
         let mut file_names = result
             .execution
             .payload
@@ -1404,7 +1552,12 @@ mod tests {
             "external-processors",
         );
 
-        let result = run_artifacts(&config, &request).expect("result");
+        let result = run_artifacts(
+            &ExecutionContext::cli(CommandName::Artifacts),
+            &config,
+            &request,
+        )
+        .expect("result");
         let mut file_names = result
             .execution
             .payload
@@ -1459,7 +1612,12 @@ mod tests {
             "external-processors",
         );
 
-        let failure = run_artifacts(&config, &request).expect_err("failure");
+        let failure = run_artifacts(
+            &ExecutionContext::cli(CommandName::Artifacts),
+            &config,
+            &request,
+        )
+        .expect_err("failure");
         let payload = failure.payload.expect("payload");
 
         assert_eq!(

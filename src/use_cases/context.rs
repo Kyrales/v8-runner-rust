@@ -241,14 +241,16 @@ mod tests {
             .with_cancellation(cancellation)
             .with_deadline(Some(Instant::now() - Duration::from_millis(1)));
 
-        assert_eq!(context.interruption(), Some(ExecutionInterruption::TimedOut));
+        assert_eq!(
+            context.interruption(),
+            Some(ExecutionInterruption::TimedOut)
+        );
     }
 
     #[test]
     fn process_policy_caps_timeout_by_remaining_budget() {
-        let context = ExecutionContext::cli(CommandName::Build).with_deadline(Some(
-            Instant::now() + Duration::from_millis(25),
-        ));
+        let context = ExecutionContext::cli(CommandName::Build)
+            .with_deadline(Some(Instant::now() + Duration::from_millis(25)));
 
         let policy = context.process_policy(
             InterruptionSafetyClass::GracefulThenKill,

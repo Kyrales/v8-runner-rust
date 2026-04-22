@@ -1088,7 +1088,7 @@ async fn mcp_stdio_dump_config_partial_ibcmd_preserves_partial_mode_on_failure()
 }
 
 #[tokio::test]
-async fn mcp_stdio_returns_transport_timeout_for_edt_syntax() {
+async fn mcp_stdio_returns_terminal_business_failure_for_edt_syntax_timeout() {
     let (_dir, config_path) = setup_edt_project();
     let transport = TokioChildProcess::new(
         tokio::process::Command::new(cargo_bin("v8-runner")).configure(|cmd| {
@@ -1102,7 +1102,7 @@ async fn mcp_stdio_returns_transport_timeout_for_edt_syntax() {
     .expect("spawn stdio transport");
 
     let client = ().serve(transport).await.expect("connect rmcp client");
-    let error = client
+    let response = client
         .peer()
         .call_tool(
             CallToolRequestParams::new("check_syntax_edt").with_arguments(
@@ -1110,29 +1110,16 @@ async fn mcp_stdio_returns_transport_timeout_for_edt_syntax() {
             ),
         )
         .await
-        .expect_err("tool call must return MCP transport error");
+        .expect("tool call");
 
-    match error {
-        ServiceError::McpError(error_data) => {
-            assert_eq!(error_data.code, ErrorCode::INTERNAL_ERROR);
-            assert_eq!(
-                error_data
-                    .data
-                    .as_ref()
-                    .and_then(|data| data.get("timeoutMs")),
-                Some(&json!(80))
-            );
-            assert_eq!(
-                error_data.data.as_ref().and_then(|data| data.get("reason")),
-                Some(&json!("timeout"))
-            );
-            assert_eq!(
-                error_data.data.as_ref().and_then(|data| data.get("stage")),
-                Some(&json!("running"))
-            );
-        }
-        other => panic!("expected MCP error, got {other:?}"),
-    }
+    assert_eq!(response.is_error, Some(true));
+    let payload: Value = response.structured_content.expect("structured payload");
+    assert_eq!(payload["status"], "business_failure");
+    assert_eq!(payload["response"]["check_result"], "tool_failed");
+    assert!(payload["error"]["message"]
+        .as_str()
+        .expect("message")
+        .contains("terminal state was observed"));
 
     client.cancel().await.expect("cancel client");
 }
@@ -1332,7 +1319,7 @@ async fn mcp_stdio_edt_syntax_treats_stdout_without_issues_as_tool_failure() {
 }
 
 #[tokio::test]
-async fn mcp_stdio_cancels_running_standard_tool_and_retains_capacity_until_detached_completion() {
+async fn mcp_stdio_cancels_running_standard_tool_and_recovers_capacity_after_terminal_state() {
     let dir = tempdir().expect("tempdir");
     let starts_log = dir.path().join("designer-starts.log");
     let script_body = format!(
@@ -1391,13 +1378,11 @@ async fn mcp_stdio_cancels_running_standard_tool_and_retains_capacity_until_deta
                 .await
         }
     });
-    tokio::time::sleep(Duration::from_millis(100)).await;
-    assert_eq!(read_invocation_count(&starts_log), 1);
 
     follow_up
         .await
         .expect("follow-up task join")
-        .expect("capacity must recover after detached work finishes");
+        .expect("capacity must recover after terminal state");
     assert_eq!(read_invocation_count(&starts_log), 2);
 
     client.cancel().await.expect("cancel client");

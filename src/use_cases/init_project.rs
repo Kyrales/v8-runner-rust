@@ -17,7 +17,7 @@ use crate::platform::locator::UtilityType;
 use crate::platform::result::PlatformCommandResult;
 use crate::platform::utilities::PlatformUtilities;
 use crate::support::error::AppError;
-use crate::use_cases::context::ExecutionContext;
+use crate::use_cases::context::{ExecutionContext, InterruptionSafetyClass};
 use crate::use_cases::request::InitRequest;
 use crate::use_cases::result::{UseCaseError, UseCaseFailure, UseCaseResult};
 
@@ -31,13 +31,13 @@ pub fn execute(
         transport = ?context.transport(),
         "executing init use case"
     );
-    run_init(config)
+    run_init(context, config)
 }
 
 pub(crate) type InitExecutionFailure = UseCaseFailure<InitResult>;
 const EDT_WORKSPACE_MARKER: &str = ".v8tr-initialized";
 
-fn run_init(config: &AppConfig) -> UseCaseResult<InitResult> {
+fn run_init(context: &ExecutionContext, config: &AppConfig) -> UseCaseResult<InitResult> {
     let started = Instant::now();
     let mut utilities = PlatformUtilities::from_config(config);
     let mut steps = Vec::new();
@@ -46,12 +46,12 @@ fn run_init(config: &AppConfig) -> UseCaseResult<InitResult> {
     record_step(
         &mut steps,
         &mut first_error,
-        ensure_infobase(config, &mut utilities),
+        ensure_infobase(context, config, &mut utilities),
     );
     record_step(
         &mut steps,
         &mut first_error,
-        ensure_edt_workspace(config, &mut utilities),
+        ensure_edt_workspace(context, config, &mut utilities),
     );
 
     let result = InitResult {
@@ -130,7 +130,11 @@ impl StepOutcome {
     }
 }
 
-fn ensure_infobase(config: &AppConfig, utilities: &mut PlatformUtilities) -> StepOutcome {
+fn ensure_infobase(
+    context: &ExecutionContext,
+    config: &AppConfig,
+    utilities: &mut PlatformUtilities,
+) -> StepOutcome {
     let Some(infobase_dir) = config.v8_connection().file_path().map(PathBuf::from) else {
         return match config.builder {
             BuilderBackend::Designer => StepOutcome::skipped(
@@ -139,14 +143,15 @@ fn ensure_infobase(config: &AppConfig, utilities: &mut PlatformUtilities) -> Ste
                 Instant::now(),
                 "server infobase connection detected; automatic creation is not supported for builder=DESIGNER",
             ),
-            BuilderBackend::Ibcmd => ensure_server_infobase(config, utilities),
+            BuilderBackend::Ibcmd => ensure_server_infobase(context, config, utilities),
         };
     };
 
-    ensure_file_infobase(config, utilities, &infobase_dir)
+    ensure_file_infobase(context, config, utilities, &infobase_dir)
 }
 
 fn ensure_file_infobase(
+    context: &ExecutionContext,
     config: &AppConfig,
     utilities: &mut PlatformUtilities,
     infobase_dir: &Path,
@@ -167,7 +172,13 @@ fn ensure_file_infobase(
         return StepOutcome::failed("infobase", "create", started, error);
     }
 
-    let command_result = match create_infobase(config, utilities) {
+    if let Some(outcome) =
+        interruption_step_outcome(context, "infobase", "create", started, "infobase create")
+    {
+        return outcome;
+    }
+
+    let command_result = match create_infobase(context, config, utilities) {
         Ok(outcome) => outcome,
         Err(error) => return StepOutcome::failed("infobase", "create", started, error),
     };
@@ -198,7 +209,10 @@ fn ensure_file_infobase(
                 "infobase",
                 "create",
                 started,
-                format!("infobase created: {}", marker.display()),
+                with_deferred_warning(
+                    format!("infobase created: {}", marker.display()),
+                    &command_result.result,
+                ),
             )
         }
         IbcmdInfobaseCreateStatus::AlreadyExists => {
@@ -224,17 +238,29 @@ fn ensure_file_infobase(
     }
 }
 
-fn ensure_server_infobase(config: &AppConfig, utilities: &mut PlatformUtilities) -> StepOutcome {
+fn ensure_server_infobase(
+    context: &ExecutionContext,
+    config: &AppConfig,
+    utilities: &mut PlatformUtilities,
+) -> StepOutcome {
     let started = Instant::now();
-    match create_infobase(config, utilities) {
+    if let Some(outcome) =
+        interruption_step_outcome(context, "infobase", "create", started, "infobase create")
+    {
+        return outcome;
+    }
+    match create_infobase(context, config, utilities) {
         Ok(outcome) => match outcome.status {
             IbcmdInfobaseCreateStatus::Created => StepOutcome::ok(
                 "infobase",
                 "create",
                 started,
-                format!(
-                    "server infobase ensured via ibcmd: {}",
-                    config.infobase.connection
+                with_deferred_warning(
+                    format!(
+                        "server infobase ensured via ibcmd: {}",
+                        config.infobase.connection
+                    ),
+                    &outcome.result,
                 ),
             ),
             IbcmdInfobaseCreateStatus::AlreadyExists => StepOutcome::skipped(
@@ -257,7 +283,11 @@ fn ensure_server_infobase(config: &AppConfig, utilities: &mut PlatformUtilities)
     }
 }
 
-fn ensure_edt_workspace(config: &AppConfig, utilities: &mut PlatformUtilities) -> StepOutcome {
+fn ensure_edt_workspace(
+    context: &ExecutionContext,
+    config: &AppConfig,
+    utilities: &mut PlatformUtilities,
+) -> StepOutcome {
     let started = Instant::now();
     if config.format != SourceFormat::Edt {
         return StepOutcome::skipped(
@@ -302,6 +332,16 @@ fn ensure_edt_workspace(config: &AppConfig, utilities: &mut PlatformUtilities) -
         );
     }
 
+    if let Some(outcome) = interruption_step_outcome(
+        context,
+        "edt_workspace",
+        "import",
+        started,
+        "EDT workspace import",
+    ) {
+        return outcome;
+    }
+
     let binary = match utilities.locate(UtilityType::EdtCli) {
         Ok(location) => location.path,
         Err(error) => {
@@ -321,7 +361,9 @@ fn ensure_edt_workspace(config: &AppConfig, utilities: &mut PlatformUtilities) -
             Duration::from_millis(config.tools.edt_cli.startup_timeout_ms),
             Duration::from_millis(config.tools.edt_cli.command_timeout_ms),
         ) {
-            Ok(dsl) => dsl,
+            Ok(dsl) => dsl.with_execution_policy(
+                context.process_policy(InterruptionSafetyClass::GracefulThenKill, None),
+            ),
             Err(error) => {
                 return StepOutcome::failed(
                     "edt_workspace",
@@ -337,9 +379,21 @@ fn ensure_edt_workspace(config: &AppConfig, utilities: &mut PlatformUtilities) -
             workspace.clone(),
             utilities.runner_for(UtilityType::EdtCli),
         )
+        .with_execution_policy(
+            context.process_policy(InterruptionSafetyClass::GracefulThenKill, None),
+        )
     };
     debug!("[EDT] Инициализация workspace: {}", workspace.display());
     for source_set in ordered_source_sets(config) {
+        if let Some(outcome) = interruption_step_outcome(
+            context,
+            "edt_workspace",
+            "import",
+            started,
+            "EDT project import",
+        ) {
+            return outcome;
+        }
         let source_path = resolve_source_set_path(config, source_set);
         debug!("[EDT] Импорт проекта: {}", source_set.name);
         match dsl.import_project(&source_path) {
@@ -377,11 +431,15 @@ fn ensure_edt_workspace(config: &AppConfig, utilities: &mut PlatformUtilities) -
         "edt_workspace",
         "import",
         started,
-        format!("workspace initialized: {}", workspace.display()),
+        with_optional_warning(
+            format!("workspace initialized: {}", workspace.display()),
+            context_deferred_warning(context),
+        ),
     )
 }
 
 fn create_infobase_via_designer(
+    context: &ExecutionContext,
     config: &AppConfig,
     utilities: &mut PlatformUtilities,
 ) -> Result<IbcmdInfobaseCreateOutcome, AppError> {
@@ -394,6 +452,9 @@ fn create_infobase_via_designer(
         config.v8_connection(),
         utilities.runner_for(UtilityType::V8),
         None,
+    )
+    .with_execution_policy(
+        context.process_policy(InterruptionSafetyClass::CriticalNonAbortable, None),
     )
     .create_infobase()
     .map(|result| IbcmdInfobaseCreateOutcome {
@@ -408,6 +469,7 @@ fn create_infobase_via_designer(
 }
 
 fn create_infobase_via_ibcmd(
+    context: &ExecutionContext,
     config: &AppConfig,
     utilities: &mut PlatformUtilities,
 ) -> Result<IbcmdInfobaseCreateOutcome, AppError> {
@@ -423,18 +485,79 @@ fn create_infobase_via_ibcmd(
             crate::platform::ibcmd::IbcmdError::Spawn(_) => AppError::Platform(error.to_string()),
         })?;
     IbcmdDsl::new(binary, connection, utilities.runner_for(UtilityType::Ibcmd))
+        .with_execution_policy(
+            context.process_policy(InterruptionSafetyClass::CriticalNonAbortable, None),
+        )
         .ensure_infobase_create()
         .map_err(|error| AppError::Platform(error.to_string()))
 }
 
 fn create_infobase(
+    context: &ExecutionContext,
     config: &AppConfig,
     utilities: &mut PlatformUtilities,
 ) -> Result<IbcmdInfobaseCreateOutcome, AppError> {
     match config.builder {
-        BuilderBackend::Designer => create_infobase_via_designer(config, utilities),
-        BuilderBackend::Ibcmd => create_infobase_via_ibcmd(config, utilities),
+        BuilderBackend::Designer => create_infobase_via_designer(context, config, utilities),
+        BuilderBackend::Ibcmd => create_infobase_via_ibcmd(context, config, utilities),
     }
+}
+
+fn interruption_step_outcome(
+    context: &ExecutionContext,
+    target: &str,
+    action: &str,
+    started: Instant,
+    safe_point: &str,
+) -> Option<StepOutcome> {
+    context.interruption().map(|interruption| {
+        StepOutcome::failed(
+            target,
+            action,
+            started,
+            AppError::Runtime(format!(
+                "{} for command '{}' before entering {safe_point} safe point",
+                interruption.message(context.command()),
+                context.command().as_str()
+            )),
+        )
+    })
+}
+
+fn with_deferred_warning(message: String, result: &PlatformCommandResult) -> String {
+    with_optional_warning(message, deferred_interruption_warning(result))
+}
+
+fn with_optional_warning(message: String, warning: Option<String>) -> String {
+    match warning {
+        Some(warning) => format!("{message}; {warning}"),
+        None => message,
+    }
+}
+
+fn deferred_interruption_warning(result: &PlatformCommandResult) -> Option<String> {
+    result.process.interruption.map(|interruption| {
+        let reason = match interruption.reason {
+            crate::platform::process::ProcessInterruptionReason::Cancelled => "cancellation request",
+            crate::platform::process::ProcessInterruptionReason::TimedOut => "timeout",
+        };
+        format!(
+            "operation completed successfully after {reason} during critical phase; unsafe interruption was not performed"
+        )
+    })
+}
+
+fn context_deferred_warning(context: &ExecutionContext) -> Option<String> {
+    context.interruption().map(|interruption| {
+        format!(
+            "operation completed successfully after {} for command '{}' during critical phase; unsafe interruption was not performed",
+            match interruption {
+                crate::use_cases::context::ExecutionInterruption::Cancelled => "cancellation request",
+                crate::use_cases::context::ExecutionInterruption::TimedOut => "timeout",
+            },
+            context.command().as_str()
+        )
+    })
 }
 
 fn prepare_infobase_parent(path: &Path) -> Result<(), AppError> {
@@ -547,6 +670,8 @@ mod tests {
         TestsConfig, ToolsConfig,
     };
     use std::path::{Path, PathBuf};
+    use tempfile::tempdir;
+    use tokio_util::sync::CancellationToken;
 
     fn sample_config() -> AppConfig {
         AppConfig {
@@ -605,7 +730,13 @@ mod tests {
         config.format = SourceFormat::Designer;
         config.infobase.connection = "Srvr=server;Ref=demo".to_owned();
 
-        let result = super::run_init(&config).expect("server init should skip infobase create");
+        let result = super::run_init(
+            &crate::use_cases::context::ExecutionContext::cli(
+                crate::use_cases::context::CommandName::Init,
+            ),
+            &config,
+        )
+        .expect("server init should skip infobase create");
 
         assert!(result.ok);
         assert_eq!(result.steps.len(), 2);
@@ -620,5 +751,33 @@ mod tests {
         );
         assert_eq!(result.steps[1].target, "edt_workspace");
         assert_eq!(result.steps[1].status, InitStepStatus::Skipped);
+    }
+
+    #[test]
+    fn init_honors_interruption_before_infobase_create_safe_point() {
+        let dir = tempdir().expect("tempdir");
+        let mut config = sample_config();
+        config.base_path = dir.path().join("base");
+        config.work_path = dir.path().join("work");
+        config.format = SourceFormat::Designer;
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+
+        let failure = super::run_init(
+            &crate::use_cases::context::ExecutionContext::cli(
+                crate::use_cases::context::CommandName::Init,
+            )
+            .with_cancellation(cancellation),
+            &config,
+        )
+        .expect_err("interrupted init");
+        let payload = failure.payload.expect("payload");
+
+        assert_eq!(payload.steps[0].status, InitStepStatus::Failed);
+        assert!(payload.steps[0]
+            .message
+            .as_deref()
+            .expect("message")
+            .contains("before entering infobase create safe point"));
     }
 }

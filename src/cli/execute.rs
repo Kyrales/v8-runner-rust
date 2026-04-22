@@ -62,21 +62,14 @@ pub fn execute_command(
     let _signal_guard = CliSignalGuard::install(cancellation.clone());
     match command {
         Command::Config(_) => unreachable!("config commands are handled outside cli::execute"),
-        Command::Init => execute_init(
+        Command::Init => execute_init(config, presenter, clean_before_execution, cancellation),
+        Command::Extensions(args) => execute_extensions(
             config,
+            args,
             presenter,
             clean_before_execution,
             cancellation,
         ),
-        Command::Extensions(args) => {
-            execute_extensions(
-                config,
-                args,
-                presenter,
-                clean_before_execution,
-                cancellation,
-            )
-        }
         Command::Build(args) => execute_build(
             config,
             args,
@@ -105,15 +98,13 @@ pub fn execute_command(
             clean_before_execution,
             cancellation,
         ),
-        Command::Artifacts(args) => {
-            execute_artifacts(
-                config,
-                args,
-                presenter,
-                clean_before_execution,
-                cancellation,
-            )
-        }
+        Command::Artifacts(args) => execute_artifacts(
+            config,
+            args,
+            presenter,
+            clean_before_execution,
+            cancellation,
+        ),
         Command::Syntax(args) => execute_syntax(
             config,
             args,

@@ -6,7 +6,7 @@ use crate::platform::ibcmd::{IbcmdConnection, IbcmdDsl, IbcmdError};
 use crate::platform::locator::UtilityType;
 use crate::platform::utilities::PlatformUtilities;
 use crate::support::error::AppError;
-use crate::use_cases::context::ExecutionContext;
+use crate::use_cases::context::{ExecutionContext, InterruptionSafetyClass};
 use crate::use_cases::ibcmd_diagnostics::format_ibcmd_failure_details;
 use crate::use_cases::request::ConfigureExtensionsRequest;
 use crate::use_cases::result::{UseCaseFailure, UseCaseResult};
@@ -54,10 +54,29 @@ pub fn execute(
             )));
         }
     };
-    let dsl = IbcmdDsl::new(binary, connection, utilities.runner_for(UtilityType::Ibcmd));
+    let dsl = IbcmdDsl::new(binary, connection, utilities.runner_for(UtilityType::Ibcmd))
+        .with_execution_policy(
+            context.process_policy(InterruptionSafetyClass::CriticalNonAbortable, None),
+        );
 
     let mut steps = Vec::new();
     for target in targets {
+        if let Some(interruption) = context.interruption() {
+            let message = format!(
+                "{} for command '{}' before entering extension update safe point",
+                interruption.message(context.command()),
+                context.command().as_str()
+            );
+            let payload = ExtensionsResult {
+                ok: false,
+                steps,
+                duration_ms: started.elapsed().as_millis() as u64,
+            };
+            return Err(UseCaseFailure::with_payload(
+                AppError::Runtime(message),
+                payload,
+            ));
+        }
         let step_started = Instant::now();
         debug!(
             target = target.as_str(),
@@ -71,13 +90,17 @@ pub fn execute(
         );
         match dsl.infobase_extension_update_properties(&target, false, false) {
             Ok(result) if result.process.exit_code == 0 => {
+                let mut message =
+                    "безопасный режим и защита от опасных действий отключены".to_owned();
+                if let Some(warning) = deferred_interruption_warning(&result) {
+                    message.push_str("; ");
+                    message.push_str(&warning);
+                }
                 let step = ExtensionsStep {
                     target,
                     action: DISABLE_SAFETY_ACTION.to_owned(),
                     ok: true,
-                    message: Some(
-                        "безопасный режим и защита от опасных действий отключены".to_owned(),
-                    ),
+                    message: Some(message),
                     duration_ms: step_started.elapsed().as_millis() as u64,
                 };
                 log_extension_step(&step);
@@ -177,6 +200,20 @@ fn log_extensions_summary(ok: bool) {
     );
 }
 
+fn deferred_interruption_warning(
+    result: &crate::platform::result::PlatformCommandResult,
+) -> Option<String> {
+    result.process.interruption.map(|interruption| {
+        let reason = match interruption.reason {
+            crate::platform::process::ProcessInterruptionReason::Cancelled => "cancellation request",
+            crate::platform::process::ProcessInterruptionReason::TimedOut => "timeout",
+        };
+        format!(
+            "extension properties updated successfully after {reason} during critical phase; unsafe interruption was not performed"
+        )
+    })
+}
+
 fn resolve_targets(
     config: &AppConfig,
     args: &ConfigureExtensionsRequest,
@@ -247,6 +284,7 @@ mod tests {
     use std::fs;
     use std::path::{Path, PathBuf};
     use tempfile::tempdir;
+    use tokio_util::sync::CancellationToken;
 
     #[cfg(unix)]
     fn make_executable(path: &Path) {
@@ -420,5 +458,41 @@ mod tests {
             .error
             .message()
             .contains("stderr: bad extension state"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn execute_honors_interruption_before_extension_update_safe_point() {
+        let dir = tempdir().expect("tempdir");
+        let calls = dir.path().join("ibcmd.calls.log");
+        let ibcmd = dir.path().join("ibcmd");
+        fs::create_dir_all(dir.path().join("exts").join("client-mcp")).expect("ext dir");
+        fs::write(
+            dir.path().join("exts").join("client-mcp").join(".project"),
+            "<projectDescription><name>client_mcp</name></projectDescription>",
+        )
+        .expect("project file");
+        write_script(
+            &ibcmd,
+            &format!("printf '%s\\n' \"$*\" >> '{}'\nexit 0", calls.display()),
+        );
+        let config = sample_config(dir.path(), dir.path(), &ibcmd);
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+
+        let failure = execute(
+            &ExecutionContext::cli(CommandName::Extensions).with_cancellation(cancellation),
+            &config,
+            &ConfigureExtensionsRequest { names: vec![] },
+        )
+        .expect_err("interrupted execution");
+        let payload = failure.payload.expect("payload");
+
+        assert!(failure
+            .error
+            .message()
+            .contains("before entering extension update safe point"));
+        assert!(payload.steps.is_empty());
+        assert!(!calls.exists() || fs::read_to_string(&calls).expect("calls").trim().is_empty());
     }
 }

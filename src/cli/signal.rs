@@ -24,7 +24,8 @@ impl CliSignalGuard {
 
             runtime.block_on(async move {
                 #[cfg(unix)]
-                let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).ok();
+                let mut term =
+                    tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).ok();
                 #[cfg(unix)]
                 let termination = async {
                     match term.as_mut() {

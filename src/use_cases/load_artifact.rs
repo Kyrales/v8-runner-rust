@@ -342,14 +342,13 @@ fn run_load(
     .flatten()
     .collect::<Vec<_>>();
     let message = success_message(&resolved, compatibility_state, &deferred_warnings);
-    let mut execution = ExecutionOutcome::new(ExecutionStatus::Succeeded).with_payload(
-        LoadExecutionMetadata {
+    let mut execution =
+        ExecutionOutcome::new(ExecutionStatus::Succeeded).with_payload(LoadExecutionMetadata {
             applied: true,
             target_kind: resolved.target_kind,
             compatibility_state,
             update_db_cfg_ran: true,
-        },
-    );
+        });
     if !deferred_warnings.is_empty() {
         execution = execution.with_diagnostics(deferred_warnings);
     }
@@ -771,7 +770,10 @@ fn interrupted_result_from_resolved(
         message: Some(message.clone()),
         execution: ExecutionOutcome::new(ExecutionStatus::Failed)
             .with_diagnostics(vec![message.clone()])
-            .with_errors(vec![ExecutionError::new("artifact_load_interrupted", message)])
+            .with_errors(vec![ExecutionError::new(
+                "artifact_load_interrupted",
+                message,
+            )])
             .with_payload(LoadExecutionMetadata {
                 applied: true,
                 target_kind: resolved.target_kind,
@@ -781,10 +783,7 @@ fn interrupted_result_from_resolved(
     }
 }
 
-fn deferred_interruption_warning(
-    action: &str,
-    result: &PlatformCommandResult,
-) -> Option<String> {
+fn deferred_interruption_warning(action: &str, result: &PlatformCommandResult) -> Option<String> {
     result.process.interruption.map(|interruption| {
         let reason = match interruption.reason {
             crate::platform::process::ProcessInterruptionReason::Cancelled => "cancellation",

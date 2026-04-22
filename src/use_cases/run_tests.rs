@@ -27,7 +27,7 @@ use crate::platform::utilities::PlatformUtilities;
 use crate::support::error::AppError;
 use crate::support::path::is_safe_path_segment;
 use crate::use_cases::build_project;
-use crate::use_cases::context::{ExecutionContext, ExecutionInterruption};
+use crate::use_cases::context::{ExecutionContext, ExecutionInterruption, InterruptionSafetyClass};
 use crate::use_cases::request::{
     BuildRequest as BuildArgs, TestRequest as TestArgs, TestScopeRequest as TestScope,
 };
@@ -354,6 +354,7 @@ fn run_tests(
     let run_started = Instant::now();
     let enterprise_runner = crate::platform::process::ProcessExecutor;
     let enterprise = match build_enterprise_dsl(
+        context,
         config,
         &artifacts,
         &enterprise_runner,
@@ -679,6 +680,7 @@ fn build_yaxunit_config(target: &TestTarget, artifacts: &RunArtifacts) -> YaXUni
 }
 
 fn build_enterprise_dsl<'a>(
+    context: &ExecutionContext,
     config: &AppConfig,
     artifacts: &'a RunArtifacts,
     runner: &'a dyn crate::platform::process::ProcessRunner,
@@ -708,6 +710,16 @@ fn build_enterprise_dsl<'a>(
         timeout_override_ms
             .map(Duration::from_millis)
             .unwrap_or_else(|| Duration::from_secs(config.tests.execution_timeout_seconds)),
+    )
+    .with_execution_policy(
+        context.process_policy(
+            InterruptionSafetyClass::GracefulThenKill,
+            Some(
+                timeout_override_ms
+                    .map(Duration::from_millis)
+                    .unwrap_or_else(|| Duration::from_secs(config.tests.execution_timeout_seconds)),
+            ),
+        ),
     ))
 }
 
@@ -1063,6 +1075,10 @@ fn collect_diagnostics(
 
 fn enterprise_error_kind(error: EnterpriseError) -> (TestErrorKind, AppError) {
     match error {
+        EnterpriseError::Spawn(ProcessError::Cancelled { .. }) => (
+            TestErrorKind::EnterpriseSpawnFailed,
+            AppError::Runtime("enterprise test run cancelled".to_owned()),
+        ),
         EnterpriseError::Spawn(ProcessError::TimedOut { .. }) => (
             TestErrorKind::EnterpriseTimedOut,
             AppError::Runtime("enterprise test run timed out".to_owned()),

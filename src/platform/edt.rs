@@ -1,15 +1,16 @@
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use thiserror::Error;
 use tracing::debug;
 
 use crate::platform::interactive::{
-    InteractiveProcessError, InteractiveProcessExecutor, InteractiveProcessRequest,
+    InteractiveCommandExecution, InteractiveProcessError, InteractiveProcessExecutor,
+    InteractiveProcessRequest,
 };
 use crate::platform::process::{
-    ProcessError, ProcessExecutionPolicy, ProcessRequest, ProcessRunner,
+    ProcessError, ProcessExecutionPolicy, ProcessInterruptionReason, ProcessRequest, ProcessRunner,
 };
 use crate::platform::result::PlatformCommandResult;
 
@@ -37,6 +38,7 @@ pub struct EdtDsl<'a> {
     backend: EdtBackend<'a>,
     timeout: Option<Duration>,
     execution_policy: ProcessExecutionPolicy,
+    budget_started_at: Instant,
 }
 
 impl<'a> EdtDsl<'a> {
@@ -48,6 +50,7 @@ impl<'a> EdtDsl<'a> {
             backend: EdtBackend::OneShot { runner },
             timeout: None,
             execution_policy: ProcessExecutionPolicy::default(),
+            budget_started_at: Instant::now(),
         }
     }
 
@@ -92,18 +95,21 @@ impl<'a> EdtDsl<'a> {
             },
             timeout: None,
             execution_policy: ProcessExecutionPolicy::default(),
+            budget_started_at: Instant::now(),
         })
     }
 
-    /// Overrides the timeout used for one-shot EDT process execution.
-    pub const fn with_timeout(mut self, timeout: Option<Duration>) -> Self {
+    /// Overrides the timeout cap used for EDT command execution.
+    pub fn with_timeout(mut self, timeout: Option<Duration>) -> Self {
         self.timeout = timeout;
+        self.budget_started_at = Instant::now();
         self
     }
 
-    /// Overrides the shared execution policy for one-shot EDT process execution.
+    /// Overrides the shared execution policy for EDT command execution.
     pub fn with_execution_policy(mut self, execution_policy: ProcessExecutionPolicy) -> Self {
         self.execution_policy = execution_policy;
+        self.budget_started_at = Instant::now();
         self
     }
 
@@ -177,36 +183,84 @@ impl<'a> EdtDsl<'a> {
                     startup_probe: None,
                 };
                 let mut execution_policy = self.execution_policy.clone();
-                execution_policy.timeout = match (self.timeout, execution_policy.timeout) {
+                execution_policy.timeout = match (
+                    self.remaining_budget_cap(self.timeout),
+                    self.remaining_budget_cap(execution_policy.timeout),
+                ) {
                     (Some(timeout), Some(cap)) => Some(timeout.min(cap)),
                     (Some(timeout), None) => Some(timeout),
                     (None, timeout) => timeout,
                 };
-                runner.run_with_policy(&request, &execution_policy)
-                .map_err(EdtError::Spawn)?
+                runner
+                    .run_with_policy(&request, &execution_policy)
+                    .map_err(EdtError::Spawn)?
             }
             EdtBackend::Interactive {
                 session,
                 command_timeout,
                 ..
             } => {
-                let effective_timeout = self.timeout.unwrap_or(*command_timeout);
+                let effective_timeout = match (
+                    self.remaining_budget_cap(self.timeout),
+                    self.remaining_budget_cap(self.execution_policy.timeout),
+                ) {
+                    (Some(timeout), Some(cap)) => timeout.min(cap),
+                    (Some(timeout), None) => timeout,
+                    (None, Some(cap)) => (*command_timeout).min(cap),
+                    (None, None) => *command_timeout,
+                };
+                let deadline = Instant::now() + effective_timeout;
+                let mut execution_policy = self.execution_policy.clone();
+                execution_policy.timeout = Some(effective_timeout);
                 let mut session = session.borrow_mut();
+                let change_dir_command = render_interactive_change_dir_command(&self.workspace);
                 debug!(
                     workspace = %self.workspace.display(),
                     command = interactive_command,
                     timeout_ms = effective_timeout.as_millis() as u64,
                     "running interactive edt command"
                 );
-                session
-                    .execute(
-                        &render_interactive_change_dir_command(&self.workspace),
-                        effective_timeout,
+                let change_dir = session
+                    .execute_with_policy(
+                        &change_dir_command,
+                        remaining_interactive_timeout(deadline),
+                        &execution_policy,
                     )
-                    .map_err(EdtError::Interactive)?;
-                let output = session
-                    .execute(interactive_command, effective_timeout)
-                    .map_err(EdtError::Interactive)?;
+                    .map_err(|error| {
+                        map_interactive_command_error(
+                            &self.binary,
+                            &self.workspace,
+                            interactive_command,
+                            error,
+                        )
+                    })?;
+                if let Some(interruption) = change_dir.interruption {
+                    return Err(EdtError::Spawn(process_error_from_interruption(
+                        &self.binary,
+                        &self.workspace,
+                        interactive_command,
+                        interruption.reason,
+                        effective_timeout,
+                    )));
+                }
+                let execution = session
+                    .execute_with_policy(
+                        interactive_command,
+                        remaining_interactive_timeout(deadline),
+                        &execution_policy,
+                    )
+                    .map_err(|error| {
+                        map_interactive_command_error(
+                            &self.binary,
+                            &self.workspace,
+                            interactive_command,
+                            error,
+                        )
+                    })?;
+                let InteractiveCommandExecution {
+                    output,
+                    interruption,
+                } = execution;
                 debug!(
                     workspace = %self.workspace.display(),
                     command = interactive_command,
@@ -224,7 +278,7 @@ impl<'a> EdtDsl<'a> {
                     exit_code,
                     stdout: output.stdout,
                     stderr: output.stderr,
-                    interruption: None,
+                    interruption,
                 }
             }
         };
@@ -252,6 +306,50 @@ impl<'a> EdtDsl<'a> {
             platform_log,
             platform_log_read_error,
         })
+    }
+
+    fn remaining_budget_cap(&self, timeout: Option<Duration>) -> Option<Duration> {
+        timeout.map(|value| value.saturating_sub(self.budget_started_at.elapsed()))
+    }
+}
+
+fn map_interactive_command_error(
+    binary: &Path,
+    workspace: &Path,
+    command: &str,
+    error: InteractiveProcessError,
+) -> EdtError {
+    match error {
+        InteractiveProcessError::CommandCancelled { .. } => {
+            EdtError::Spawn(ProcessError::Cancelled {
+                cmd: render_interactive_session_command(binary, workspace, command),
+            })
+        }
+        InteractiveProcessError::CommandTimeout { timeout_ms, .. } => {
+            EdtError::Spawn(ProcessError::TimedOut {
+                cmd: render_interactive_session_command(binary, workspace, command),
+                timeout_ms,
+            })
+        }
+        other => EdtError::Interactive(other),
+    }
+}
+
+fn process_error_from_interruption(
+    binary: &Path,
+    workspace: &Path,
+    command: &str,
+    reason: ProcessInterruptionReason,
+    timeout: Duration,
+) -> ProcessError {
+    match reason {
+        ProcessInterruptionReason::Cancelled => ProcessError::Cancelled {
+            cmd: render_interactive_session_command(binary, workspace, command),
+        },
+        ProcessInterruptionReason::TimedOut => ProcessError::TimedOut {
+            cmd: render_interactive_session_command(binary, workspace, command),
+            timeout_ms: timeout.as_millis() as u64,
+        },
     }
 }
 
@@ -323,6 +421,23 @@ fn render_process_command(binary: &Path, args: &[String]) -> String {
     let mut parts = vec![binary.display().to_string()];
     parts.extend(args.iter().cloned());
     parts.join(" ")
+}
+
+fn render_interactive_session_command(binary: &Path, workspace: &Path, command: &str) -> String {
+    format!(
+        "{} -data {} [interactive: {}]",
+        binary.display(),
+        workspace.display(),
+        interactive_command_name(command)
+    )
+}
+
+fn interactive_command_name(command: &str) -> &str {
+    command.split_whitespace().next().unwrap_or("<unknown>")
+}
+
+fn remaining_interactive_timeout(deadline: Instant) -> Duration {
+    deadline.saturating_duration_since(Instant::now())
 }
 
 fn render_interactive_output_for_log(output: &str) -> String {
@@ -398,16 +513,20 @@ fn quote_interactive_argument(argument: &str) -> String {
 mod tests {
     use super::{
         render_interactive_change_dir_command, render_interactive_probe_workdir_command,
-        render_interactive_validate_command, EdtDsl, INTERACTIVE_EDT_ERROR_MARKER,
+        render_interactive_validate_command, EdtDsl, EdtError, INTERACTIVE_EDT_ERROR_MARKER,
     };
     use crate::platform::process::{
-        ProcessError, ProcessExecutor, ProcessRequest, ProcessResult, ProcessRunner, SpawnResult,
+        ProcessError, ProcessExecutionPolicy, ProcessExecutor, ProcessInterruptionAction,
+        ProcessInterruptionReason, ProcessInterruptionSafety, ProcessRequest, ProcessResult,
+        ProcessRunner, SpawnResult,
     };
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::sync::{Arc, Mutex};
+    use std::thread;
     use std::time::Duration;
     use tempfile::tempdir;
+    use tokio_util::sync::CancellationToken;
 
     #[cfg(unix)]
     fn make_executable(path: &Path) {
@@ -600,10 +719,13 @@ mod tests {
 
         let _ = dsl.validate_project(Path::new("/tmp/project"), Path::new("/tmp/log"));
 
-        assert_eq!(
-            *runner.timeout.lock().expect("timeout lock"),
-            Some(Duration::from_secs(7))
-        );
+        let timeout = runner
+            .timeout
+            .lock()
+            .expect("timeout lock")
+            .expect("recorded timeout");
+        assert!(timeout <= Duration::from_secs(7));
+        assert!(timeout > Duration::from_secs(0));
     }
 
     #[test]
@@ -731,5 +853,282 @@ OUT\n\
 
         assert_eq!(result.process.exit_code, 1);
         assert!(result.process.stdout.contains(INTERACTIVE_EDT_ERROR_MARKER));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn interactive_dsl_honors_execution_policy_timeout() {
+        let dir = tempdir().expect("tempdir");
+        let script = dir.path().join("1cedtcli");
+        write_script(
+            &script,
+            "set -eu\n\
+             prompt() { printf '1C:EDT>'; }\n\
+             prompt\n\
+             while IFS= read -r line; do\n\
+               eval \"set -- $line\"\n\
+               cmd=\"${1:-}\"\n\
+               if [ \"$#\" -gt 0 ]; then shift; fi\n\
+               case \"$cmd\" in\n\
+                 cd)\n\
+                   prompt\n\
+                   ;;\n\
+                 export)\n\
+                   sleep 0.2\n\
+                   prompt\n\
+                   ;;\n\
+                 *)\n\
+                   prompt\n\
+                   ;;\n\
+               esac\n\
+             done\n",
+        );
+
+        let dsl = EdtDsl::new_interactive(
+            script,
+            dir.path().join("ws"),
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+        )
+        .expect("interactive dsl")
+        .with_execution_policy(ProcessExecutionPolicy::new(
+            Some(Duration::from_millis(50)),
+            CancellationToken::new(),
+            ProcessInterruptionSafety::GracefulThenKill,
+        ));
+
+        let error = dsl
+            .export_project("project", Path::new("/tmp/out"))
+            .expect_err("timeout error");
+
+        assert!(matches!(
+            error,
+            EdtError::Spawn(ProcessError::TimedOut { .. })
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn interactive_dsl_timeout_budget_covers_prelude_and_business_command() {
+        let dir = tempdir().expect("tempdir");
+        let script = dir.path().join("1cedtcli");
+        write_script(
+            &script,
+            "set -eu\n\
+             prompt() { printf '1C:EDT>'; }\n\
+             prompt\n\
+             while IFS= read -r line; do\n\
+               eval \"set -- $line\"\n\
+               cmd=\"${1:-}\"\n\
+               if [ \"$#\" -gt 0 ]; then shift; fi\n\
+               case \"$cmd\" in\n\
+                 cd)\n\
+                   sleep 0.07\n\
+                   prompt\n\
+                   ;;\n\
+                 export)\n\
+                   sleep 0.07\n\
+                   prompt\n\
+                   ;;\n\
+                 *)\n\
+                   prompt\n\
+                   ;;\n\
+               esac\n\
+             done\n",
+        );
+
+        let dsl = EdtDsl::new_interactive(
+            script,
+            dir.path().join("ws"),
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+        )
+        .expect("interactive dsl")
+        .with_execution_policy(ProcessExecutionPolicy::new(
+            Some(Duration::from_millis(100)),
+            CancellationToken::new(),
+            ProcessInterruptionSafety::GracefulThenKill,
+        ));
+
+        let error = dsl
+            .export_project("project", Path::new("/tmp/out"))
+            .expect_err("timeout error");
+
+        match error {
+            EdtError::Spawn(ProcessError::TimedOut { cmd, .. }) => {
+                assert!(cmd.contains("[interactive: export]"));
+                assert!(!cmd.contains("[interactive: cd]"));
+            }
+            other => panic!("expected timeout error, got {other:?}"),
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn interactive_dsl_reused_session_shares_timeout_budget_across_commands() {
+        let dir = tempdir().expect("tempdir");
+        let script = dir.path().join("1cedtcli");
+        write_script(
+            &script,
+            "set -eu\n\
+             prompt() { printf '1C:EDT>'; }\n\
+             prompt\n\
+             while IFS= read -r line; do\n\
+               eval \"set -- $line\"\n\
+               cmd=\"${1:-}\"\n\
+               if [ \"$#\" -gt 0 ]; then shift; fi\n\
+               case \"$cmd\" in\n\
+                 cd)\n\
+                   prompt\n\
+                   ;;\n\
+                 export)\n\
+                   sleep 0.07\n\
+                   prompt\n\
+                   ;;\n\
+                 *)\n\
+                   prompt\n\
+                   ;;\n\
+               esac\n\
+             done\n",
+        );
+
+        let dsl = EdtDsl::new_interactive(
+            script,
+            dir.path().join("ws"),
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+        )
+        .expect("interactive dsl")
+        .with_execution_policy(ProcessExecutionPolicy::new(
+            Some(Duration::from_millis(120)),
+            CancellationToken::new(),
+            ProcessInterruptionSafety::GracefulThenKill,
+        ));
+
+        dsl.export_project("first", Path::new("/tmp/out1"))
+            .expect("first export");
+        let error = dsl
+            .export_project("second", Path::new("/tmp/out2"))
+            .expect_err("second export must exhaust remaining budget");
+
+        assert!(matches!(
+            error,
+            EdtError::Spawn(ProcessError::TimedOut { .. })
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn interactive_dsl_honors_execution_policy_cancellation() {
+        let dir = tempdir().expect("tempdir");
+        let script = dir.path().join("1cedtcli");
+        write_script(
+            &script,
+            "set -eu\n\
+             prompt() { printf '1C:EDT>'; }\n\
+             prompt\n\
+             while IFS= read -r line; do\n\
+               eval \"set -- $line\"\n\
+               cmd=\"${1:-}\"\n\
+               if [ \"$#\" -gt 0 ]; then shift; fi\n\
+               case \"$cmd\" in\n\
+                 cd)\n\
+                   prompt\n\
+                   ;;\n\
+                 export)\n\
+                   sleep 0.2\n\
+                   prompt\n\
+                   ;;\n\
+                 *)\n\
+                   prompt\n\
+                   ;;\n\
+               esac\n\
+             done\n",
+        );
+
+        let cancellation = CancellationToken::new();
+        let delayed_cancel = cancellation.clone();
+        thread::spawn(move || {
+            thread::sleep(Duration::from_millis(50));
+            delayed_cancel.cancel();
+        });
+
+        let dsl = EdtDsl::new_interactive(
+            script,
+            dir.path().join("ws"),
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+        )
+        .expect("interactive dsl")
+        .with_execution_policy(ProcessExecutionPolicy::new(
+            Some(Duration::from_secs(1)),
+            cancellation,
+            ProcessInterruptionSafety::GracefulThenKill,
+        ));
+
+        let error = dsl
+            .export_project("project", Path::new("/tmp/out"))
+            .expect_err("cancelled error");
+
+        assert!(matches!(
+            error,
+            EdtError::Spawn(ProcessError::Cancelled { .. })
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn interactive_dsl_preserves_deferred_interruption_for_critical_phase() {
+        let dir = tempdir().expect("tempdir");
+        let script = dir.path().join("1cedtcli");
+        write_script(
+            &script,
+            "set -eu\n\
+             prompt() { printf '1C:EDT>'; }\n\
+             prompt\n\
+             while IFS= read -r line; do\n\
+               eval \"set -- $line\"\n\
+               cmd=\"${1:-}\"\n\
+               if [ \"$#\" -gt 0 ]; then shift; fi\n\
+               case \"$cmd\" in\n\
+                 cd)\n\
+                   prompt\n\
+                   ;;\n\
+                 export)\n\
+                   sleep 0.1\n\
+                   prompt\n\
+                   ;;\n\
+                 *)\n\
+                   prompt\n\
+                   ;;\n\
+               esac\n\
+             done\n",
+        );
+
+        let dsl = EdtDsl::new_interactive(
+            script,
+            dir.path().join("ws"),
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+        )
+        .expect("interactive dsl")
+        .with_execution_policy(ProcessExecutionPolicy::new(
+            Some(Duration::from_millis(50)),
+            CancellationToken::new(),
+            ProcessInterruptionSafety::CriticalNonAbortable,
+        ));
+
+        let result = dsl
+            .export_project("project", Path::new("/tmp/out"))
+            .expect("deferred interruption result");
+
+        assert_eq!(result.process.exit_code, 0);
+        assert_eq!(
+            result.process.interruption,
+            Some(crate::platform::process::ProcessInterruption {
+                reason: ProcessInterruptionReason::TimedOut,
+                action: ProcessInterruptionAction::Deferred,
+            })
+        );
     }
 }

@@ -6,6 +6,12 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use thiserror::Error;
+use tracing::warn;
+
+use crate::platform::process::{
+    ProcessExecutionPolicy, ProcessInterruption, ProcessInterruptionAction,
+    ProcessInterruptionReason, ProcessInterruptionSafety,
+};
 
 const DEFAULT_PROMPT: &[u8] = b"1C:EDT>";
 const IO_POLL_INTERVAL: Duration = Duration::from_millis(10);
@@ -50,6 +56,12 @@ pub struct InteractiveCommandOutput {
     pub stdout: String,
     /// Captured stderr without the trailing prompt token.
     pub stderr: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct InteractiveCommandExecution {
+    pub output: InteractiveCommandOutput,
+    pub interruption: Option<ProcessInterruption>,
 }
 
 /// Stream that emitted a prompt or transport event.
@@ -107,6 +119,15 @@ pub enum InteractiveProcessError {
     CommandTimeout {
         command: String,
         timeout_ms: u64,
+        stdout: String,
+        stderr: String,
+    },
+
+    #[error(
+        "interactive command '{command}' was cancelled before reaching a safe completion point"
+    )]
+    CommandCancelled {
+        command: String,
         stdout: String,
         stderr: String,
     },
@@ -280,6 +301,66 @@ impl InteractiveProcessExecutor {
         )
     }
 
+    pub(crate) fn execute_with_policy(
+        &mut self,
+        command: &str,
+        timeout: Duration,
+        policy: &ProcessExecutionPolicy,
+    ) -> Result<InteractiveCommandExecution, InteractiveProcessError> {
+        if self.poisoned {
+            return Err(InteractiveProcessError::Poisoned);
+        }
+        if self.terminated || self.child.is_none() {
+            return Err(InteractiveProcessError::Terminated);
+        }
+        if policy.cancellation.is_cancelled() {
+            return Err(InteractiveProcessError::CommandCancelled {
+                command: command.to_owned(),
+                stdout: String::new(),
+                stderr: String::new(),
+            });
+        }
+        if timeout.is_zero() {
+            return Err(InteractiveProcessError::CommandTimeout {
+                command: command.to_owned(),
+                timeout_ms: 0,
+                stdout: String::new(),
+                stderr: String::new(),
+            });
+        }
+
+        let stdin = self
+            .stdin
+            .as_mut()
+            .ok_or(InteractiveProcessError::Terminated)?;
+        stdin.write_all(command.as_bytes()).map_err(|source| {
+            InteractiveProcessError::StdinWriteFailed {
+                command: command.to_owned(),
+                source,
+            }
+        })?;
+        stdin
+            .write_all(b"\n")
+            .map_err(|source| InteractiveProcessError::StdinWriteFailed {
+                command: command.to_owned(),
+                source,
+            })?;
+        stdin
+            .flush()
+            .map_err(|source| InteractiveProcessError::StdinFlushFailed {
+                command: command.to_owned(),
+                source,
+            })?;
+
+        self.wait_for_prompt_with_policy(
+            WaitMode::Command {
+                command: command.to_owned(),
+            },
+            timeout,
+            policy,
+        )
+    }
+
     /// Closes stdin and waits for the child to exit. Escalates to a forced kill on timeout.
     pub fn shutdown(
         &mut self,
@@ -440,6 +521,142 @@ impl InteractiveProcessExecutor {
         }
     }
 
+    fn wait_for_prompt_with_policy(
+        &mut self,
+        mode: WaitMode,
+        timeout: Duration,
+        policy: &ProcessExecutionPolicy,
+    ) -> Result<InteractiveCommandExecution, InteractiveProcessError> {
+        let deadline = Instant::now() + timeout;
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let mut observed_interruption = None;
+
+        loop {
+            let prompt_seen =
+                if consume_until_prompt(&mut self.stdout_pending, &mut stdout, &self.prompt)
+                    .is_some()
+                {
+                    true
+                } else {
+                    consume_until_prompt(&mut self.stderr_pending, &mut stderr, &self.prompt)
+                        .is_some()
+                };
+            if prompt_seen {
+                let output = self.finish_prompt_wait(&mut stdout, &mut stderr)?;
+                return Ok(InteractiveCommandExecution {
+                    output,
+                    interruption: observed_interruption.map(|reason| ProcessInterruption {
+                        reason,
+                        action: ProcessInterruptionAction::Deferred,
+                    }),
+                });
+            }
+
+            flush_completed_bytes(&mut self.stdout_pending, &mut stdout, self.prompt.len());
+            flush_completed_bytes(&mut self.stderr_pending, &mut stderr, self.prompt.len());
+
+            if let Some(status) = self.try_wait_child()? {
+                if let Err(error) = self.drain_ready_events(&mut stdout, &mut stderr) {
+                    let _ = self.kill_internal();
+                    self.poisoned = true;
+                    return Err(error);
+                }
+                let prompt_seen =
+                    if consume_until_prompt(&mut self.stdout_pending, &mut stdout, &self.prompt)
+                        .is_some()
+                    {
+                        true
+                    } else {
+                        consume_until_prompt(&mut self.stderr_pending, &mut stderr, &self.prompt)
+                            .is_some()
+                    };
+                if prompt_seen {
+                    self.child = None;
+                    self.stdin = None;
+                    self.terminated = true;
+                    self.poisoned = true;
+                    flush_pending(&mut self.stdout_pending, &mut stdout);
+                    flush_pending(&mut self.stderr_pending, &mut stderr);
+                    return Err(InteractiveProcessError::ProcessExited {
+                        exit_code: status.code().unwrap_or(-1),
+                        stdout: String::from_utf8_lossy(&stdout).into_owned(),
+                        stderr: String::from_utf8_lossy(&stderr).into_owned(),
+                    });
+                }
+
+                flush_pending(&mut self.stdout_pending, &mut stdout);
+                flush_pending(&mut self.stderr_pending, &mut stderr);
+                self.child = None;
+                self.stdin = None;
+                self.terminated = true;
+                self.poisoned = true;
+                return Err(InteractiveProcessError::ProcessExited {
+                    exit_code: status.code().unwrap_or(-1),
+                    stdout: String::from_utf8_lossy(&stdout).into_owned(),
+                    stderr: String::from_utf8_lossy(&stderr).into_owned(),
+                });
+            }
+
+            if observed_interruption.is_none() {
+                if policy.cancellation.is_cancelled() {
+                    observed_interruption = Some(ProcessInterruptionReason::Cancelled);
+                    if let Some(error) = self.interrupt_with_policy(
+                        &mode,
+                        timeout,
+                        policy,
+                        ProcessInterruptionReason::Cancelled,
+                        &mut stdout,
+                        &mut stderr,
+                    )? {
+                        return Err(error);
+                    }
+                } else if Instant::now() >= deadline {
+                    observed_interruption = Some(ProcessInterruptionReason::TimedOut);
+                    if let Some(error) = self.interrupt_with_policy(
+                        &mode,
+                        timeout,
+                        policy,
+                        ProcessInterruptionReason::TimedOut,
+                        &mut stdout,
+                        &mut stderr,
+                    )? {
+                        return Err(error);
+                    }
+                }
+            }
+
+            let wait = if observed_interruption.is_some() {
+                IO_POLL_INTERVAL
+            } else {
+                deadline
+                    .saturating_duration_since(Instant::now())
+                    .min(IO_POLL_INTERVAL)
+            };
+            match self.events.recv_timeout(wait) {
+                Ok(event) => {
+                    if let Err(error) = self.apply_event(event, &mut stdout, &mut stderr) {
+                        let _ = self.kill_internal();
+                        self.poisoned = true;
+                        return Err(error);
+                    }
+                }
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => {
+                    flush_pending(&mut self.stdout_pending, &mut stdout);
+                    flush_pending(&mut self.stderr_pending, &mut stderr);
+                    self.poisoned = true;
+                    let _ = self.kill_internal();
+                    return Err(InteractiveProcessError::ProcessExited {
+                        exit_code: -1,
+                        stdout: String::from_utf8_lossy(&stdout).into_owned(),
+                        stderr: String::from_utf8_lossy(&stderr).into_owned(),
+                    });
+                }
+            }
+        }
+    }
+
     fn apply_event(
         &mut self,
         event: ReaderEvent,
@@ -541,6 +758,55 @@ impl InteractiveProcessExecutor {
             stderr: String::from_utf8_lossy(stderr).into_owned(),
         })
     }
+
+    fn interrupt_with_policy(
+        &mut self,
+        mode: &WaitMode,
+        timeout: Duration,
+        policy: &ProcessExecutionPolicy,
+        reason: ProcessInterruptionReason,
+        stdout: &mut Vec<u8>,
+        stderr: &mut Vec<u8>,
+    ) -> Result<Option<InteractiveProcessError>, InteractiveProcessError> {
+        let command = match mode {
+            WaitMode::Startup => {
+                return Ok(None);
+            }
+            WaitMode::Command { command } => command,
+        };
+
+        match policy.safety {
+            ProcessInterruptionSafety::CriticalNonAbortable => {
+                warn!(
+                    command,
+                    reason = ?reason,
+                    "interruption requested during critical interactive phase; waiting for prompt"
+                );
+                Ok(None)
+            }
+            ProcessInterruptionSafety::Interruptible => {
+                flush_pending(&mut self.stdout_pending, stdout);
+                flush_pending(&mut self.stderr_pending, stderr);
+                self.kill_internal()?;
+                self.poisoned = true;
+                Ok(Some(interactive_error_from_reason(
+                    command, timeout, reason, stdout, stderr,
+                )))
+            }
+            ProcessInterruptionSafety::GracefulThenKill => {
+                flush_pending(&mut self.stdout_pending, stdout);
+                flush_pending(&mut self.stderr_pending, stderr);
+                match self.shutdown(policy.graceful_shutdown_timeout) {
+                    Ok(_) | Err(InteractiveProcessError::Terminated) => {}
+                    Err(error) => return Err(error),
+                }
+                self.poisoned = true;
+                Ok(Some(interactive_error_from_reason(
+                    command, timeout, reason, stdout, stderr,
+                )))
+            }
+        }
+    }
 }
 
 impl Drop for InteractiveProcessExecutor {
@@ -553,6 +819,28 @@ impl Drop for InteractiveProcessExecutor {
 enum WaitMode {
     Startup,
     Command { command: String },
+}
+
+fn interactive_error_from_reason(
+    command: &str,
+    timeout: Duration,
+    reason: ProcessInterruptionReason,
+    stdout: &[u8],
+    stderr: &[u8],
+) -> InteractiveProcessError {
+    match reason {
+        ProcessInterruptionReason::Cancelled => InteractiveProcessError::CommandCancelled {
+            command: command.to_owned(),
+            stdout: String::from_utf8_lossy(stdout).into_owned(),
+            stderr: String::from_utf8_lossy(stderr).into_owned(),
+        },
+        ProcessInterruptionReason::TimedOut => InteractiveProcessError::CommandTimeout {
+            command: command.to_owned(),
+            timeout_ms: timeout.as_millis() as u64,
+            stdout: String::from_utf8_lossy(stdout).into_owned(),
+            stderr: String::from_utf8_lossy(stderr).into_owned(),
+        },
+    }
 }
 
 #[derive(Debug)]

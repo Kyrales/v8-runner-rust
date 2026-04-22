@@ -538,49 +538,11 @@ impl McpToolServer {
                     timeout,
                 ))
             }
-            Err(edt_syntax::EdtSyntaxTransportError::RunningCancelledDetached { completion }) => {
-                if let Some(permit) = permit.take() {
-                    let _permit = permit;
-                    completion.wait().await;
-                }
-                Err(execution_error(
-                    ErrorReason::Cancelled,
-                    ExecutionStage::Running,
-                    timeout,
-                ))
-            }
-            Err(edt_syntax::EdtSyntaxTransportError::RunningCancelledCompleted) => {
-                permit.take();
-                Err(execution_error(
-                    ErrorReason::Cancelled,
-                    ExecutionStage::Running,
-                    timeout,
-                ))
-            }
             Err(edt_syntax::EdtSyntaxTransportError::QueuedTimeout) => {
                 permit.take();
                 Err(execution_error(
                     ErrorReason::Timeout,
                     ExecutionStage::Queued,
-                    timeout,
-                ))
-            }
-            Err(edt_syntax::EdtSyntaxTransportError::RunningTimeoutDetached { completion }) => {
-                if let Some(permit) = permit.take() {
-                    let _permit = permit;
-                    completion.wait().await;
-                }
-                Err(execution_error(
-                    ErrorReason::Timeout,
-                    ExecutionStage::Running,
-                    timeout,
-                ))
-            }
-            Err(edt_syntax::EdtSyntaxTransportError::RunningTimeoutCompleted) => {
-                permit.take();
-                Err(execution_error(
-                    ErrorReason::Timeout,
-                    ExecutionStage::Running,
                     timeout,
                 ))
             }

@@ -1105,6 +1105,47 @@ async fn mcp_http_reuses_one_edt_process_across_sessions_and_shares_capacity() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mcp_http_returns_terminal_business_failure_for_edt_syntax_timeout() {
+    let validate_handler = "if [ -n \"$out\" ]; then : > \"$out\"; fi\nsleep 1\nprompt";
+    let (_dir, config_path, url, _lifecycle_log) =
+        setup_http_edt_project(validate_handler, 4, 900, 1, 80);
+    let mut server = HttpServerProcess::spawn(&config_path, &url).await;
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(3))
+        .build()
+        .expect("http client");
+
+    let (session_id, _) = initialize_session(&client, &url).await;
+    send_initialized(&client, &url, &session_id).await;
+
+    let response = call_tool(
+        &client,
+        &url,
+        &session_id,
+        "check_syntax_edt",
+        json!({ "projectName": "main" }),
+        13,
+    )
+    .await;
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    let payload = extract_sse_json(&response.text().await.expect("edt timeout body"));
+    assert_eq!(
+        payload["result"]["structuredContent"]["status"],
+        "business_failure"
+    );
+    assert_eq!(
+        payload["result"]["structuredContent"]["response"]["check_result"],
+        "tool_failed"
+    );
+    assert!(payload["result"]["structuredContent"]["error"]["message"]
+        .as_str()
+        .expect("message")
+        .contains("terminal state was observed"));
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mcp_http_edt_action_log_contains_runtime_telemetry_events() {
     let validate_handler = "if [ -n \"$out\" ]; then : > \"$out\"; fi\nsleep 0.05\nprompt";
     let (dir, config_path, url, _lifecycle_log) =

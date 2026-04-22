@@ -435,10 +435,7 @@ fn wait_for_output(
                 {
                     Err(ProcessError::TimedOut {
                         cmd: rendered_command.to_owned(),
-                        timeout_ms: policy
-                            .timeout
-                            .unwrap_or_default()
-                            .as_millis() as u64,
+                        timeout_ms: policy.timeout.unwrap_or_default().as_millis() as u64,
                     })
                 }
                 Some(reason) => Ok(ObservedOutput {

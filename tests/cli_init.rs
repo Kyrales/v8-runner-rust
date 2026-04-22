@@ -126,7 +126,9 @@ fn setup_edt_init_project(
     )
 }
 
-fn setup_ibcmd_server_init_project(script_body: &str) -> (tempfile::TempDir, PathBuf, PathBuf, PathBuf) {
+fn setup_ibcmd_server_init_project(
+    script_body: &str,
+) -> (tempfile::TempDir, PathBuf, PathBuf, PathBuf) {
     let dir = tempdir().expect("tempdir");
     let base_path = dir.path().join("project");
     let work_path = dir.path().join("work");
@@ -482,8 +484,7 @@ fn init_rejects_workspace_path_that_is_not_a_directory() {
 
 #[test]
 fn init_ibcmd_server_provisions_infobase_without_precheck() {
-    let (_dir, config_path, work_path, calls_log) =
-        setup_ibcmd_server_init_project("exit 0");
+    let (_dir, config_path, work_path, calls_log) = setup_ibcmd_server_init_project("exit 0");
 
     let output = std::process::Command::cargo_bin("v8-runner")
         .expect("binary")
