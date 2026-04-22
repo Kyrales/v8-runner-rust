@@ -22,7 +22,7 @@
 - `ADR-0018`: `docs/architecture/invariants.md` уже описывает `infobase.*` как supported contract, но `AppConfig`, `config init`, примеры и тестовые YAML продолжают использовать top-level `connection`/`credentials`; `IbcmdConnection` по-прежнему отклоняет server connection.
 - `ADR-0017`: `config init` определяет source-set кандидаты частично по structure/path heuristics, а не только по marker filenames и содержимому; autodiscovery external aggregate source-set для `EXTERNAL_DATA_PROCESSORS` и `EXTERNAL_REPORTS` как часть supported config contract явно не реализован.
 - `ADR-0016`: `ExecutionOutcome<T>` есть, но `ExecutionStatus::Cancelled` отсутствует, `StepResult` остается минимальным, а MCP/CLI mapping всё еще опирается на command-specific top-level поля.
-- `ADR-0020`: текущая реализация `convert` уже landed как path-based команда с `--source`/`--target`, direction subcommands и optional low-level EDT flags, но обновлённый ADR фиксирует другой целевой контракт: repo-aware `convert [--source-set <name>]`, inferred direction из `config.format`, deterministic output под `workPath/convert/out` и отсутствие user-facing EDT-specific флагов. Это отдельный migration gap поверх уже найденных safety-issues текущей реализации.
+- `ADR-0020`: repo-aware `convert [--source-set <name>]` уже реализован как CLI-only сценарий поверх `v8project.yaml`: direction выводится из `config.format`, output публикуется только под `workPath/convert/out`, public surface не принимает path-based direction/target flags. Отдельным gap остаётся только `dump format=EDT`, который не должен подменяться `convert`.
 - Guardrails частичные: есть `tests/use_case_boundaries.rs`, но он проверяет только небольшой список use-case файлов и не ловит, например, production-зависимость `src/use_cases/result.rs` от `crate::output::exit_codes`.
 
 ## Сводный список задач
@@ -113,11 +113,11 @@
 
    Источники: `ADR-0002`, `ADR-0005`, `ADR-0007`, `ADR-0011`, `ADR-0015`, `ADR-0017`, `ADR-0020`.
 
-   Объем: заменить path-based public surface `convert <direction> --source --target ...` на repo-aware `convert [--source-set <name>]`. Команда должна брать текущие исходники из `AppConfig`, по умолчанию конвертировать все `source-set`, а при `--source-set` ограничиваться одним. Direction выводится из `config.format`, поэтому explicit `edt-to-designer` / `designer-to-edt` subcommands удаляются. Public CLI также перестаёт принимать `--version`, `--base-project-name` и `--build`; эти низкоуровневые EDT import/export knobs должны выводиться из config/tool discovery и source-set semantics. Публикация результата переводится в deterministic owned targets под `workPath/convert/out/<sourceSetName>/<target-format>/`, а отдельный runtime EDT workspace остаётся под `workPath/convert/edt-workspace`.
+   Статус: выполнено 2026-04-22. `convert` переведён на repo-aware public surface `convert [--source-set <name>]`; request/result contract теперь описывает scope и deterministic generated outputs, direction выводится только из `config.format`, output публикуется только под `workPath/convert/out/<sourceSetName>/<target-format>/`, а JSON validation/pre-dispatch errors сохраняют `command = "convert"`.
 
-   Затронутые области: `src/cli/args.rs`, `src/cli/execute.rs`, `src/domain/convert.rs`, `src/use_cases/request.rs`, `src/use_cases/convert_sources.rs`, `src/platform/edt.rs`, shared EDT session host options, CLI tests для `convert`, архитектурные summaries и публичная документация после фактической реализации.
+   Затронутые области: `src/cli/args.rs`, `src/cli/execute.rs`, `src/domain/convert.rs`, `src/use_cases/request.rs`, `src/use_cases/convert_sources.rs`, `tests/cli_convert.rs`, `README.md`, `docs/CAPABILITIES.md`, `docs/DEEP_DIVE.md`, `ARCHITECTURE.md`, arc42 summaries.
 
-   Готово, когда: `convert` без аргументов обрабатывает все source-set текущего проекта, `convert --source-set <name>` обрабатывает только один source-set, direction определяется только из `config.format`, output публикуется только под `workPath/convert/out`, команда не может публиковать поверх `basePath` и исходных каталогов проекта, interactive-mode использует отдельный convert workspace, JSON validation/pre-dispatch errors сохраняют `command = "convert"`, а tests покрывают default scope, single source-set, inferred direction, output layout, busy workspace conflict и safety rules.
+   Финальная проверка полноты субагентом вернула `APPROVED`: `convert` без аргументов обрабатывает все source-set текущего проекта, `convert --source-set <name>` обрабатывает только один source-set, direction определяется только из `config.format`, output публикуется только под `workPath/convert/out`, команда не может публиковать поверх `basePath` и исходных каталогов проекта, interactive-mode использует отдельный convert workspace, `DESIGNER -> EDT` extension использует реальное имя базового EDT-проекта из `.project`, external-only `format=DESIGNER` не требует configuration source-set, JSON validation/pre-dispatch errors сохраняют `command = "convert"`, а tests покрывают default scope, single source-set, single-extension fallback, inferred direction, output layout, busy workspace conflict, external EDT exports и safety rules.
 
 8. `ADR-TASK-014`: Довести обратную синхронизацию `dump` до `format=EDT`.
 
@@ -258,12 +258,12 @@
 | `ADR-0016` | `ExecutionOutcome<T>` есть частично; миграция к canonical outcome остается открытой. | `ADR-TASK-003`, `ADR-TASK-006` |
 | `ADR-0017` | Config contract реализован частично; структура подключения ИБ уточнена отдельным ADR-0018, а content-based autodiscovery `config init` и external aggregate detection остаются отдельным gap. | `ADR-TASK-008`, `ADR-TASK-010`, `ADR-TASK-012` |
 | `ADR-0018` | `infobase` становится единственным контрактом подключения, credentials и DBMS-level настроек. | `ADR-TASK-008` |
-| `ADR-0020` | Целевой `convert` становится repo-aware командой `convert [--source-set <name>]`; текущая path-based реализация и отдельный `dump format=EDT` остаются migration gaps. | `ADR-TASK-013`, `ADR-TASK-014` |
+| `ADR-0020` | Repo-aware `convert [--source-set <name>]` реализован; отдельным gap остаётся только `dump format=EDT`, который не должен подменяться `convert`. | `ADR-TASK-014` |
 
 ## Следующий рекомендуемый порядок
 
-1. Следующим брать `ADR-TASK-013`: обновлённый `ADR-0020` меняет целевой public contract `convert`, поэтому текущая path-based реализация стала явным migration gap и источником safety-рисков.
-2. Затем `ADR-TASK-014`: после фиксации repo-aware `convert` отдельно довести `dump format=EDT`, не смешивая файловую конвертацию и reverse sync из ИБ.
-3. Дальше `ADR-TASK-005`: привести atomic publication follow-ups в окончательное состояние после stabilizing changes вокруг `convert`.
-4. После этого `ADR-TASK-006`, чтобы довести `ExecutionOutcome<T>` и step contract до целевого canonical state.
+1. Следующим брать `ADR-TASK-014`: после фиксации repo-aware `convert` отдельно довести `dump format=EDT`, не смешивая файловую конвертацию и reverse sync из ИБ.
+2. Затем `ADR-TASK-015`: перенести оставшиеся `source-set` layout-checks на config validation boundary по ADR-0017.
+3. Дальше `ADR-TASK-006`, чтобы довести `ExecutionOutcome<T>` и step contract до целевого canonical state.
+4. После этого возвращаться к новым follow-up задачам вокруг dump/output contract по мере появления.
 5. Затем `ADR-TASK-007`, `ADR-TASK-009` и `ADR-TASK-010` как следующий слой rendering, regression и guardrail работ.

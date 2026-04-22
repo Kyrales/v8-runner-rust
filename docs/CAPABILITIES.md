@@ -23,7 +23,7 @@
 | `test` | Та же матрица, что и у `build` | Всегда сначала запускает `build`, затем YaXUnit через Enterprise |
 | `dump` | `format=DESIGNER` + `builder=DESIGNER` | Полная, инкрементальная или точечная частичная выгрузка объектов |
 | `dump` | `format=DESIGNER` + `builder=IBCMD` | Полная и инкрементальная выгрузка; запрос `partial` деградирует в инкрементальную выгрузку с предупреждением |
-| `convert` | CLI-only EDT -> Designer и Designer -> EDT по указанным путям | Использует EDT CLI, отдельный workspace `workPath/convert/edt-workspace`, full-replacement publication target; не требует `builder` и не использует ИБ |
+| `convert` | CLI-only repo-aware конвертация текущих `source-set` между EDT и Designer | Использует EDT CLI, direction выводит из `format`, публикует output только под `workPath/convert/out`, использует отдельный workspace `workPath/convert/edt-workspace`; не требует `builder` и не использует ИБ |
 | `syntax` | `syntax designer-config` и `syntax designer-modules` требуют `builder=DESIGNER`, `format=DESIGNER` | Проверки через Designer |
 | `syntax` | `syntax edt` требует `builder=DESIGNER`, `format=EDT` | Проверка через EDT `validate` |
 | `launch` | У команды нет отдельного деления по форматам | Требует соответствующую локальную утилиту 1С |
@@ -184,20 +184,21 @@ v8-runner dump --mode <full|incremental|partial> [--source-set <NAME>] [--extens
 ## Команда `convert`
 
 ```bash
-v8-runner convert edt-to-designer --source <EDT_PROJECT_DIR> --target <DESIGNER_DIR>
-v8-runner convert designer-to-edt --source <DESIGNER_DIR> --target <EDT_PROJECT_DIR> [--version <VERSION>] [--base-project-name <NAME>] [--build]
+v8-runner convert [--source-set <NAME>]
 ```
 
 Поведение:
 
 - Команда является CLI-only и не публикуется как MCP tool.
-- Работает по явно переданным путям, а не по `source-set`.
+- Работает от текущего `v8project.yaml`, а не по произвольным путям.
+- Без `--source-set` обрабатывает все `source-set` в конфигурационном порядке.
+- `--source-set` ограничивает конвертацию одним конкретным `source-set`.
+- Направление выводится из `format`: `format=EDT` означает `EDT -> Designer`, `format=DESIGNER` означает `Designer -> EDT`.
 - Не использует `builder` и не требует `infobase.connection`.
-- `edt-to-designer` требует в source path marker `.project`.
-- `designer-to-edt` требует Designer-format source path с `Configuration.xml` или совместимыми root XML descriptors.
-- `designer-to-edt` поддерживает опции `--version`, `--base-project-name` и `--build`, которые пробрасываются в EDT CLI import flow.
 - Команда использует отдельный workspace `workPath/convert/edt-workspace`.
-- Target публикуется как full replacement через staging/backup; stale содержимое target не сохраняется.
+- Output публикуется только в deterministic generated targets под `workPath/convert/out/<sourceSetName>/<designer|edt>/`.
+- Публикация выполняется как full replacement через staging/backup; stale содержимое output target не сохраняется.
+- JSON validation/pre-dispatch errors сохраняют `command = "convert"`.
 
 ## Команда `syntax`
 

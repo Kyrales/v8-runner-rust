@@ -137,20 +137,20 @@
 - `dump` пока публикует результат только в Designer-формат файлы;
 - отдельная обратная публикация сразу в EDT-формат ещё не реализована и остаётся отдельным follow-up gap.
 
-### Простая path-based конвертация EDT и Designer
+### Repo-aware конвертация EDT и Designer
 
-Если нужен не reverse sync из ИБ, а простая файловая конвертация между двумя каталогами, используйте `convert`.
+Если нужен не reverse sync из ИБ, а файловая конвертация текущих исходников проекта, используйте `convert`.
 
 Сценарии:
 
-- `convert edt-to-designer` конвертирует один EDT project directory в Designer-format каталог;
-- `convert designer-to-edt` конвертирует Designer-format каталог в один EDT project directory;
-- обе команды работают по явно указанным путям и не используют `source-set` или подключение к ИБ.
+- `convert` без аргументов конвертирует все `source-set` текущего проекта в конфигурационном порядке;
+- `convert --source-set <name>` ограничивает выполнение одним `source-set`;
+- направление определяется только из `format`, а output публикуется только под `workPath/convert/out/<source-set>/<designer|edt>/`.
 
 Практически это означает, что `dump` и `convert` нельзя считать синонимами:
 
 - `dump` — это "ИБ -> файлы";
-- `convert` — это "EDT files <-> Designer files".
+- `convert` — это "текущие project files -> generated files другого формата".
 
 ## 6. Как работает `syntax`
 

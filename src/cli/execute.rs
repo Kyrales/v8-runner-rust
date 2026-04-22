@@ -5,7 +5,7 @@ use serde_json::json;
 use tokio_util::sync::CancellationToken;
 
 use crate::cli::args::{
-    ArtifactsArgs, BuildArgs, Command, ConvertArgs, ConvertCommand, DesignerConfigSyntaxArgs,
+    ArtifactsArgs, BuildArgs, Command, ConvertArgs, DesignerConfigSyntaxArgs,
     DesignerModulesSyntaxArgs, DumpArgs, ExtensionsArgs, LaunchArgs, LaunchOptionsArgs, LoadArgs,
     SyntaxArgs, SyntaxTarget, TestArgs, TestRunner, TestScope, TestYaxunitArgs,
 };
@@ -16,7 +16,7 @@ use crate::domain::artifact::{
 };
 use crate::domain::artifacts::{ArtifactBuildMode, ArtifactsResult};
 use crate::domain::build::{BuildMode, BuildResult};
-use crate::domain::convert::{ConvertDirection, ConvertResult};
+use crate::domain::convert::{ConvertDirection, ConvertResult, ConvertScope};
 use crate::domain::dump::{DumpMode, DumpResult};
 use crate::domain::execution::{
     ExecutionError, ExecutionInterruptionDetails, ExecutionStepStatus, ExecutionTimeouts,
@@ -43,18 +43,17 @@ use crate::use_cases::artifacts;
 use crate::use_cases::build_project;
 use crate::use_cases::check_syntax;
 use crate::use_cases::configure_extensions;
-use crate::use_cases::convert_sources;
 use crate::use_cases::context::{CommandName, ExecutionContext};
+use crate::use_cases::convert_sources;
 use crate::use_cases::dump_config;
 use crate::use_cases::init_project;
 use crate::use_cases::launch_app;
 use crate::use_cases::load_artifact;
 use crate::use_cases::request::{
     ArtifactsModeRequest, ArtifactsRequest, BuildRequest, ConfigureExtensionsRequest,
-    ConvertDirectionRequest, ConvertRequest, DesignerConfigSyntaxRequest,
-    DesignerModulesSyntaxRequest, DumpModeRequest, DumpRequest, InitRequest, LaunchModeRequest,
-    LaunchRequest, LoadRequest, SyntaxRequest, SyntaxTargetRequest, TestRequest,
-    TestScopeRequest,
+    ConvertRequest, ConvertScopeRequest, DesignerConfigSyntaxRequest, DesignerModulesSyntaxRequest,
+    DumpModeRequest, DumpRequest, InitRequest, LaunchModeRequest, LaunchRequest, LoadRequest,
+    SyntaxRequest, SyntaxTargetRequest, TestRequest, TestScopeRequest,
 };
 use crate::use_cases::result::{UseCaseError, UseCaseErrorKind};
 use crate::use_cases::run_tests;
@@ -445,11 +444,13 @@ fn execute_convert(
     clean_before_execution: bool,
     cancellation: CancellationToken,
 ) -> Result<(), UseCaseError> {
-    let request = map_convert_request(args)?;
+    let request = map_convert_request(args);
     if let Err(error) = convert_sources::preflight_validate(config, &request) {
-        let error: UseCaseError = error.into();
-        presenter.print_error(&error.to_string());
-        return Err(error);
+        return Err(render_pre_dispatch_error(
+            presenter,
+            CommandName::Convert,
+            error,
+        ));
     }
     let context = cli_context(config, CommandName::Convert, cancellation);
     with_cli_workspace_lock(
@@ -925,25 +926,15 @@ fn map_dump_request(args: &DumpArgs) -> Result<DumpRequest, UseCaseError> {
     })
 }
 
-fn map_convert_request(args: &ConvertArgs) -> Result<ConvertRequest, UseCaseError> {
-    Ok(match &args.direction {
-        ConvertCommand::EdtToDesigner(direction) => ConvertRequest {
-            direction: ConvertDirectionRequest::EdtToDesigner,
-            source_path: direction.source.clone(),
-            target_path: direction.target.clone(),
-            version: None,
-            base_project_name: None,
-            build: false,
+fn map_convert_request(args: &ConvertArgs) -> ConvertRequest {
+    ConvertRequest {
+        scope: match args.source_set.as_deref() {
+            Some(name) => ConvertScopeRequest::SourceSet {
+                name: name.to_owned(),
+            },
+            None => ConvertScopeRequest::All,
         },
-        ConvertCommand::DesignerToEdt(direction) => ConvertRequest {
-            direction: ConvertDirectionRequest::DesignerToEdt,
-            source_path: direction.source.clone(),
-            target_path: direction.target.clone(),
-            version: direction.version.clone(),
-            base_project_name: direction.base_project_name.clone(),
-            build: direction.build,
-        },
-    })
+    }
 }
 
 fn map_artifacts_request_with_config(
@@ -1522,10 +1513,20 @@ fn render_convert_text(result: &ConvertResult, presenter: &Presenter, succeeded:
     };
     let mut details = vec![
         format!("direction: {}", render_convert_direction(result.direction)),
-        format!("source: {}", result.source_path.display()),
-        format!("output: {}", result.target_path.display()),
+        format!(
+            "scope: {}",
+            render_convert_scope(result.scope, result.source_set.as_deref())
+        ),
         format!("workspace: {}", result.workspace_path.display()),
     ];
+    for output in &result.outputs {
+        details.push(format!(
+            "source-set {}: {} -> {}",
+            output.source_set,
+            output.source_path.display(),
+            output.target_path.display()
+        ));
+    }
     if !succeeded || result.message.is_some() {
         let prefix = if succeeded { "warning" } else { "error" };
         append_if_present(
@@ -1610,6 +1611,14 @@ fn render_convert_direction(direction: ConvertDirection) -> &'static str {
     match direction {
         ConvertDirection::EdtToDesigner => "edt-to-designer",
         ConvertDirection::DesignerToEdt => "designer-to-edt",
+    }
+}
+
+fn render_convert_scope(scope: ConvertScope, source_set: Option<&str>) -> String {
+    match (scope, source_set) {
+        (ConvertScope::All, _) => "all source-sets".to_owned(),
+        (ConvertScope::Single, Some(source_set)) => format!("source-set {source_set}"),
+        (ConvertScope::Single, None) => "single source-set".to_owned(),
     }
 }
 

@@ -123,7 +123,7 @@ Constraints to keep in mind:
 - `builder=IBCMD` does not support object-scoped partial dump directly; `PARTIAL` degrades to
   incremental export for the resolved target and returns a warning while preserving the requested
   mode in the result payload.
-- `convert` is intentionally not a builder-dispatch scenario: it is a CLI-only EDT-CLI path conversion flow that stays independent from infobase/builder semantics.
+- `convert` is intentionally not a builder-dispatch scenario: it is a CLI-only repo-aware EDT-CLI conversion flow over configured `source-set` that stays independent from infobase/builder semantics.
 
 ## Dump And Artifact Publication
 
@@ -149,6 +149,7 @@ Use cases now return transport-neutral payloads or structured failures.
 - `workPath/logs/platform/` stores platform log files.
 - `workPath/edt-workspace/` stores the shared EDT workspace used by `init`.
 - `workPath/convert/edt-workspace/` stores the dedicated EDT workspace used by `convert`.
+- `workPath/convert/out/<sourceSetName>/<designer|edt>/` stores deterministic generated convert outputs.
 - `workPath/temp/partial-lists/` stores partial load and partial dump list files.
 - `workPath/temp/yaxunit/` stores temporary YaXUnit config files.
 - `workPath/hash-storages/` remains reserved for change detection state.

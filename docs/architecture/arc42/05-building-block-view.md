@@ -45,6 +45,7 @@ flowchart TB
 - Определяет transport-neutral request/result contracts, которые должны оставаться стабильной внутренней опорой для адаптеров и AI-агентов, работающих через эти адаптеры.
 - Предоставляет workspace lock helper и internal unlocked entrypoints для nested flows вроде `test -> build`; public lock boundary остаётся в CLI/MCP adapters.
 - Для runner-like сценариев собирает typed pipeline-like flow и заполняет `ExecutionOutcome<T>` вместо нового ad hoc result shape.
+- Для `convert` выводит direction из `format`, резолвит `source-set` из `v8project.yaml` и публикует generated output только под `workPath/convert/out`.
 
 #### `mcp`
 

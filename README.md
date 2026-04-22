@@ -2,7 +2,7 @@
 
 Простой и удобный интерфейс для сборки и проверки исходников 1С-решений человеком и AI-агентом.
 
-`v8-runner` — это CLI-приложение на Rust и MCP-сервер для рутинных операций в разработке на 1С: загрузки исходников в информационную базу, выгрузки конфигурации обратно в файлы, простой конвертации между EDT- и Designer-форматами, запуска YaXUnit- и Vanessa Automation-тестов, сборки и загрузки релизных артефактов, синтаксических проверок и запуска инструментов 1С.
+`v8-runner` — это CLI-приложение на Rust и MCP-сервер для рутинных операций в разработке на 1С: загрузки исходников в информационную базу, выгрузки конфигурации обратно в файлы, repo-aware конвертации текущих `source-set` между EDT- и Designer-форматами, запуска YaXUnit- и Vanessa Automation-тестов, сборки и загрузки релизных артефактов, синтаксических проверок и запуска инструментов 1С.
 
 Инструмент закрывает сразу два типа сценариев:
 
@@ -28,7 +28,7 @@
 - `test va`: сначала выполнять `build`, затем запускать Vanessa Automation по выбранному профилю.
 - `load`: загружать готовые `.cf` и `.cfe` артефакты в ИБ через Designer в режимах `load` и `merge`.
 - `dump`: выгружать состояние конфигурации или расширения обратно в Designer-формат файлы в режимах `full`, `incremental` и `partial`.
-- `convert`: конвертировать исходники по указанным путям из EDT в Designer и обратно без обращения к ИБ.
+- `convert`: конвертировать текущие `source-set` из `v8project.yaml` между EDT и Designer без обращения к ИБ.
 - `make`/`artifacts`: экспортировать релизные `.cf` и `.cfe`, а также публиковать внешние обработки `.epf` и отчёты `.erf`.
 - `syntax`: запускать проверки через Designer для Designer-исходников и `1cedtcli validate` для EDT-проектов.
 - `launch`: открывать Designer, тонкий клиент, толстый клиент или обычное приложение с типизированными и raw-параметрами запуска.
@@ -97,7 +97,7 @@ tests:
 ./target/release/v8-runner test va
 ./target/release/v8-runner make --output dist/main.cf
 ./target/release/v8-runner load --path dist/main.cf
-./target/release/v8-runner convert edt-to-designer --source ./configuration --target ./designer-export
+./target/release/v8-runner convert --source-set main
 ./target/release/v8-runner mcp serve stdio
 ```
 
@@ -121,7 +121,7 @@ tests:
 | `test yaxunit` | Следует матрице `build` и всегда сначала запускает `build` |
 | `test va` | `tests.va` с выбранным профилем, `epf_path` и `params_path`; всегда сначала запускает `build` |
 | `dump` | `format=DESIGNER` с `builder=DESIGNER` или `IBCMD`; обратная синхронизация в `format=EDT` пока не реализована |
-| `convert` | CLI-only path-based конвертация EDT -> Designer и Designer -> EDT через EDT CLI; не требует `builder` или подключения к ИБ |
+| `convert` | CLI-only repo-aware конвертация текущих `source-set` через EDT CLI; direction выводится из `format`, output публикуется под `workPath/convert/out`, не требует `builder` или подключения к ИБ |
 | `make` / `artifacts` | Экспорт `.cf` и `.cfe` через Designer; публикация `.epf`/`.erf` для внешних `source-set`; требуется `builder=DESIGNER` |
 | `syntax` | Проверки через Designer для `DESIGNER`-исходников и валидация EDT для `EDT` |
 | `launch` | Designer, тонкий клиент, толстый клиент, обычное приложение; поддерживает `--c`, `--execute`, `--use-privileged-mode`, `--out`, `--raw-key` |
@@ -149,14 +149,14 @@ v8-runner artifacts --output dist/tools --source-set tools
 
 `make` и видимый alias `artifacts` используют одну команду. Тип экспорта выводится из `--output` и выбранного `source-set`: `.cf` для основной конфигурации, `.cfe` для расширений, каталог публикации для внешних обработок и отчётов. Для внешних артефактов `source-set` должен иметь `type=EXTERNAL_DATA_PROCESSORS` или `type=EXTERNAL_REPORTS`.
 
-### Простая конвертация EDT и Designer
+### Repo-aware конвертация EDT и Designer
 
 ```bash
-v8-runner convert edt-to-designer --source ./configuration --target ./designer-export
-v8-runner convert designer-to-edt --source ./designer-export --target ./edt-project --version 8.3.24 --build
+v8-runner convert
+v8-runner convert --source-set main
 ```
 
-`convert` работает по явно указанным путям и использует EDT CLI как файловый конвертер. Это отдельный CLI-only сценарий: он не зависит от `builder`, не использует `infobase.connection` и не опубликован как MCP-инструмент. Сейчас это основной поддержанный путь для ручной EDT <-> Designer конвертации; полноценный `dump` обратно в `format=EDT` остаётся отдельной follow-up задачей.
+`convert` работает от текущего `v8project.yaml`: без аргументов обрабатывает все `source-set` в конфигурационном порядке, а `--source-set` ограничивает выполнение одним именем. Направление выводится из `format`: `EDT -> Designer` для `format=EDT` и `Designer -> EDT` для `format=DESIGNER`. Результат всегда публикуется только в `workPath/convert/out/<source-set>/<designer|edt>/`, команда использует отдельный workspace `workPath/convert/edt-workspace`, не зависит от `builder`, не использует `infobase.connection` и не опубликована как MCP-инструмент. Отдельный `dump` обратно в `format=EDT` остаётся follow-up задачей.
 
 ### Расширенный запуск 1С
 
@@ -193,7 +193,7 @@ v8-runner launch thin --raw-key /WA- --raw-key /DisplayAllFunctions
 - [docs/decisions/0001-granitsy-podderzhki-ibcmd-kak-ogranichennogo-backend.md](docs/decisions/0001-granitsy-podderzhki-ibcmd-kak-ogranichennogo-backend.md): текущая граница поддержки `IBCMD` и целевой принцип взаимозаменяемости builder backend.
 - [docs/decisions/0003-podderzhivat-servernye-ib-dlya-vseh-instrumentov.md](docs/decisions/0003-podderzhivat-servernye-ib-dlya-vseh-instrumentov.md): целевой контракт поддержки серверных ИБ для всех инструментов.
 - [docs/decisions/0004-avtoobnaruzhivat-komponenty-platformy-1s-po-versii-maske.md](docs/decisions/0004-avtoobnaruzhivat-komponenty-platformy-1s-po-versii-maske.md): автопоиск компонентов платформы 1С по точной версии или версии-маске.
-- [docs/decisions/0020-dobavit-cli-only-convert-dlya-dvustoronney-konvertatsii-edt-i-designer.md](docs/decisions/0020-dobavit-cli-only-convert-dlya-dvustoronney-konvertatsii-edt-i-designer.md): отдельный CLI-only контракт для path-based EDT <-> Designer конвертации и фиксация future-gap для `dump format=EDT`.
+- [docs/decisions/0020-dobavit-cli-only-convert-dlya-dvustoronney-konvertatsii-edt-i-designer.md](docs/decisions/0020-dobavit-cli-only-convert-dlya-dvustoronney-konvertatsii-edt-i-designer.md): repo-aware CLI-only контракт для `convert [--source-set <name>]` и фиксация future-gap для `dump format=EDT`.
 
 <details>
 <summary>Текущие ограничения и оговорки</summary>
@@ -210,7 +210,7 @@ v8-runner launch thin --raw-key /WA- --raw-key /DisplayAllFunctions
 - `init` для EDT считает workspace завершённым только после успешного полного импорта; незавершённый каталог без внутреннего marker-файла будет импортирован повторно.
 - Точечная частичная выгрузка по объектам нативно не реализована для `IBCMD`; запрос `partial` деградирует в инкрементальную выгрузку с предупреждением.
 - При деградации `partial` для `IBCMD` запрошенный режим `PARTIAL` сохраняется в результирующем payload.
-- `dump` пока не поддерживает обратную публикацию в EDT-формат; для ручной path-based конвертации используйте `convert`.
+- `dump` пока не поддерживает обратную публикацию в EDT-формат; для repo-aware файловой конвертации текущих исходников используйте `convert`.
 - `syntax designer-modules` требует как минимум один флаг режима.
 - Интерактивный EDT теперь включается явно через `tools.edt_cli.interactive-mode`; без него EDT работает в one-shot режиме.
 - Внутренние документы в `spec/*` по-прежнему полезны как источник фактов, но публичный справочник теперь живёт в `README.md`, `docs/CAPABILITIES.md` и `docs/DEEP_DIVE.md`.

@@ -191,50 +191,9 @@ pub struct DumpArgs {
 
 #[derive(Args, Debug)]
 pub struct ConvertArgs {
-    #[command(subcommand)]
-    pub direction: ConvertCommand,
-}
-
-#[derive(Subcommand, Debug)]
-pub enum ConvertCommand {
-    /// Convert one EDT project into Designer configuration files
-    EdtToDesigner(ConvertEdtToDesignerArgs),
-    /// Convert Designer configuration files into one EDT project
-    DesignerToEdt(ConvertDesignerToEdtArgs),
-}
-
-#[derive(Args, Debug)]
-pub struct ConvertEdtToDesignerArgs {
-    /// Path to the EDT project directory
+    /// Limit conversion to one source-set from v8project.yaml
     #[arg(long)]
-    pub source: String,
-
-    /// Target directory for Designer-format files
-    #[arg(long)]
-    pub target: String,
-}
-
-#[derive(Args, Debug)]
-pub struct ConvertDesignerToEdtArgs {
-    /// Path to the Designer-format directory
-    #[arg(long)]
-    pub source: String,
-
-    /// Target directory for the EDT project
-    #[arg(long)]
-    pub target: String,
-
-    /// Optional platform version for the created EDT project
-    #[arg(long)]
-    pub version: Option<String>,
-
-    /// Optional base EDT project name for extension or external project import
-    #[arg(long)]
-    pub base_project_name: Option<String>,
-
-    /// Build the EDT project after import
-    #[arg(long)]
-    pub build: bool,
+    pub source_set: Option<String>,
 }
 
 #[derive(Args, Debug)]
@@ -414,8 +373,8 @@ pub struct DesignerModulesSyntaxArgs {
 #[cfg(test)]
 mod tests {
     use super::{
-        ArtifactsArgs, Cli, Command, ExtensionsArgs, LaunchArgs, LaunchOptionsArgs, LoadArgs,
-        McpCommand, McpServeTransport, SyntaxTarget, TestRunner, TestScope,
+        ArtifactsArgs, Cli, Command, ConvertArgs, ExtensionsArgs, LaunchArgs, LaunchOptionsArgs,
+        LoadArgs, McpCommand, McpServeTransport, SyntaxTarget, TestRunner, TestScope,
     };
     use clap::Parser;
 
@@ -724,6 +683,31 @@ mod tests {
                 assert_eq!(output, "dist/main.cf");
                 assert!(source_set.is_none());
                 assert!(extension.is_none());
+            }
+            _ => panic!("unexpected command"),
+        }
+    }
+
+    #[test]
+    fn parses_convert_without_source_set() {
+        let cli = Cli::try_parse_from(["v8-runner", "convert"]).expect("parse convert");
+
+        match cli.command {
+            Command::Convert(ConvertArgs { source_set }) => {
+                assert!(source_set.is_none());
+            }
+            _ => panic!("unexpected command"),
+        }
+    }
+
+    #[test]
+    fn parses_convert_with_source_set() {
+        let cli = Cli::try_parse_from(["v8-runner", "convert", "--source-set", "ext-sales"])
+            .expect("parse convert");
+
+        match cli.command {
+            Command::Convert(ConvertArgs { source_set }) => {
+                assert_eq!(source_set.as_deref(), Some("ext-sales"));
             }
             _ => panic!("unexpected command"),
         }
