@@ -26,6 +26,8 @@ pub mod init_project;
 pub mod launch_app;
 /// Load packaged artifacts into infobase.
 pub mod load_artifact;
+/// Text-mode live progress events shared by CLI-facing use cases.
+mod progress;
 /// Transport-neutral request DTOs consumed by use cases.
 pub mod request;
 /// Transport-neutral use-case error and failure contracts.

@@ -21,6 +21,7 @@ use crate::support::temp::platform_logs_dir;
 #[cfg(test)]
 use crate::use_cases::context::CommandName;
 use crate::use_cases::context::{ExecutionContext, ExecutionInterruption, InterruptionSafetyClass};
+use crate::use_cases::progress::log_live_stage;
 use crate::use_cases::request::{
     DesignerClientScope, DesignerConfigCheck,
     DesignerConfigSyntaxRequest as DesignerConfigSyntaxArgs,
@@ -192,6 +193,11 @@ fn run_syntax_with_context(
     .with_execution_policy(context.process_policy(InterruptionSafetyClass::GracefulThenKill, None));
 
     let flags: Vec<&str> = invocation.flags.iter().map(String::as_str).collect();
+    let stage_label = match invocation.kind {
+        DesignerCommandKind::Config => "syntax: designer-config",
+        DesignerCommandKind::Modules => "syntax: designer-modules",
+    };
+    log_live_stage(stage_label, "[Конфигуратор] running syntax check");
     let platform_result = match invocation.kind {
         DesignerCommandKind::Config => dsl.check_config(&flags),
         DesignerCommandKind::Modules => dsl.check_modules(&flags),
@@ -573,6 +579,7 @@ fn run_edt_syntax(
         {
             return Err(failure);
         }
+        log_live_stage("syntax: edt", "[EDT] validating project");
         let result = match if let Some(dsl) = interactive_dsl.as_ref() {
             dsl.validate_project(&source_path, &log_path)
         } else {

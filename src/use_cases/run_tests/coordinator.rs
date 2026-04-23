@@ -1,4 +1,5 @@
 use super::*;
+use crate::use_cases::progress::log_live_stage;
 
 pub(super) fn run_tests(
     context: &ExecutionContext,
@@ -64,6 +65,10 @@ pub(super) fn run_tests(
     };
 
     debug!("running build prerequisite for tests");
+    log_live_stage(
+        "test: build prerequisite",
+        "[Build] preparing test infobase",
+    );
     let build_started = Instant::now();
     let build_result = match build_project::execute(
         context,
@@ -217,6 +222,7 @@ pub(super) fn run_tests(
     };
 
     debug!(path = %artifacts.run_dir.display(), "launching enterprise test run");
+    log_live_stage("test: enterprise run", "[Enterprise] running test runner");
     let run_started = Instant::now();
     let enterprise_runner = crate::platform::process::ProcessExecutor;
     let enterprise = match build_enterprise_dsl(

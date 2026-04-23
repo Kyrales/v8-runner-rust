@@ -120,23 +120,17 @@ Detailed ADR task decomposition remains in [ADR_DERIVED_BACKLOG.md](ADR_DERIVED_
   target/source overlap, target/target overlap, single-source unselected-source overlap, and
   CLI help for the public `--output <DIR>` contract; ADR/docs/backlog surfaces are synchronized.
 
-- [ ] `ADR-TASK-031`: Add live text progress messages for long-running CLI stages before the
-  blocking work starts. Text stdout must print a stable stage name and start timestamp before each
-  long operation, using the existing build-style stage vocabulary as the reference pattern, so a
-  developer running commands such as `test` can see that the build prerequisite, test runner, dump,
-  load, convert, syntax, init, artifacts, extensions, or launch stage has started instead of
-  waiting for the final timeline only. Keep `--json-message` as the final structured envelope unless
-  a separate JSON progress contract is accepted, keep raw platform stdout/stderr in logs, and add
-  rendering/integration regressions proving that live text messages appear before a delayed stage
-  completes and do not leak secrets.
-  Open questions before implementation:
-  1. Should a long stage mean every external platform/EDT/Designer/IBCMD/Enterprise process
-     invocation, or only stages expected to run longer than a small threshold?
-  2. Should the timestamp be a local wall-clock start time, RFC3339 with timezone, or both start
-     time and final elapsed duration?
-  3. Do we need periodic heartbeat lines for very long stages, or is a start line plus final elapsed
-     duration enough?
-  4. Should this stay text-only for now, with JSON progress left out of scope?
+- [x] `ADR-TASK-031`: Add live text progress messages for long-running CLI stages before the
+  blocking work starts. Completed `2026-04-23`: text CLI now emits live build-style `running`
+  timeline nodes with RFC3339 UTC `started_at` details before external platform/EDT/Designer/IBCMD/
+  Enterprise stages in `build`, `test`, `dump`, `load`, `convert`, `syntax`, `init`, `make`,
+  `extensions`, and `launch`. Progress messages are text-only, use a dedicated live-progress tracing
+  target so they are preserved even with `--log-level warn/error`, keep `--json-message` as a single
+  final structured envelope, and use fixed sanitized stage vocabulary rather than raw commands,
+  stdout/stderr, env, connection strings, or credentials. No heartbeat or JSON progress contract was
+  introduced. Formatter, delayed streaming, non-`test` progress, JSON no-pollution, and no-secret
+  regressions were added; targeted CLI suites, `support::logging`, full `cargo test --locked
+  --quiet`, reviewer, and separate Rust expert subagent passes all passed.
 
 - [ ] `ADR-TASK-032`: Unify the CLI `--json-message` envelope and MCP `structured_content` command
   payload for AI-agent consumers. Keep MCP protocol wrapping and transport/internal errors MCP-native,

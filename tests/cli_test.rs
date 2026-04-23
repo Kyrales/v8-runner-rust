@@ -1,8 +1,12 @@
 #![cfg(unix)]
 
 use std::fs;
+use std::io::{BufRead, BufReader};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
+use std::sync::mpsc;
+use std::time::{Duration, Instant};
 
 use assert_cmd::prelude::*;
 use insta::assert_debug_snapshot;
@@ -34,6 +38,17 @@ fn write_script(path: &Path, body: &str) {
     }
     fs::write(path, format!("#!/bin/sh\n{body}\n")).expect("write");
     make_executable(path);
+}
+
+fn wait_for_file(path: &Path, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        if path.exists() {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    path.exists()
 }
 
 fn write_test_script(
@@ -393,6 +408,9 @@ fn test_all_full_json_runs_build_first_and_returns_report() {
         .expect("test calls")
         .contains("RunUnitTests="));
 
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(!stdout.contains("started_at: "));
+    assert!(!stdout.contains("test: enterprise run"));
     let payload: Value = serde_json::from_slice(&output.stdout).expect("json");
     assert_eq!(payload["ok"], true);
     assert_eq!(payload["data"]["report"]["summary"]["total"], 1);
@@ -473,13 +491,15 @@ fn test_text_output_splits_pipeline_into_timeline_stages() {
     let stdout = String::from_utf8_lossy(&output.stdout);
 
     assert!(stdout.contains("● Tests completed successfully"));
+    assert!(stdout.contains("● test: build prerequisite"));
+    assert!(stdout.contains("● test: enterprise run"));
+    assert!(stdout.contains("│   started_at: "));
     assert!(stdout.contains("│   target: all"));
     assert!(stdout.contains("│   summary: total=1, passed=1, failed=0, skipped=0, errors=0"));
-    assert!(!stdout.contains("build prerequisite"));
     assert!(!stdout.contains("prepare artifacts"));
-    assert!(!stdout.contains("enterprise run"));
     assert!(!stdout.contains("parse JUnit report"));
     assert!(!stdout.contains("parse runner log"));
+    assert!(!stdout.contains("secret"));
     assert!(!stdout.contains(" INFO "));
     assert!(!stdout.contains("Test target: all"));
     assert!(!stdout.contains("Summary: total="));
@@ -487,6 +507,87 @@ fn test_text_output_splits_pipeline_into_timeline_stages() {
     assert!(!stdout.contains("preparing test run artifacts"));
     assert!(!stdout.contains("launching enterprise test run"));
     assert!(!stdout.contains("parsing JUnit report"));
+}
+
+#[test]
+fn test_command_streams_enterprise_stage_before_runner_finishes() {
+    let (dir, config_path, _build_calls, test_calls, captured_config) = setup_project(
+        "work",
+        JUNIT_SMOKE_REPORT_FIXTURE,
+        "12:00:00.000 [INF] ok",
+        0,
+        false,
+        5,
+        None,
+    );
+    let runner_started = dir.path().join("runner-started");
+    let release_runner = dir.path().join("release-runner");
+    write_script(
+        &dir.path().join("platform").join("bin").join("1cv8c"),
+        &format!(
+            "printf '%s\\n' \"$*\" >> '{}'\npayload=\"\"\nout=\"\"\nprev=\"\"\nfor arg in \"$@\"; do\n  if [ \"$prev\" = \"/C\" ]; then payload=\"$arg\"; fi\n  if [ \"$prev\" = \"/Out\" ]; then out=\"$arg\"; fi\n  prev=\"$arg\"\ndone\ncfg=$(printf '%s' \"$payload\" | sed 's/^RunUnitTests=//; s/^\"//; s/\"$//')\ncp \"$cfg\" '{}'\ntouch '{}'\nwhile [ ! -f '{}' ]; do sleep 0.05; done\nreport=$(awk -F '\"' '/reportPath/ {{print $4; exit}}' \"$cfg\")\nylog=$(awk -F '\"' '/\"file\"/ {{print $4; exit}}' \"$cfg\")\nmkdir -p \"$(dirname \"$report\")\" \"$(dirname \"$ylog\")\" \"$(dirname \"$out\")\"\ncat <<'XML' > \"$report\"\n{}\nXML\ncat <<'LOG' > \"$ylog\"\n12:00:00.000 [INF] ok\nLOG\nprintf 'platform ok\\n' > \"$out\"\nexit 0",
+            test_calls.display(),
+            captured_config.display(),
+            runner_started.display(),
+            release_runner.display(),
+            JUNIT_SMOKE_REPORT_FIXTURE
+        ),
+    );
+
+    let mut command = std::process::Command::cargo_bin("v8-runner").expect("binary");
+    command
+        .args([
+            "--config",
+            &config_path.display().to_string(),
+            "--no-color",
+            "--log-level",
+            "warn",
+            "test",
+            "yaxunit",
+            "all",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    let mut child = command.spawn().expect("spawn command");
+    let stdout = child.stdout.take().expect("stdout");
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+            if tx.send(line).is_err() {
+                break;
+            }
+        }
+    });
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut saw_enterprise_stage = false;
+    while Instant::now() < deadline {
+        match rx.recv_timeout(Duration::from_millis(100)) {
+            Ok(line) if line.contains("● test: enterprise run") => {
+                saw_enterprise_stage = true;
+                break;
+            }
+            Ok(_) => {}
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+
+    let runner_started_before_release = wait_for_file(&runner_started, Duration::from_secs(5));
+    let early_status = child.try_wait().ok().flatten();
+    fs::write(&release_runner, b"release").expect("release runner");
+
+    let status = child.wait().expect("wait");
+    assert!(saw_enterprise_stage, "enterprise stage was not streamed");
+    assert!(
+        runner_started_before_release,
+        "enterprise runner did not reach handshake"
+    );
+    assert!(
+        early_status.is_none(),
+        "process finished before release handshake"
+    );
+    assert!(status.success());
 }
 
 #[test]

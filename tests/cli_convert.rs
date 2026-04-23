@@ -651,7 +651,9 @@ fn convert_single_extension_source_set_infers_base_project_name_from_configurati
         .args([
             "--config",
             &config_path.display().to_string(),
-            "--json-message",
+            "--no-color",
+            "--log-level",
+            "warn",
             "convert",
             "--source-set",
             "ext-sales",
@@ -665,12 +667,19 @@ fn convert_single_extension_source_set_infers_base_project_name_from_configurati
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    let payload: Value = serde_json::from_slice(&output.stdout).expect("json");
-    assert_eq!(payload["ok"], true);
-    assert_eq!(payload["command"], "convert");
-    assert_eq!(payload["data"]["direction"], "DESIGNER_TO_EDT");
-    assert_eq!(payload["data"]["scope"], "SINGLE");
-    assert_eq!(payload["data"]["source_set"], "ext-sales");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("● convert: base project import"));
+    assert!(stdout.contains("│   started_at: "));
+    assert!(stdout.contains("│   [EDT] importing Designer files for base project name"));
+    assert!(
+        stdout
+            .find("convert: base project import")
+            .expect("base project stage")
+            < stdout
+                .find("convert: designer import")
+                .expect("extension import stage")
+    );
+    assert!(stdout.contains("● Convert completed successfully"));
 
     let target = work_path.join("convert/out/ext-sales/edt");
     assert_native_edt_project(&target);

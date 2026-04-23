@@ -717,6 +717,12 @@ pub(super) fn run_build_edt(
                 );
                 return Err(BuildExecutionFailure::with_payload(error, result));
             }
+            log_timeline_stage(
+                &source_set.name,
+                "edt_export",
+                "[EDT] Конвертация внешних объектов в файлы конфигуратора",
+                TimelineStageStatus::Running,
+            );
             let export_result = if config.tools.edt_cli.interactive_mode {
                 if interactive_edt.is_none() {
                     interactive_edt = Some(

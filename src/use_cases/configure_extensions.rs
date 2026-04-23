@@ -9,6 +9,7 @@ use crate::support::error::AppError;
 use crate::use_cases::context::{ExecutionContext, InterruptionSafetyClass};
 use crate::use_cases::extension_identity::platform_extension_name;
 use crate::use_cases::ibcmd_diagnostics::format_ibcmd_failure_details;
+use crate::use_cases::progress::log_live_stage;
 use crate::use_cases::request::ConfigureExtensionsRequest;
 use crate::use_cases::result::{UseCaseFailure, UseCaseResult};
 use tracing::{debug, info};
@@ -174,6 +175,11 @@ fn log_extension_step(step: &ExtensionsStep) {
 
 fn log_extension_progress(target: &str, action: &str, status: &str, detail: &str) {
     let label = format!("{target}: {action}");
+    if status == "running" {
+        log_live_stage(&label, detail);
+        return;
+    }
+
     info!(
         timeline_status = status,
         timeline_label = label.as_str(),

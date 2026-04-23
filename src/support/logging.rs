@@ -3,7 +3,7 @@ use std::io::{self, Write as IoWrite};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use chrono::Utc;
+use chrono::{SecondsFormat, Utc};
 use thiserror::Error;
 use tracing::{Event, Level, Subscriber};
 use tracing_subscriber::fmt::format::{FormatEvent, FormatFields, Writer};
@@ -13,6 +13,7 @@ use tracing_subscriber::registry::LookupSpan;
 use tracing_subscriber::EnvFilter;
 
 const ACTION_LOG_FILE_ENV: &str = "V8TR_ACTION_LOG_FILE";
+const LIVE_PROGRESS_FILTER_DIRECTIVE: &str = "v8_runner::live_progress=info";
 
 #[derive(Debug, Error)]
 pub enum LoggingInitError {
@@ -35,7 +36,7 @@ pub fn init_action_logging(
     };
     let log_path = resolve_action_log_path(output_format, work_path);
     let ansi_enabled = output_format == "text" && color_enabled;
-    let env_filter = EnvFilter::try_new(level).unwrap_or_else(|_| EnvFilter::new("info"));
+    let env_filter = env_filter_with_live_progress(level);
 
     if output_format == "text" {
         tracing_subscriber::fmt()
@@ -59,6 +60,17 @@ pub fn init_action_logging(
     }
 
     Ok(log_path)
+}
+
+fn env_filter_with_live_progress(level: &str) -> EnvFilter {
+    let trimmed = level.trim();
+    let filter = if trimmed.is_empty() {
+        LIVE_PROGRESS_FILTER_DIRECTIVE.to_owned()
+    } else {
+        format!("{trimmed},{LIVE_PROGRESS_FILTER_DIRECTIVE}")
+    };
+    EnvFilter::try_new(filter)
+        .unwrap_or_else(|_| EnvFilter::new(format!("info,{LIVE_PROGRESS_FILTER_DIRECTIVE}")))
 }
 
 fn resolve_action_log_path(output_format: &str, work_path: &Path) -> Option<PathBuf> {
@@ -227,6 +239,13 @@ impl CliEventFormatter {
             writeln!(writer)?;
         }
 
+        if status == "running" {
+            write_timeline_pipe(writer)?;
+            write!(writer, "   ")?;
+            write_timeline_detail(writer, &running_started_at_detail())?;
+            writeln!(writer)?;
+        }
+
         if let Some(detail) = detail.filter(|value| !value.trim().is_empty()) {
             for line in detail.lines() {
                 write_timeline_pipe(writer)?;
@@ -238,6 +257,13 @@ impl CliEventFormatter {
 
         Ok(())
     }
+}
+
+fn running_started_at_detail() -> String {
+    format!(
+        "started_at: {}",
+        Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)
+    )
 }
 
 fn write_timeline_pipe(writer: &mut Writer<'_>) -> std::fmt::Result {
@@ -472,5 +498,92 @@ impl IoWrite for ActionLogWriter {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io;
+    use std::sync::{Arc, Mutex};
+
+    use tracing_subscriber::EnvFilter;
+
+    use super::{CliEventFormatter, UtcTimer};
+
+    #[derive(Clone)]
+    struct BufferMakeWriter {
+        buffer: Arc<Mutex<Vec<u8>>>,
+    }
+
+    struct BufferWriter {
+        buffer: Arc<Mutex<Vec<u8>>>,
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for BufferMakeWriter {
+        type Writer = BufferWriter;
+
+        fn make_writer(&'a self) -> Self::Writer {
+            BufferWriter {
+                buffer: self.buffer.clone(),
+            }
+        }
+    }
+
+    impl io::Write for BufferWriter {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.buffer
+                .lock()
+                .map_err(|_| io::Error::other("buffer mutex poisoned"))?
+                .extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn render_event(status: &str, detail: &str) -> String {
+        let buffer = Arc::new(Mutex::new(Vec::new()));
+        let writer = BufferMakeWriter {
+            buffer: buffer.clone(),
+        };
+        let subscriber = tracing_subscriber::fmt()
+            .with_env_filter(EnvFilter::new("info"))
+            .with_writer(writer)
+            .with_timer(UtcTimer)
+            .with_ansi(false)
+            .with_target(false)
+            .event_format(CliEventFormatter::default())
+            .finish();
+
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::info!(
+                timeline_status = status,
+                timeline_label = "test: enterprise run",
+                timeline_detail = detail
+            );
+        });
+
+        let bytes = buffer.lock().expect("buffer").clone();
+        String::from_utf8(bytes).expect("utf8")
+    }
+
+    #[test]
+    fn running_timeline_event_adds_start_timestamp_before_detail() {
+        let output = render_event("running", "[Enterprise] enterprise run");
+
+        let started_at = output.find("started_at: ").expect("started_at");
+        let detail = output.find("[Enterprise] enterprise run").expect("detail");
+        assert!(started_at < detail);
+        assert!(output.contains("Z"));
+    }
+
+    #[test]
+    fn non_running_timeline_event_does_not_add_start_timestamp() {
+        let output = render_event("succeeded", "✓ completed");
+
+        assert!(!output.contains("started_at: "));
+        assert!(output.contains("✓ completed"));
     }
 }

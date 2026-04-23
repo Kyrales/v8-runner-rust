@@ -22,6 +22,7 @@ use crate::support::error::AppError;
 use crate::support::temp::platform_logs_dir;
 use crate::use_cases::context::{ExecutionContext, ExecutionInterruption, InterruptionSafetyClass};
 use crate::use_cases::ibcmd_diagnostics::format_ibcmd_failure_details;
+use crate::use_cases::progress::log_live_stage;
 use crate::use_cases::request::LoadRequest;
 use crate::use_cases::result::{UseCaseFailure, UseCaseResult};
 
@@ -192,6 +193,10 @@ fn run_load(
         }
     };
 
+    log_live_stage(
+        "load: compatibility probe",
+        "[Конфигуратор] comparing infobase compatibility",
+    );
     let probe_result = match probe_compatibility(
         context,
         config,
@@ -262,6 +267,12 @@ fn run_load(
         }
     };
 
+    let apply_stage = match resolved.mode {
+        LoadMode::Load => "load: apply",
+        LoadMode::Merge => "load: merge",
+        LoadMode::Update => unreachable!("update mode is rejected during validation"),
+    };
+    log_live_stage(apply_stage, "[Конфигуратор] applying artifact");
     let apply_result = match resolved.mode {
         LoadMode::Load => apply_dsl
             .load_cfg(&resolved.artifact_path, resolved.extension.as_deref())
@@ -364,6 +375,10 @@ fn run_load(
         }
     };
 
+    log_live_stage(
+        "load: update_db_cfg",
+        "[Конфигуратор] updating database configuration",
+    );
     let update_result = update_dsl
         .update_db_cfg(resolved.extension.as_deref())
         .map_err(AppError::from);

@@ -20,6 +20,7 @@ use crate::platform::result::PlatformCommandResult;
 use crate::platform::utilities::PlatformUtilities;
 use crate::support::error::AppError;
 use crate::use_cases::context::{ExecutionContext, InterruptionSafetyClass};
+use crate::use_cases::progress::log_live_stage;
 use crate::use_cases::request::InitRequest;
 use crate::use_cases::result::{UseCaseError, UseCaseFailure, UseCaseResult};
 
@@ -180,6 +181,7 @@ fn ensure_file_infobase(
         return outcome;
     }
 
+    log_live_stage("init: infobase create", "[Platform] creating infobase");
     let command_result = match create_infobase(context, config, utilities) {
         Ok(outcome) => outcome,
         Err(error) => return StepOutcome::failed("infobase", "create", started, error),
@@ -251,6 +253,7 @@ fn ensure_server_infobase(
     {
         return outcome;
     }
+    log_live_stage("init: infobase create", "[ibcmd] ensuring server infobase");
     match create_infobase(context, config, utilities) {
         Ok(outcome) => match outcome.status {
             IbcmdInfobaseCreateStatus::Created => StepOutcome::ok(
@@ -405,6 +408,7 @@ fn ensure_edt_workspace(
         }
         let source_path = resolve_source_set_path(config, source_set);
         debug!("[EDT] Импорт проекта: {}", source_set.name);
+        log_live_stage("init: edt import", "[EDT] importing source-set project");
         match dsl.import_project(&source_path) {
             Ok(result) => {
                 if let Err(error) =

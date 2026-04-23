@@ -28,6 +28,7 @@ use crate::support::path::{
 use crate::support::source_descriptor::{self, ExternalDescriptorParseError};
 use crate::use_cases::context::{ExecutionContext, InterruptionSafetyClass};
 use crate::use_cases::external_artifacts::ExternalArtifactKind;
+use crate::use_cases::progress::log_live_stage;
 use crate::use_cases::request::{DumpModeRequest, DumpRequest as DumpArgs};
 use crate::use_cases::result::{UseCaseFailure, UseCaseResult};
 use tracing::debug;
@@ -118,6 +119,10 @@ fn run_incremental_dump_designer(
     ensure_dir(&resolved.platform_target_path)
         .map_err(|error| AppError::Runtime(format!("failed to create target dir: {error}")))?;
 
+    log_live_stage(
+        "dump: incremental",
+        "[Конфигуратор] exporting configuration files",
+    );
     let dump_result = build_designer_dsl(
         context,
         config,
@@ -177,6 +182,7 @@ fn run_full_dump_designer(
     )
     .map_err(|error| AppError::Runtime(format!("failed to write stage metadata: {error}")))?;
 
+    log_live_stage("dump: full", "[Конфигуратор] exporting configuration files");
     let dump_result = match build_designer_dsl(
         context,
         config,
@@ -242,6 +248,7 @@ fn run_incremental_dump_ibcmd(
     ensure_dir(&resolved.platform_target_path)
         .map_err(|error| AppError::Runtime(format!("failed to create target dir: {error}")))?;
 
+    log_live_stage("dump: incremental", "[ibcmd] exporting configuration files");
     let dump_result = build_ibcmd_dsl(context, config, binary, runner)?
         .config_export_incremental(
             &resolved.platform_target_path,
@@ -294,6 +301,7 @@ fn run_full_dump_ibcmd(
     )
     .map_err(|error| AppError::Runtime(format!("failed to write stage metadata: {error}")))?;
 
+    log_live_stage("dump: full", "[ibcmd] exporting configuration files");
     let dump_result = match build_ibcmd_dsl(context, config, binary, runner)?
         .config_export_full(&staging_dir, resolved.extension.as_deref())
         .map_err(map_ibcmd_error)
@@ -355,6 +363,10 @@ fn run_partial_dump_designer(
         .map_err(|error| AppError::Runtime(format!("failed to create target dir: {error}")))?;
 
     let list_file = create_dump_object_list_file(&config.work_path, objects)?;
+    log_live_stage(
+        "dump: partial",
+        "[Конфигуратор] exporting selected configuration objects",
+    );
     let dump_result = build_designer_dsl(
         context,
         config,
@@ -662,6 +674,7 @@ fn finalize_edt_dump(
 
     let edt_dsl = build_edt_dsl(context, config, edt_binary, edt_runner)
         .map_err(|error| cleanup_staging_on_platform_failure(&staging_dir, error))?;
+    log_live_stage("dump: edt import", "[EDT] importing Designer snapshot");
     let import_result = match edt_dsl
         .import_configuration_files(
             &staging_dir,

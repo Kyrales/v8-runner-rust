@@ -11,6 +11,7 @@ use crate::support::source_descriptor::{
     self, ExternalDescriptorParseError, SourceDescriptorPurpose,
 };
 use crate::use_cases::build_project::ensure_platform_success as ensure_build_platform_success;
+use crate::use_cases::progress::log_live_stage;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExternalArtifactKind {
@@ -110,6 +111,10 @@ pub fn prepare_edt_external_artifacts(
                 export_target.display()
             ))
         })?;
+        log_live_stage(
+            "edt: external export",
+            "[EDT] exporting external project to Designer files",
+        );
         let result = dsl
             .export_project(&item.logical_name, &export_target)
             .map_err(AppError::from)?;

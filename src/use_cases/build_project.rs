@@ -339,6 +339,12 @@ fn execute_source_set_step(
         source_set = source_set.name.as_str(),
         "updating database configuration after load"
     );
+    log_timeline_stage(
+        &source_set.name,
+        "update_db_cfg",
+        "[Конфигуратор] Применение изменений",
+        TimelineStageStatus::Running,
+    );
     let update_result = build_designer_dsl(
         context,
         config,

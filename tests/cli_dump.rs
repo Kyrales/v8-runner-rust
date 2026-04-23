@@ -349,6 +349,15 @@ fn dump_text_success_is_compact_and_keeps_output_visible() {
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("● dump: full"));
+    assert!(stdout.contains("│   started_at: "));
+    assert!(stdout.contains("│   [ibcmd] exporting configuration files"));
+    assert!(
+        stdout.find("started_at: ").expect("started_at")
+            < stdout
+                .find("[ibcmd] exporting configuration files")
+                .expect("dump detail")
+    );
     assert!(stdout.contains("● Dump completed successfully"));
     assert!(stdout.contains("│   source-set: main"));
     assert!(stdout.contains("│   mode: full"));

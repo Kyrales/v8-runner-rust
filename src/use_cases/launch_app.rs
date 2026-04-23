@@ -8,6 +8,7 @@ use crate::platform::process::ProcessRequest;
 use crate::platform::utilities::PlatformUtilities;
 use crate::support::error::AppError;
 use crate::use_cases::context::{ExecutionContext, ExecutionInterruption};
+use crate::use_cases::progress::log_live_stage;
 use crate::use_cases::request::{
     EnterpriseLaunchTarget, LaunchRequest as LaunchArgs, LaunchTargetRequest,
 };
@@ -67,6 +68,7 @@ pub fn execute(
     );
 
     debug!("[Запуск] Приложение: {}", mode_label(args.target));
+    log_live_stage("launch: start", "[Launch] starting client process");
     let spawned = utilities
         .runner_for(utility)
         .spawn(&ProcessRequest {

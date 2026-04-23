@@ -14,6 +14,7 @@ use crate::support::error::AppError;
 use crate::support::temp::platform_logs_dir;
 use crate::use_cases::context::{ExecutionContext, InterruptionSafetyClass};
 use crate::use_cases::ibcmd_diagnostics::format_ibcmd_failure_details;
+use crate::use_cases::progress::log_live_stage;
 use tracing::info;
 
 use super::TimelineStageStatus;
@@ -133,6 +134,11 @@ pub(super) fn log_timeline_stage(
 ) {
     let label = format!("{source_set_name}:");
     let detail = first_message_line(message);
+    if matches!(status, TimelineStageStatus::Running) {
+        log_live_stage(&label, detail);
+        return;
+    }
+
     info!(
         timeline_status = status.as_str(),
         timeline_label = label.as_str(),

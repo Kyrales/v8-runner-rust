@@ -41,6 +41,7 @@ use crate::use_cases::external_artifacts::{
     discover_designer_external_artifacts, prepare_edt_external_artifacts, resolve_source_set_path,
     sanitize_file_stem, source_set_external_kind, ExternalArtifactDescriptor,
 };
+use crate::use_cases::progress::log_live_stage;
 use crate::use_cases::request::{ArtifactsModeRequest, ArtifactsRequest};
 use crate::use_cases::result::{UseCaseFailure, UseCaseResult};
 
@@ -400,6 +401,7 @@ fn run_designer_export(
         resolved.mode,
     )
     .map_err(|error| (error, ArtifactSet::default(), None))?;
+    log_live_stage("make: export", "[Конфигуратор] exporting artifact package");
     let dump_result = dsl
         .dump_cfg(&staging_file, resolved.extension.as_deref())
         .map_err(|error| (AppError::from(error), ArtifactSet::default(), None))?;
@@ -589,6 +591,10 @@ fn run_external_designer_export(
             )
         })?;
 
+        log_live_stage(
+            "make: external export",
+            "[Конфигуратор] exporting external artifact package",
+        );
         let result = dsl
             .load_external_data_processor_or_report_from_files(
                 &descriptor.descriptor_xml_path,
@@ -622,6 +628,10 @@ fn run_external_designer_export(
             ));
         }
 
+        log_live_stage(
+            "make: external dump",
+            "[Конфигуратор] dumping external artifact descriptor",
+        );
         run_external_dump_designer(
             &dsl,
             &staging_file,

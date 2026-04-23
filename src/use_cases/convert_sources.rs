@@ -24,6 +24,7 @@ use crate::use_cases::context::{CommandName, ExecutionContext, InterruptionSafet
 use crate::use_cases::external_artifacts::{
     discover_designer_external_artifacts, parse_external_descriptor, ExternalArtifactKind,
 };
+use crate::use_cases::progress::log_live_stage;
 use crate::use_cases::request::{ConvertRequest, ConvertScopeRequest};
 use crate::use_cases::result::{UseCaseFailure, UseCaseResult};
 
@@ -1129,6 +1130,10 @@ fn infer_runtime_base_project_name(
         ))
     })?;
 
+    log_live_stage(
+        "convert: base project import",
+        "[EDT] importing Designer files for base project name",
+    );
     let import_result = dsl
         .import_configuration_files(
             &temp_project_dir,
@@ -1210,6 +1215,10 @@ fn run_platform_conversion(
                             export_target.display()
                         ))
                     })?;
+                    log_live_stage(
+                        "convert: edt export",
+                        "[EDT] exporting external project to Designer files",
+                    );
                     let result = dsl
                         .export_project_path(project_path, &export_target)
                         .map_err(AppError::from)?;
@@ -1248,6 +1257,10 @@ fn run_platform_conversion(
                 }
                 Ok(())
             } else {
+                log_live_stage(
+                    "convert: edt export",
+                    "[EDT] exporting project to Designer files",
+                );
                 let result = dsl
                     .export_project_path(&item.source_path, staging_dir)
                     .map_err(AppError::from)?;
@@ -1255,6 +1268,7 @@ fn run_platform_conversion(
             }
         }
         ConvertDirection::DesignerToEdt => {
+            log_live_stage("convert: designer import", "[EDT] importing Designer files");
             let result = dsl
                 .import_configuration_files(
                     staging_dir,
