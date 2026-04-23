@@ -5,7 +5,7 @@ use std::time::Duration;
 use std::time::Instant;
 
 use crate::change_detection::analyzer::{self, AnalysisOutcome};
-use crate::change_detection::partial_load::{self, LoadDecision};
+use crate::change_detection::partial_load;
 use crate::change_detection::source_sets::SourceSetsService;
 use crate::config::model::{
     AppConfig, BuilderBackend, SourceFormat, SourceSetConfig, SourceSetPurpose,
@@ -35,10 +35,11 @@ mod helpers;
 
 pub(crate) use self::helpers::ensure_platform_success;
 use self::helpers::{
-    build_designer_dsl, build_ibcmd_dsl, build_mode_label, commit_full_rescan,
-    deferred_interruption_warning, extension_name, fail_with_remaining_steps,
-    interruption_before_safe_point, log_change_analysis, log_timeline_stage, map_ibcmd_error,
-    merge_step_message, push_build_step, remove_storage_path, StepCommit, StepPlan,
+    build_designer_dsl, build_ibcmd_dsl, build_mode_label, commit_step_state,
+    deferred_interruption_warning, extension_name, fail_from_source_set_index,
+    interruption_before_safe_point, log_timeline_stage, map_ibcmd_error, merge_step_message,
+    plan_configurator_load_step, plan_edt_export_step, plan_generated_designer_load_step,
+    push_build_step, remove_storage_path, StepCommit, StepPlan,
 };
 
 #[cfg(test)]
@@ -359,23 +360,7 @@ fn execute_source_set_step(
     .map_err(AppError::from)?;
     ensure_platform_success("update_db_cfg", source_set, &update_result)?;
 
-    match commit {
-        StepCommit::Prepared(prepared) => {
-            debug!(
-                source_set = source_set.name.as_str(),
-                "committing prepared change-detection state"
-            );
-            analyzer::commit_success(commit_context, &config.work_path, prepared)
-                .map_err(|error| AppError::Runtime(error.to_string()))?;
-        }
-        StepCommit::RescanFull { recover_storage } => {
-            debug!(
-                source_set = source_set.name.as_str(),
-                recover_storage, "rescanning source-set state after full build"
-            );
-            commit_full_rescan(commit_context, &config.work_path, *recover_storage)?;
-        }
-    }
+    commit_step_state(source_set, commit_context, &config.work_path, commit)?;
 
     Ok([
         deferred_interruption_warning("load", &load_result),
@@ -479,23 +464,7 @@ fn execute_source_set_step_ibcmd(
         .map_err(map_ibcmd_error)?;
     ensure_platform_success("apply", source_set, &apply_result)?;
 
-    match commit {
-        StepCommit::Prepared(prepared) => {
-            debug!(
-                source_set = source_set.name.as_str(),
-                "committing prepared change-detection state"
-            );
-            analyzer::commit_success(commit_context, &config.work_path, prepared)
-                .map_err(|error| AppError::Runtime(error.to_string()))?;
-        }
-        StepCommit::RescanFull { recover_storage } => {
-            debug!(
-                source_set = source_set.name.as_str(),
-                recover_storage, "rescanning source-set state after full build"
-            );
-            commit_full_rescan(commit_context, &config.work_path, *recover_storage)?;
-        }
-    }
+    commit_step_state(source_set, commit_context, &config.work_path, commit)?;
 
     Ok([
         deferred_interruption_warning("ibcmd_import", &load_result),

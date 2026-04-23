@@ -220,11 +220,17 @@ Detailed ADR task decomposition remains in [ADR_DERIVED_BACKLOG.md](ADR_DERIVED_
   Targeted tester-subagent matrix, full `cargo test --locked --quiet`, reviewer completeness gate,
   and separate Rust expert subagent pass all passed.
 
-- [ ] `ADR-TASK-029`: Reduce residual build coordinator duplication after the thin-coordinator split.
+- [x] `ADR-TASK-029`: Reduce residual build coordinator duplication after the thin-coordinator split.
   `build_project/coordinator.rs` still repeats the `analysis -> StepPlan -> execute or
   fail_with_remaining_steps` flow for Designer, IBCMD, EDT export, and generated Designer load.
   Extract narrow helpers for plan construction, remaining-step failure payloads, and
   prepared/rescan commit handling without introducing a generic pipeline engine.
+  Completed `2026-04-23`: residual build coordinator duplication was reduced with narrow helpers
+  for configurator load, EDT export, and generated Designer load planning; remaining-step failure
+  payload construction and prepared/rescan commit handling are centralized without introducing a
+  generic pipeline engine. Public contracts stayed unchanged; fmt, diff check, targeted build
+  tests, CLI build tests, full locked test run, reviewer, separate Rust expert, and final
+  completeness subagent gates passed.
 
 - [ ] `ADR-TASK-030`: Add a read-only source-set runtime inventory/index for use-case orchestration.
   `build`, `dump`, `artifacts`, and syntax paths still rebuild `SourceSetsService` contexts,

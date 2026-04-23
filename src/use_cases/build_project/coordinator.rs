@@ -54,14 +54,11 @@ pub(super) fn run_build_designer(
                     step_started.elapsed().as_millis() as u64,
                 ),
                 Err(error) => {
-                    let result = fail_with_remaining_steps(
+                    let result = fail_from_source_set_index(
                         started,
                         steps,
-                        ordered_source_sets
-                            .iter()
-                            .skip(index)
-                            .copied()
-                            .collect::<Vec<_>>(),
+                        &ordered_source_sets,
+                        index,
                         source_set,
                         BuildMode::Skipped,
                         error.to_string(),
@@ -72,110 +69,28 @@ pub(super) fn run_build_designer(
             continue;
         }
 
-        let plan = if args.full_rebuild {
-            StepPlan::Execute {
-                mode: BuildMode::Full,
-                message: "forced full rebuild".to_owned(),
-                partial_paths: None,
-                commit: StepCommit::RescanFull {
-                    recover_storage: true,
-                },
-            }
-        } else {
-            match analysis_by_name
-                .as_ref()
-                .and_then(|analysis| analysis.get(&source_set.name))
-                .cloned()
-                .expect("every source-set must have an analysis result")
-            {
-                Ok(AnalysisOutcome::NoChanges) => {
-                    debug!(
-                        source_set = source_set.name.as_str(),
-                        found_changes = 0,
-                        "change analysis result: found 0 change(s)"
-                    );
-                    StepPlan::Skip {
-                        message: "no changes".to_owned(),
-                        ok: true,
-                    }
-                }
-                Ok(AnalysisOutcome::Fallback) => {
-                    debug!(
-                        source_set = source_set.name.as_str(),
-                        "change analysis result: fallback to full load after recoverable issue"
-                    );
-                    log_timeline_stage(
-                        &source_set.name,
-                        "changes",
-                        "fallback to full load after recoverable issue",
-                        TimelineStageStatus::Succeeded,
-                    );
-                    StepPlan::Execute {
-                        mode: BuildMode::Full,
-                        message: "fallback to full load after recoverable change-detection issue"
-                            .to_owned(),
-                        partial_paths: None,
-                        commit: StepCommit::RescanFull {
-                            recover_storage: false,
-                        },
-                    }
-                }
-                Ok(AnalysisOutcome::Changes { changes, prepared }) => {
-                    log_change_analysis(source_set.name.as_str(), &changes);
-                    match partial_load::decide(
-                        &changes,
-                        source_context.path(),
-                        config.build.partial_load_threshold,
-                    ) {
-                        LoadDecision::Partial(paths) => {
-                            debug!(
-                                source_set = source_set.name.as_str(),
-                                partial_file_count = paths.len(),
-                                threshold = config.build.partial_load_threshold,
-                                "change analysis decision: partial load"
-                            );
-                            StepPlan::Execute {
-                                mode: BuildMode::Partial {
-                                    file_count: paths.len(),
-                                },
-                                message: format!("partial load of {} files", paths.len()),
-                                partial_paths: Some(paths),
-                                commit: StepCommit::Prepared(prepared),
-                            }
-                        }
-                        LoadDecision::Full => {
-                            debug!(
-                                source_set = source_set.name.as_str(),
-                                threshold = config.build.partial_load_threshold,
-                                "change analysis decision: full load"
-                            );
-                            StepPlan::Execute {
-                                mode: BuildMode::Full,
-                                message: "full load selected by partial-load rules".to_owned(),
-                                partial_paths: None,
-                                commit: StepCommit::Prepared(prepared),
-                            }
-                        }
-                    }
-                }
-                Err(error) => {
-                    let result = fail_with_remaining_steps(
-                        started,
-                        steps,
-                        ordered_source_sets
-                            .iter()
-                            .skip(index)
-                            .copied()
-                            .collect::<Vec<_>>(),
-                        source_set,
-                        BuildMode::Skipped,
-                        error.to_string(),
-                    );
-                    return Err(BuildExecutionFailure::with_payload(
-                        AppError::Runtime(error.to_string()),
-                        result,
-                    ));
-                }
+        let plan = match plan_configurator_load_step(
+            source_set,
+            &source_context,
+            args.full_rebuild,
+            analysis_by_name.as_ref(),
+            config.build.partial_load_threshold,
+        ) {
+            Ok(plan) => plan,
+            Err(error) => {
+                let result = fail_from_source_set_index(
+                    started,
+                    steps,
+                    &ordered_source_sets,
+                    index,
+                    source_set,
+                    BuildMode::Skipped,
+                    error.to_string(),
+                );
+                return Err(BuildExecutionFailure::with_payload(
+                    AppError::Runtime(error.to_string()),
+                    result,
+                ));
             }
         };
 
@@ -213,14 +128,11 @@ pub(super) fn run_build_designer(
                         let location = match utilities.locate(UtilityType::V8) {
                             Ok(location) => location,
                             Err(error) => {
-                                let result = fail_with_remaining_steps(
+                                let result = fail_from_source_set_index(
                                     started,
                                     steps,
-                                    ordered_source_sets
-                                        .iter()
-                                        .skip(index)
-                                        .copied()
-                                        .collect::<Vec<_>>(),
+                                    &ordered_source_sets,
+                                    index,
                                     source_set,
                                     mode.clone(),
                                     error.to_string(),
@@ -258,14 +170,11 @@ pub(super) fn run_build_designer(
                         step_started.elapsed().as_millis() as u64,
                     ),
                     Err(error) => {
-                        let result = fail_with_remaining_steps(
+                        let result = fail_from_source_set_index(
                             started,
                             steps,
-                            ordered_source_sets
-                                .iter()
-                                .skip(index)
-                                .copied()
-                                .collect::<Vec<_>>(),
+                            &ordered_source_sets,
+                            index,
                             source_set,
                             mode,
                             error.to_string(),
@@ -321,110 +230,28 @@ pub(super) fn run_build_ibcmd(
             continue;
         };
 
-        let plan = if args.full_rebuild {
-            StepPlan::Execute {
-                mode: BuildMode::Full,
-                message: "forced full rebuild".to_owned(),
-                partial_paths: None,
-                commit: StepCommit::RescanFull {
-                    recover_storage: true,
-                },
-            }
-        } else {
-            match analysis_by_name
-                .as_ref()
-                .and_then(|analysis| analysis.get(&source_set.name))
-                .cloned()
-                .expect("every source-set must have an analysis result")
-            {
-                Ok(AnalysisOutcome::NoChanges) => {
-                    debug!(
-                        source_set = source_set.name.as_str(),
-                        found_changes = 0,
-                        "change analysis result: found 0 change(s)"
-                    );
-                    StepPlan::Skip {
-                        message: "no changes".to_owned(),
-                        ok: true,
-                    }
-                }
-                Ok(AnalysisOutcome::Fallback) => {
-                    debug!(
-                        source_set = source_set.name.as_str(),
-                        "change analysis result: fallback to full load after recoverable issue"
-                    );
-                    log_timeline_stage(
-                        &source_set.name,
-                        "changes",
-                        "fallback to full load after recoverable issue",
-                        TimelineStageStatus::Succeeded,
-                    );
-                    StepPlan::Execute {
-                        mode: BuildMode::Full,
-                        message: "fallback to full load after recoverable change-detection issue"
-                            .to_owned(),
-                        partial_paths: None,
-                        commit: StepCommit::RescanFull {
-                            recover_storage: false,
-                        },
-                    }
-                }
-                Ok(AnalysisOutcome::Changes { changes, prepared }) => {
-                    log_change_analysis(source_set.name.as_str(), &changes);
-                    match partial_load::decide(
-                        &changes,
-                        source_context.path(),
-                        config.build.partial_load_threshold,
-                    ) {
-                        LoadDecision::Partial(paths) => {
-                            debug!(
-                                source_set = source_set.name.as_str(),
-                                partial_file_count = paths.len(),
-                                threshold = config.build.partial_load_threshold,
-                                "change analysis decision: partial load"
-                            );
-                            StepPlan::Execute {
-                                mode: BuildMode::Partial {
-                                    file_count: paths.len(),
-                                },
-                                message: format!("partial load of {} files", paths.len()),
-                                partial_paths: Some(paths),
-                                commit: StepCommit::Prepared(prepared),
-                            }
-                        }
-                        LoadDecision::Full => {
-                            debug!(
-                                source_set = source_set.name.as_str(),
-                                threshold = config.build.partial_load_threshold,
-                                "change analysis decision: full load"
-                            );
-                            StepPlan::Execute {
-                                mode: BuildMode::Full,
-                                message: "full load selected by partial-load rules".to_owned(),
-                                partial_paths: None,
-                                commit: StepCommit::Prepared(prepared),
-                            }
-                        }
-                    }
-                }
-                Err(error) => {
-                    let result = fail_with_remaining_steps(
-                        started,
-                        steps,
-                        ordered_source_sets
-                            .iter()
-                            .skip(index)
-                            .copied()
-                            .collect::<Vec<_>>(),
-                        source_set,
-                        BuildMode::Skipped,
-                        error.to_string(),
-                    );
-                    return Err(BuildExecutionFailure::with_payload(
-                        AppError::Runtime(error.to_string()),
-                        result,
-                    ));
-                }
+        let plan = match plan_configurator_load_step(
+            source_set,
+            &source_context,
+            args.full_rebuild,
+            analysis_by_name.as_ref(),
+            config.build.partial_load_threshold,
+        ) {
+            Ok(plan) => plan,
+            Err(error) => {
+                let result = fail_from_source_set_index(
+                    started,
+                    steps,
+                    &ordered_source_sets,
+                    index,
+                    source_set,
+                    BuildMode::Skipped,
+                    error.to_string(),
+                );
+                return Err(BuildExecutionFailure::with_payload(
+                    AppError::Runtime(error.to_string()),
+                    result,
+                ));
             }
         };
 
@@ -462,14 +289,11 @@ pub(super) fn run_build_ibcmd(
                         let location = match utilities.locate(UtilityType::Ibcmd) {
                             Ok(location) => location,
                             Err(error) => {
-                                let result = fail_with_remaining_steps(
+                                let result = fail_from_source_set_index(
                                     started,
                                     steps,
-                                    ordered_source_sets
-                                        .iter()
-                                        .skip(index)
-                                        .copied()
-                                        .collect::<Vec<_>>(),
+                                    &ordered_source_sets,
+                                    index,
                                     source_set,
                                     mode.clone(),
                                     error.to_string(),
@@ -506,14 +330,11 @@ pub(super) fn run_build_ibcmd(
                         step_started.elapsed().as_millis() as u64,
                     ),
                     Err(error) => {
-                        let result = fail_with_remaining_steps(
+                        let result = fail_from_source_set_index(
                             started,
                             steps,
-                            ordered_source_sets
-                                .iter()
-                                .skip(index)
-                                .copied()
-                                .collect::<Vec<_>>(),
+                            &ordered_source_sets,
+                            index,
                             source_set,
                             mode,
                             error.to_string(),
@@ -588,81 +409,26 @@ pub(super) fn run_build_edt(
             continue;
         };
 
-        let edt_stage = if args.full_rebuild {
-            StepPlan::Execute {
-                mode: BuildMode::EdtExport,
-                message: "forced EDT export (--full-rebuild)".to_owned(),
-                partial_paths: None,
-                commit: StepCommit::RescanFull {
-                    recover_storage: true,
-                },
-            }
-        } else {
-            match edt_analysis_by_name
-                .as_ref()
-                .and_then(|analysis| analysis.get(&source_set.name))
-                .cloned()
-                .expect("every source-set must have an EDT analysis result")
-            {
-                Ok(AnalysisOutcome::NoChanges) => {
-                    debug!(
-                        source_set = source_set.name.as_str(),
-                        found_changes = 0,
-                        "edt change analysis result: found 0 change(s)"
-                    );
-                    StepPlan::Skip {
-                        message: "no changes".to_owned(),
-                        ok: true,
-                    }
-                }
-                Ok(AnalysisOutcome::Fallback) => {
-                    debug!(
-                        source_set = source_set.name.as_str(),
-                        "edt change analysis result: fallback to full export/load after recoverable issue"
-                    );
-                    log_timeline_stage(
-                        &source_set.name,
-                        "changes",
-                        "fallback to full export/load after recoverable issue",
-                        TimelineStageStatus::Succeeded,
-                    );
-                    StepPlan::Execute {
-                        mode: BuildMode::EdtExport,
-                        message: "fallback to EDT export after recoverable change-detection issue"
-                            .to_owned(),
-                        partial_paths: None,
-                        commit: StepCommit::RescanFull {
-                            recover_storage: false,
-                        },
-                    }
-                }
-                Ok(AnalysisOutcome::Changes { changes, prepared }) => {
-                    log_change_analysis(source_set.name.as_str(), &changes);
-                    StepPlan::Execute {
-                        mode: BuildMode::EdtExport,
-                        message: "EDT export after change detection".to_owned(),
-                        partial_paths: None,
-                        commit: StepCommit::Prepared(prepared),
-                    }
-                }
-                Err(error) => {
-                    let result = fail_with_remaining_steps(
-                        started,
-                        steps,
-                        ordered_source_sets
-                            .iter()
-                            .skip(index)
-                            .copied()
-                            .collect::<Vec<_>>(),
-                        source_set,
-                        BuildMode::Skipped,
-                        error.to_string(),
-                    );
-                    return Err(BuildExecutionFailure::with_payload(
-                        AppError::Runtime(error.to_string()),
-                        result,
-                    ));
-                }
+        let edt_stage = match plan_edt_export_step(
+            source_set,
+            args.full_rebuild,
+            edt_analysis_by_name.as_ref(),
+        ) {
+            Ok(plan) => plan,
+            Err(error) => {
+                let result = fail_from_source_set_index(
+                    started,
+                    steps,
+                    &ordered_source_sets,
+                    index,
+                    source_set,
+                    BuildMode::Skipped,
+                    error.to_string(),
+                );
+                return Err(BuildExecutionFailure::with_payload(
+                    AppError::Runtime(error.to_string()),
+                    result,
+                ));
             }
         };
 
@@ -673,14 +439,11 @@ pub(super) fn run_build_edt(
                     let location = match utilities.locate(UtilityType::EdtCli) {
                         Ok(location) => location,
                         Err(error) => {
-                            let result = fail_with_remaining_steps(
+                            let result = fail_from_source_set_index(
                                 started,
                                 steps,
-                                ordered_source_sets
-                                    .iter()
-                                    .skip(index)
-                                    .copied()
-                                    .collect::<Vec<_>>(),
+                                &ordered_source_sets,
+                                index,
                                 source_set,
                                 BuildMode::EdtExport,
                                 error.to_string(),
@@ -703,14 +466,11 @@ pub(super) fn run_build_edt(
                     source_set.name
                 ),
             ) {
-                let result = fail_with_remaining_steps(
+                let result = fail_from_source_set_index(
                     started,
                     steps,
-                    ordered_source_sets
-                        .iter()
-                        .skip(index)
-                        .copied()
-                        .collect::<Vec<_>>(),
+                    &ordered_source_sets,
+                    index,
                     source_set,
                     BuildMode::EdtExport,
                     error.to_string(),
@@ -743,14 +503,11 @@ pub(super) fn run_build_edt(
                                 )),
                                 Err(error) => {
                                     let app_error = AppError::from(error);
-                                    let result = fail_with_remaining_steps(
+                                    let result = fail_from_source_set_index(
                                         started,
                                         steps,
-                                        ordered_source_sets
-                                            .iter()
-                                            .skip(index)
-                                            .copied()
-                                            .collect::<Vec<_>>(),
+                                        &ordered_source_sets,
+                                        index,
                                         source_set,
                                         BuildMode::EdtExport,
                                         app_error.to_string(),
@@ -762,14 +519,11 @@ pub(super) fn run_build_edt(
                             },
                             Err(error) => {
                                 let app_error = AppError::from(error);
-                                let result = fail_with_remaining_steps(
+                                let result = fail_from_source_set_index(
                                     started,
                                     steps,
-                                    ordered_source_sets
-                                        .iter()
-                                        .skip(index)
-                                        .copied()
-                                        .collect::<Vec<_>>(),
+                                    &ordered_source_sets,
+                                    index,
                                     source_set,
                                     BuildMode::EdtExport,
                                     app_error.to_string(),
@@ -798,55 +552,25 @@ pub(super) fn run_build_edt(
             match export_result {
                 Ok(descriptors) => {
                     match &edt_stage {
-                        StepPlan::Execute { commit, .. } => match commit {
-                            StepCommit::Prepared(prepared) => {
-                                if let Err(error) = analyzer::commit_success(
-                                    &edt_context,
-                                    &config.work_path,
-                                    prepared,
-                                ) {
-                                    let app_error = AppError::Runtime(error.to_string());
-                                    let result = fail_with_remaining_steps(
-                                        started,
-                                        steps,
-                                        ordered_source_sets
-                                            .iter()
-                                            .skip(index)
-                                            .copied()
-                                            .collect::<Vec<_>>(),
-                                        source_set,
-                                        BuildMode::EdtExport,
-                                        app_error.to_string(),
-                                    );
-                                    return Err(BuildExecutionFailure::with_payload(
-                                        app_error, result,
-                                    ));
-                                }
+                        StepPlan::Execute { commit, .. } => {
+                            if let Err(app_error) = commit_step_state(
+                                source_set,
+                                &edt_context,
+                                &config.work_path,
+                                commit,
+                            ) {
+                                let result = fail_from_source_set_index(
+                                    started,
+                                    steps,
+                                    &ordered_source_sets,
+                                    index,
+                                    source_set,
+                                    BuildMode::EdtExport,
+                                    app_error.to_string(),
+                                );
+                                return Err(BuildExecutionFailure::with_payload(app_error, result));
                             }
-                            StepCommit::RescanFull { recover_storage } => {
-                                if let Err(app_error) = commit_full_rescan(
-                                    &edt_context,
-                                    &config.work_path,
-                                    *recover_storage,
-                                ) {
-                                    let result = fail_with_remaining_steps(
-                                        started,
-                                        steps,
-                                        ordered_source_sets
-                                            .iter()
-                                            .skip(index)
-                                            .copied()
-                                            .collect::<Vec<_>>(),
-                                        source_set,
-                                        BuildMode::EdtExport,
-                                        app_error.to_string(),
-                                    );
-                                    return Err(BuildExecutionFailure::with_payload(
-                                        app_error, result,
-                                    ));
-                                }
-                            }
-                        },
+                        }
                         StepPlan::Skip { .. } => {}
                     }
                     push_build_step(
@@ -865,14 +589,11 @@ pub(super) fn run_build_edt(
                     )
                 }
                 Err(error) => {
-                    let result = fail_with_remaining_steps(
+                    let result = fail_from_source_set_index(
                         started,
                         steps,
-                        ordered_source_sets
-                            .iter()
-                            .skip(index)
-                            .copied()
-                            .collect::<Vec<_>>(),
+                        &ordered_source_sets,
+                        index,
                         source_set,
                         BuildMode::EdtExport,
                         error.to_string(),
@@ -908,14 +629,11 @@ pub(super) fn run_build_edt(
                         let location = match utilities.locate(UtilityType::EdtCli) {
                             Ok(location) => location,
                             Err(error) => {
-                                let result = fail_with_remaining_steps(
+                                let result = fail_from_source_set_index(
                                     started,
                                     steps,
-                                    ordered_source_sets
-                                        .iter()
-                                        .skip(index)
-                                        .copied()
-                                        .collect::<Vec<_>>(),
+                                    &ordered_source_sets,
+                                    index,
                                     source_set,
                                     BuildMode::EdtExport,
                                     error.to_string(),
@@ -958,14 +676,11 @@ pub(super) fn run_build_edt(
                                     )),
                                     Err(error) => {
                                         let app_error = AppError::from(error);
-                                        let result = fail_with_remaining_steps(
+                                        let result = fail_from_source_set_index(
                                             started,
                                             steps,
-                                            ordered_source_sets
-                                                .iter()
-                                                .skip(index)
-                                                .copied()
-                                                .collect::<Vec<_>>(),
+                                            &ordered_source_sets,
+                                            index,
                                             source_set,
                                             BuildMode::EdtExport,
                                             app_error.to_string(),
@@ -977,14 +692,11 @@ pub(super) fn run_build_edt(
                                 },
                                 Err(error) => {
                                     let app_error = AppError::from(error);
-                                    let result = fail_with_remaining_steps(
+                                    let result = fail_from_source_set_index(
                                         started,
                                         steps,
-                                        ordered_source_sets
-                                            .iter()
-                                            .skip(index)
-                                            .copied()
-                                            .collect::<Vec<_>>(),
+                                        &ordered_source_sets,
+                                        index,
                                         source_set,
                                         BuildMode::EdtExport,
                                         app_error.to_string(),
@@ -1025,14 +737,11 @@ pub(super) fn run_build_edt(
                 let export_warnings = match export_result {
                     Ok(warnings) => warnings,
                     Err(error) => {
-                        let result = fail_with_remaining_steps(
+                        let result = fail_from_source_set_index(
                             started,
                             steps,
-                            ordered_source_sets
-                                .iter()
-                                .skip(index)
-                                .copied()
-                                .collect::<Vec<_>>(),
+                            &ordered_source_sets,
+                            index,
                             source_set,
                             BuildMode::EdtExport,
                             error.to_string(),
@@ -1040,46 +749,19 @@ pub(super) fn run_build_edt(
                         return Err(BuildExecutionFailure::with_payload(error, result));
                     }
                 };
-                match &commit {
-                    StepCommit::Prepared(prepared) => {
-                        if let Err(error) =
-                            analyzer::commit_success(&edt_context, &config.work_path, prepared)
-                        {
-                            let app_error = AppError::Runtime(error.to_string());
-                            let result = fail_with_remaining_steps(
-                                started,
-                                steps,
-                                ordered_source_sets
-                                    .iter()
-                                    .skip(index)
-                                    .copied()
-                                    .collect::<Vec<_>>(),
-                                source_set,
-                                BuildMode::EdtExport,
-                                app_error.to_string(),
-                            );
-                            return Err(BuildExecutionFailure::with_payload(app_error, result));
-                        }
-                    }
-                    StepCommit::RescanFull { recover_storage } => {
-                        if let Err(app_error) =
-                            commit_full_rescan(&edt_context, &config.work_path, *recover_storage)
-                        {
-                            let result = fail_with_remaining_steps(
-                                started,
-                                steps,
-                                ordered_source_sets
-                                    .iter()
-                                    .skip(index)
-                                    .copied()
-                                    .collect::<Vec<_>>(),
-                                source_set,
-                                BuildMode::EdtExport,
-                                app_error.to_string(),
-                            );
-                            return Err(BuildExecutionFailure::with_payload(app_error, result));
-                        }
-                    }
+                if let Err(app_error) =
+                    commit_step_state(source_set, &edt_context, &config.work_path, &commit)
+                {
+                    let result = fail_from_source_set_index(
+                        started,
+                        steps,
+                        &ordered_source_sets,
+                        index,
+                        source_set,
+                        BuildMode::EdtExport,
+                        app_error.to_string(),
+                    );
+                    return Err(BuildExecutionFailure::with_payload(app_error, result));
                 }
 
                 push_build_step(
@@ -1093,125 +775,29 @@ pub(super) fn run_build_edt(
             }
         }
 
-        let designer_stage = if edt_stage_skipped && !designer_context.path().exists() {
-            StepPlan::Skip {
-                message: "no changes".to_owned(),
-                ok: true,
-            }
-        } else if args.full_rebuild {
-            StepPlan::Execute {
-                mode: BuildMode::Full,
-                message: "full load from EDT export (--full-rebuild)".to_owned(),
-                partial_paths: None,
-                commit: StepCommit::RescanFull {
-                    recover_storage: true,
-                },
-            }
-        } else {
-            match analyzer::analyze_context(&designer_context, &config.work_path).outcome {
-                Ok(AnalysisOutcome::NoChanges) => {
-                    debug!(
-                        source_set = source_set.name.as_str(),
-                        found_changes = 0,
-                        "generated designer change analysis result: found 0 change(s)"
-                    );
-                    StepPlan::Skip {
-                        message: "no changes".to_owned(),
-                        ok: true,
-                    }
-                }
-                Ok(AnalysisOutcome::Fallback) => {
-                    debug!(
-                        source_set = source_set.name.as_str(),
-                        "generated designer change analysis result: fallback to full load after recoverable issue"
-                    );
-                    log_timeline_stage(
-                        &source_set.name,
-                        "changes",
-                        "fallback to full load after recoverable issue",
-                        TimelineStageStatus::Succeeded,
-                    );
-                    StepPlan::Execute {
-                        mode: BuildMode::Full,
-                        message: "fallback to full load after recoverable change-detection issue"
-                            .to_owned(),
-                        partial_paths: None,
-                        commit: StepCommit::RescanFull {
-                            recover_storage: false,
-                        },
-                    }
-                }
-                Ok(AnalysisOutcome::Changes { changes, prepared }) => {
-                    log_change_analysis(source_set.name.as_str(), &changes);
-                    let generated_load_decision = if source_set.purpose
-                        == SourceSetPurpose::Extension
-                    {
-                        debug!(
-                                source_set = source_set.name.as_str(),
-                                "generated designer change analysis decision: forcing full load for EDT extension source-set"
-                            );
-                        LoadDecision::Full
-                    } else {
-                        partial_load::decide(
-                            &changes,
-                            designer_context.path(),
-                            config.build.partial_load_threshold,
-                        )
-                    };
-                    match generated_load_decision {
-                        LoadDecision::Partial(paths) => {
-                            debug!(
-                                source_set = source_set.name.as_str(),
-                                partial_file_count = paths.len(),
-                                threshold = config.build.partial_load_threshold,
-                                "generated designer change analysis decision: partial load"
-                            );
-                            StepPlan::Execute {
-                                mode: BuildMode::Partial {
-                                    file_count: paths.len(),
-                                },
-                                message: format!("partial load of {} files", paths.len()),
-                                partial_paths: Some(paths),
-                                commit: StepCommit::Prepared(prepared),
-                            }
-                        }
-                        LoadDecision::Full => {
-                            debug!(
-                                source_set = source_set.name.as_str(),
-                                threshold = config.build.partial_load_threshold,
-                                "generated designer change analysis decision: full load"
-                            );
-                            StepPlan::Execute {
-                                mode: BuildMode::Full,
-                                message: if source_set.purpose == SourceSetPurpose::Extension {
-                                    "full load required for EDT extension source-set".to_owned()
-                                } else {
-                                    "full load selected by partial-load rules".to_owned()
-                                },
-                                partial_paths: None,
-                                commit: StepCommit::Prepared(prepared),
-                            }
-                        }
-                    }
-                }
-                Err(error) => {
-                    let result = fail_with_remaining_steps(
-                        started,
-                        steps,
-                        ordered_source_sets
-                            .iter()
-                            .skip(index)
-                            .copied()
-                            .collect::<Vec<_>>(),
-                        source_set,
-                        BuildMode::Skipped,
-                        error.to_string(),
-                    );
-                    return Err(BuildExecutionFailure::with_payload(
-                        AppError::Runtime(error.to_string()),
-                        result,
-                    ));
-                }
+        let designer_stage = match plan_generated_designer_load_step(
+            source_set,
+            &designer_context,
+            args.full_rebuild,
+            edt_stage_skipped,
+            config.build.partial_load_threshold,
+            &config.work_path,
+        ) {
+            Ok(plan) => plan,
+            Err(error) => {
+                let result = fail_from_source_set_index(
+                    started,
+                    steps,
+                    &ordered_source_sets,
+                    index,
+                    source_set,
+                    BuildMode::Skipped,
+                    error.to_string(),
+                );
+                return Err(BuildExecutionFailure::with_payload(
+                    AppError::Runtime(error.to_string()),
+                    result,
+                ));
             }
         };
 
@@ -1241,14 +827,11 @@ pub(super) fn run_build_edt(
                                 let location = match utilities.locate(UtilityType::V8) {
                                     Ok(location) => location,
                                     Err(error) => {
-                                        let result = fail_with_remaining_steps(
+                                        let result = fail_from_source_set_index(
                                             started,
                                             steps,
-                                            ordered_source_sets
-                                                .iter()
-                                                .skip(index)
-                                                .copied()
-                                                .collect::<Vec<_>>(),
+                                            &ordered_source_sets,
+                                            index,
                                             source_set,
                                             mode.clone(),
                                             error.to_string(),
@@ -1283,14 +866,11 @@ pub(super) fn run_build_edt(
                                 let location = match utilities.locate(UtilityType::Ibcmd) {
                                     Ok(location) => location,
                                     Err(error) => {
-                                        let result = fail_with_remaining_steps(
+                                        let result = fail_from_source_set_index(
                                             started,
                                             steps,
-                                            ordered_source_sets
-                                                .iter()
-                                                .skip(index)
-                                                .copied()
-                                                .collect::<Vec<_>>(),
+                                            &ordered_source_sets,
+                                            index,
                                             source_set,
                                             mode.clone(),
                                             error.to_string(),
@@ -1328,14 +908,11 @@ pub(super) fn run_build_edt(
                         load_started.elapsed().as_millis() as u64,
                     ),
                     Err(error) => {
-                        let result = fail_with_remaining_steps(
+                        let result = fail_from_source_set_index(
                             started,
                             steps,
-                            ordered_source_sets
-                                .iter()
-                                .skip(index)
-                                .copied()
-                                .collect::<Vec<_>>(),
+                            &ordered_source_sets,
+                            index,
                             source_set,
                             mode,
                             error.to_string(),
