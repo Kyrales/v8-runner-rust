@@ -3,5 +3,6 @@ pub mod error;
 pub mod fs;
 pub mod logging;
 pub mod path;
+pub mod source_descriptor;
 pub mod temp;
 pub mod time;

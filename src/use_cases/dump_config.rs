@@ -25,12 +25,11 @@ use crate::support::fs::{
 use crate::support::path::{
     hashed_lock_path, nearest_existing_canonical_path, stable_path_identity,
 };
+use crate::support::source_descriptor::{self, ExternalDescriptorParseError};
 use crate::use_cases::context::{ExecutionContext, InterruptionSafetyClass};
 use crate::use_cases::external_artifacts::ExternalArtifactKind;
 use crate::use_cases::request::{DumpModeRequest, DumpRequest as DumpArgs};
 use crate::use_cases::result::{UseCaseFailure, UseCaseResult};
-use quick_xml::events::Event;
-use quick_xml::Reader;
 use tracing::debug;
 
 mod coordinator;
@@ -872,9 +871,9 @@ pub(crate) fn run_external_dump_designer(
             ));
         }
     };
-    let (root_tag, logical_name) = parse_external_dump_descriptor(&contents, root_xml_path)
+    let parsed = parse_external_dump_descriptor(&contents, root_xml_path)
         .map_err(|error| (error, result.platform_log_path.clone()))?;
-    if root_tag != expected_kind.root_tag() {
+    if parsed.purpose.external_root_tag() != Some(expected_kind.root_tag()) {
         return Err((
             AppError::Validation(format!(
                 "external dump '{}' has unexpected root element",
@@ -883,7 +882,7 @@ pub(crate) fn run_external_dump_designer(
             result.platform_log_path.clone(),
         ));
     }
-    if logical_name != expected_logical_name {
+    if parsed.logical_name != expected_logical_name {
         return Err((
             AppError::Validation(format!(
                 "external dump '{}' has unexpected logical name",
@@ -898,85 +897,30 @@ pub(crate) fn run_external_dump_designer(
 fn parse_external_dump_descriptor(
     contents: &str,
     path: &Path,
-) -> Result<(String, String), AppError> {
-    let mut reader = Reader::from_str(contents);
-    reader.config_mut().trim_text(true);
-    let mut buf = Vec::new();
-    let mut root_tag = None;
-    let mut artifact_root_tag = None;
-    let mut seen_properties = false;
-    let mut seen_name = false;
-    let mut logical_name = None;
-    loop {
-        match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(event)) => {
-                let tag = String::from_utf8_lossy(event.name().as_ref()).into_owned();
-                if root_tag.is_none() {
-                    root_tag = Some(tag.clone());
-                }
-                if artifact_root_tag.is_none() {
-                    match tag.as_str() {
-                        "MetaDataObject" => {}
-                        "ExternalDataProcessor" | "ExternalReport" => {
-                            artifact_root_tag = Some(tag.clone());
-                        }
-                        _ if root_tag.as_deref() != Some("MetaDataObject") => {
-                            artifact_root_tag = Some(tag.clone());
-                        }
-                        _ => {}
-                    }
-                }
-                if tag == "Properties" {
-                    seen_properties = true;
-                } else if seen_properties && tag == "Name" {
-                    seen_name = true;
-                }
-            }
-            Ok(Event::Text(text)) if seen_name && logical_name.is_none() => {
-                logical_name = Some(
-                    text.unescape()
-                        .map_err(|error| {
-                            AppError::Validation(format!(
-                                "failed to decode external dump logical name in '{}': {error}",
-                                path.display()
-                            ))
-                        })?
-                        .into_owned(),
-                );
-            }
-            Ok(Event::End(event)) => {
-                let tag = String::from_utf8_lossy(event.name().as_ref()).into_owned();
-                if tag == "Name" {
-                    seen_name = false;
-                } else if tag == "Properties" {
-                    seen_properties = false;
-                }
-            }
-            Ok(Event::Eof) => break,
-            Err(error) => {
-                return Err(AppError::Validation(format!(
-                    "failed to parse external dump xml '{}': {error}",
-                    path.display()
-                )));
-            }
-            _ => {}
+) -> Result<source_descriptor::ParsedExternalDescriptor, AppError> {
+    source_descriptor::parse_external_descriptor(contents).map_err(|error| match error {
+        ExternalDescriptorParseError::Xml(error) => AppError::Validation(format!(
+            "failed to parse external dump xml '{}': {error}",
+            path.display()
+        )),
+        ExternalDescriptorParseError::DecodeLogicalName(error) => AppError::Validation(format!(
+            "failed to decode external dump logical name in '{}': {error}",
+            path.display()
+        )),
+        ExternalDescriptorParseError::MissingRootElement => {
+            AppError::Validation(format!("missing root XML element in '{}'", path.display()))
         }
-        buf.clear();
-    }
-
-    let root_tag = artifact_root_tag.or(root_tag).ok_or_else(|| {
-        AppError::Validation(format!("missing root XML element in '{}'", path.display()))
-    })?;
-    let logical_name = logical_name
-        .map(|value| value.trim().to_owned())
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| {
+        ExternalDescriptorParseError::UnsupportedRootElement(root) => {
             AppError::Validation(format!(
-                "external dump '{}' must contain Properties/Name",
+                "unsupported root XML element '{root}' in '{}'",
                 path.display()
             ))
-        })?;
-    Ok((root_tag, logical_name))
+        }
+        ExternalDescriptorParseError::MissingLogicalName => AppError::Validation(format!(
+            "external dump '{}' must contain Properties/Name",
+            path.display()
+        )),
+    })
 }
 
 fn cleanup_staging_on_platform_failure(staging_dir: &Path, error: AppError) -> AppError {
@@ -3246,21 +3190,27 @@ exit 0"#,
     #[test]
     fn parse_external_dump_descriptor_decodes_escaped_name() {
         let xml = "<ExternalDataProcessor><Properties><Name>Foo &amp; Bar</Name></Properties></ExternalDataProcessor>";
-        let (root, logical_name) =
+        let parsed =
             parse_external_dump_descriptor(xml, Path::new("/tmp/dump.xml")).expect("parse");
 
-        assert_eq!(root, "ExternalDataProcessor");
-        assert_eq!(logical_name, "Foo & Bar");
+        assert_eq!(
+            parsed.purpose.external_root_tag(),
+            Some("ExternalDataProcessor")
+        );
+        assert_eq!(parsed.logical_name, "Foo & Bar");
     }
 
     #[test]
     fn parse_external_dump_descriptor_accepts_metadataobject_wrapper() {
         let xml = "<MetaDataObject><ExternalDataProcessor><Properties><Name>Foo</Name></Properties></ExternalDataProcessor></MetaDataObject>";
-        let (root, logical_name) =
+        let parsed =
             parse_external_dump_descriptor(xml, Path::new("/tmp/dump.xml")).expect("parse");
 
-        assert_eq!(root, "ExternalDataProcessor");
-        assert_eq!(logical_name, "Foo");
+        assert_eq!(
+            parsed.purpose.external_root_tag(),
+            Some("ExternalDataProcessor")
+        );
+        assert_eq!(parsed.logical_name, "Foo");
     }
 
     #[test]

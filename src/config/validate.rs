@@ -1,5 +1,3 @@
-use quick_xml::events::Event;
-use quick_xml::Reader;
 use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::path::Path;
@@ -12,6 +10,7 @@ use crate::config::model::{
 use crate::platform::locator::PlatformVersionRequirement;
 use crate::support::edt_project::{self, EdtProjectKind};
 use crate::support::path::is_safe_path_segment;
+use crate::support::source_descriptor::{self, SourceDescriptorPurpose, SourceSetRootScanError};
 
 #[derive(Debug, Error)]
 pub enum ConfigValidationError {
@@ -386,45 +385,19 @@ fn validate_edt_external_source_set_layout(
     source_set: &SourceSetConfig,
     path: &Path,
 ) -> Result<(), ConfigValidationError> {
-    let entries = std::fs::read_dir(path).map_err(|error| {
-        source_set_layout_error(
-            &source_set.name,
-            format!(
-                "failed to inspect EDT external source-set '{}': {error}",
-                path.display()
-            ),
-        )
+    let entries = source_descriptor::scan_edt_external_root(path).map_err(|error| {
+        source_set_layout_error(&source_set.name, root_scan_error_message(error))
     })?;
 
-    let mut has_child_project = false;
+    if entries.is_empty() {
+        return Err(ConfigValidationError::ExternalEdtSourceSetHasNoProjects {
+            name: source_set.name.clone(),
+        });
+    }
+
     for entry in entries {
-        let entry = entry.map_err(|error| {
-            source_set_layout_error(
-                &source_set.name,
-                format!(
-                    "failed to read EDT external source-set entry '{}': {error}",
-                    path.display()
-                ),
-            )
-        })?;
-        let file_type = entry.file_type().map_err(|error| {
-            source_set_layout_error(
-                &source_set.name,
-                format!(
-                    "failed to inspect EDT external source-set entry '{}': {error}",
-                    path.display()
-                ),
-            )
-        })?;
-        if file_type.is_symlink() || !file_type.is_dir() {
-            continue;
-        }
-        let child = entry.path();
-        if !child.join(".project").is_file() {
-            continue;
-        }
-        has_child_project = true;
-        let detected = detect_edt_external_project_purpose(&child, &source_set.name)?;
+        let child = entry.path;
+        let detected = entry.purpose.map(map_source_descriptor_purpose);
         match detected {
             Some(detected) if detected == source_set.purpose => {}
             Some(detected) => {
@@ -450,63 +423,33 @@ fn validate_edt_external_source_set_layout(
             }
         }
     }
-
-    if has_child_project {
-        Ok(())
-    } else {
-        Err(ConfigValidationError::ExternalEdtSourceSetHasNoProjects {
-            name: source_set.name.clone(),
-        })
-    }
+    Ok(())
 }
 
 fn validate_designer_external_source_set_layout(
     source_set: &SourceSetConfig,
     path: &Path,
 ) -> Result<(), ConfigValidationError> {
-    let entries = std::fs::read_dir(path).map_err(|error| {
-        source_set_layout_error(
-            &source_set.name,
-            format!(
-                "failed to inspect Designer external root '{}': {error}",
-                path.display()
-            ),
-        )
+    let entries = source_descriptor::scan_designer_external_root(path).map_err(|error| {
+        source_set_layout_error(&source_set.name, root_scan_error_message(error))
     })?;
 
-    let mut has_top_level_xml = false;
+    if entries.is_empty() {
+        return Err(source_set_layout_error(
+            &source_set.name,
+            format!(
+                "Designer external source-set must contain top-level XML descriptors for {}: {}",
+                source_set_type_label(source_set.purpose),
+                path.display()
+            ),
+        ));
+    }
+
     for entry in entries {
-        let entry = entry.map_err(|error| {
-            source_set_layout_error(
-                &source_set.name,
-                format!(
-                    "failed to read Designer external entry in '{}': {error}",
-                    path.display()
-                ),
-            )
-        })?;
-        let file_type = entry.file_type().map_err(|error| {
-            source_set_layout_error(
-                &source_set.name,
-                format!(
-                    "failed to inspect Designer external entry in '{}': {error}",
-                    path.display()
-                ),
-            )
-        })?;
-        if file_type.is_symlink() || !file_type.is_file() {
-            continue;
-        }
-        let descriptor = entry.path();
-        if descriptor
-            .extension()
-            .and_then(|value| value.to_str())
-            .is_none_or(|value| !value.eq_ignore_ascii_case("xml"))
-        {
-            continue;
-        }
-        has_top_level_xml = true;
-        let detected = classify_external_descriptor_file(&descriptor, &source_set.name)?
+        let descriptor = entry.path;
+        let detected = entry
+            .purpose
+            .map(map_source_descriptor_purpose)
             .ok_or_else(|| {
                 source_set_layout_error(
                     &source_set.name,
@@ -528,38 +471,7 @@ fn validate_designer_external_source_set_layout(
             ));
         }
     }
-
-    if has_top_level_xml {
-        Ok(())
-    } else {
-        Err(source_set_layout_error(
-            &source_set.name,
-            format!(
-                "Designer external source-set must contain top-level XML descriptors for {}: {}",
-                source_set_type_label(source_set.purpose),
-                path.display()
-            ),
-        ))
-    }
-}
-
-fn detect_edt_external_project_purpose(
-    project_dir: &Path,
-    source_set_name: &str,
-) -> Result<Option<SourceSetPurpose>, ConfigValidationError> {
-    let Some(project) = read_edt_project_descriptor(project_dir, source_set_name)? else {
-        return Ok(None);
-    };
-    if project.kind() != Some(EdtProjectKind::ExternalObjects)
-        || !has_native_external_edt_layout(project_dir, source_set_name)?
-    {
-        return Ok(None);
-    }
-
-    classify_external_descriptor_file(
-        &edt_project::external_root_descriptor_path(project_dir),
-        source_set_name,
-    )
+    Ok(())
 }
 
 fn map_native_edt_kind(kind: EdtProjectKind) -> Option<SourceSetPurpose> {
@@ -586,171 +498,25 @@ fn read_edt_project_manifest(
         .map_err(|error| source_set_layout_error(source_set_name, error))
 }
 
-fn has_native_external_edt_layout(
-    project_dir: &Path,
-    source_set_name: &str,
-) -> Result<bool, ConfigValidationError> {
-    edt_project::has_native_external_project_layout(project_dir)
-        .map_err(|error| source_set_layout_error(source_set_name, error))
-}
-
 fn has_native_ordinary_edt_root_marker(project_dir: &Path) -> bool {
     edt_project::ordinary_root_marker_path(project_dir).is_file()
 }
 
-fn classify_external_descriptor_file(
-    path: &Path,
-    source_set_name: &str,
-) -> Result<Option<SourceSetPurpose>, ConfigValidationError> {
-    match classify_source_descriptor_file(path, source_set_name)? {
-        Some(kind) if kind.is_external() => Ok(Some(kind)),
-        _ => Ok(None),
+fn map_source_descriptor_purpose(purpose: SourceDescriptorPurpose) -> SourceSetPurpose {
+    match purpose {
+        SourceDescriptorPurpose::Configuration => SourceSetPurpose::Configuration,
+        SourceDescriptorPurpose::Extension => SourceSetPurpose::Extension,
+        SourceDescriptorPurpose::ExternalDataProcessors => SourceSetPurpose::ExternalDataProcessors,
+        SourceDescriptorPurpose::ExternalReports => SourceSetPurpose::ExternalReports,
     }
 }
 
-fn classify_source_descriptor_file(
-    path: &Path,
-    source_set_name: &str,
-) -> Result<Option<SourceSetPurpose>, ConfigValidationError> {
-    let content = std::fs::read_to_string(path).map_err(|error| {
-        source_set_layout_error(
-            source_set_name,
-            format!(
-                "failed to read source descriptor '{}': {error}",
-                path.display()
-            ),
-        )
-    })?;
-    classify_source_descriptor_content(&content, path, source_set_name)
-}
-
-fn classify_source_descriptor_content(
-    content: &str,
-    source_path: &Path,
-    source_set_name: &str,
-) -> Result<Option<SourceSetPurpose>, ConfigValidationError> {
-    let scan = scan_xml_descriptor(content, source_path, source_set_name)?;
-    Ok(match scan.kind {
-        Some(XmlDescriptorKind::Configuration) => {
-            if scan.has_configuration_extension_purpose || scan.has_object_belonging {
-                Some(SourceSetPurpose::Extension)
-            } else {
-                Some(SourceSetPurpose::Configuration)
-            }
+fn root_scan_error_message(error: SourceSetRootScanError) -> String {
+    match error {
+        SourceSetRootScanError::Runtime(message) | SourceSetRootScanError::Validation(message) => {
+            message
         }
-        Some(XmlDescriptorKind::ExternalDataProcessor) => {
-            Some(SourceSetPurpose::ExternalDataProcessors)
-        }
-        Some(XmlDescriptorKind::ExternalReport) => Some(SourceSetPurpose::ExternalReports),
-        None => None,
-    })
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum XmlDescriptorKind {
-    Configuration,
-    ExternalDataProcessor,
-    ExternalReport,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-struct XmlDescriptorScan {
-    kind: Option<XmlDescriptorKind>,
-    has_configuration_extension_purpose: bool,
-    has_object_belonging: bool,
-}
-
-fn scan_xml_descriptor(
-    content: &str,
-    source_path: &Path,
-    source_set_name: &str,
-) -> Result<XmlDescriptorScan, ConfigValidationError> {
-    let mut reader = Reader::from_str(content);
-    reader.config_mut().trim_text(true);
-    let mut buf = Vec::new();
-    let mut root_tag = None::<String>;
-    let mut first_child_tag = None::<String>;
-    let mut depth = 0usize;
-    let mut scan = XmlDescriptorScan::default();
-
-    loop {
-        match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(event)) => {
-                let tag = xml_local_name(event.name().as_ref());
-                if root_tag.is_none() {
-                    root_tag = Some(tag.clone());
-                    depth = 1;
-                } else {
-                    if depth == 1 && first_child_tag.is_none() {
-                        first_child_tag = Some(tag.clone());
-                    }
-                    depth += 1;
-                }
-                if tag == "ConfigurationExtensionPurpose" {
-                    scan.has_configuration_extension_purpose = true;
-                } else if tag == "ObjectBelonging" {
-                    scan.has_object_belonging = true;
-                }
-            }
-            Ok(Event::Empty(event)) => {
-                let tag = xml_local_name(event.name().as_ref());
-                if root_tag.is_none() {
-                    root_tag = Some(tag.clone());
-                    break;
-                }
-                if depth == 1 && first_child_tag.is_none() {
-                    first_child_tag = Some(tag.clone());
-                }
-                if tag == "ConfigurationExtensionPurpose" {
-                    scan.has_configuration_extension_purpose = true;
-                } else if tag == "ObjectBelonging" {
-                    scan.has_object_belonging = true;
-                }
-            }
-            Ok(Event::End(_)) => {
-                depth = depth.saturating_sub(1);
-            }
-            Ok(Event::Eof) => break,
-            Err(error) => {
-                return Err(source_set_layout_error(
-                    source_set_name,
-                    format!(
-                        "failed to parse source descriptor '{}': {error}",
-                        source_path.display()
-                    ),
-                ));
-            }
-            _ => {}
-        }
-        buf.clear();
     }
-
-    if depth > 0 {
-        return Err(source_set_layout_error(
-            source_set_name,
-            format!(
-                "failed to parse source descriptor '{}': unexpected EOF",
-                source_path.display()
-            ),
-        ));
-    }
-
-    let effective_tag = match root_tag.as_deref() {
-        Some("MetaDataObject") => first_child_tag.as_deref(),
-        other => other,
-    };
-    scan.kind = match effective_tag {
-        Some("Configuration") => Some(XmlDescriptorKind::Configuration),
-        Some("ExternalDataProcessor") => Some(XmlDescriptorKind::ExternalDataProcessor),
-        Some("ExternalReport") => Some(XmlDescriptorKind::ExternalReport),
-        _ => None,
-    };
-    Ok(scan)
-}
-
-fn xml_local_name(name: &[u8]) -> String {
-    let raw = String::from_utf8_lossy(name);
-    raw.rsplit(':').next().unwrap_or(raw.as_ref()).to_owned()
 }
 
 fn source_set_layout_error(name: &str, details: impl Into<String>) -> ConfigValidationError {

@@ -24,6 +24,7 @@ use crate::platform::locator::UtilityType;
 use crate::platform::process::ProcessRunner;
 use crate::platform::result::PlatformCommandResult;
 use crate::platform::utilities::PlatformUtilities;
+use crate::support::edt_project;
 use crate::support::error::AppError;
 use crate::support::fs::{
     acquire_advisory_lock, ensure_dir, is_known_tool_name, metadata_sidecar_path,
@@ -972,21 +973,11 @@ fn resolve_extension_name(config: &AppConfig, source_set: &SourceSetConfig) -> S
         return source_set.name.clone();
     }
 
-    let project_file = config.base_path.join(&source_set.path).join(".project");
-    std::fs::read_to_string(project_file)
+    let project_dir = config.base_path.join(&source_set.path);
+    edt_project::read_project_name_from_dir(&project_dir)
         .ok()
-        .and_then(|contents| extract_xml_tag_text(&contents, "name"))
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| source_set.name.clone())
-}
-
-fn extract_xml_tag_text(contents: &str, tag_name: &str) -> Option<String> {
-    let open_tag = format!("<{tag_name}>");
-    let close_tag = format!("</{tag_name}>");
-    let start = contents.find(&open_tag)? + open_tag.len();
-    let rest = &contents[start..];
-    let end = rest.find(&close_tag)?;
-    Some(rest[..end].trim().to_owned())
 }
 
 fn validate_publish_target(resolved: &ResolvedArtifactsTarget) -> Result<(), AppError> {

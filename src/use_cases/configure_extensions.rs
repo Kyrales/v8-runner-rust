@@ -5,6 +5,7 @@ use crate::domain::extensions::{ExtensionsResult, ExtensionsStep};
 use crate::platform::ibcmd::{IbcmdConnection, IbcmdDsl, IbcmdError};
 use crate::platform::locator::UtilityType;
 use crate::platform::utilities::PlatformUtilities;
+use crate::support::edt_project;
 use crate::support::error::AppError;
 use crate::use_cases::context::{ExecutionContext, InterruptionSafetyClass};
 use crate::use_cases::ibcmd_diagnostics::format_ibcmd_failure_details;
@@ -254,21 +255,11 @@ fn resolve_extension_name(config: &AppConfig, source_set: &SourceSetConfig) -> S
         return source_set.name.clone();
     }
 
-    let project_file = config.base_path.join(&source_set.path).join(".project");
-    std::fs::read_to_string(project_file)
+    let project_dir = config.base_path.join(&source_set.path);
+    edt_project::read_project_name_from_dir(&project_dir)
         .ok()
-        .and_then(|contents| extract_xml_tag_text(&contents, "name"))
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| source_set.name.clone())
-}
-
-fn extract_xml_tag_text(contents: &str, tag_name: &str) -> Option<String> {
-    let open_tag = format!("<{tag_name}>");
-    let close_tag = format!("</{tag_name}>");
-    let start = contents.find(&open_tag)? + open_tag.len();
-    let rest = &contents[start..];
-    let end = rest.find(&close_tag)?;
-    Some(rest[..end].trim().to_owned())
 }
 
 #[cfg(test)]

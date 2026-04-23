@@ -1,7 +1,5 @@
 use std::path::{Path, PathBuf};
 
-use quick_xml::events::Event;
-use quick_xml::Reader;
 use sha2::{Digest, Sha256};
 
 use crate::config::model::{AppConfig, SourceSetConfig, SourceSetPurpose};
@@ -9,6 +7,9 @@ use crate::platform::edt::EdtDsl;
 use crate::support::edt_project;
 use crate::support::error::AppError;
 use crate::support::fs::{ensure_dir, remove_path_if_exists};
+use crate::support::source_descriptor::{
+    self, ExternalDescriptorParseError, SourceDescriptorPurpose,
+};
 use crate::use_cases::build_project::ensure_platform_success as ensure_build_platform_success;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -244,101 +245,58 @@ pub(crate) fn parse_external_descriptor(path: &Path) -> Result<ParsedExternalDes
             path.display()
         ))
     })?;
-    let mut reader = Reader::from_str(&contents);
-    reader.config_mut().trim_text(true);
-    let mut buf = Vec::new();
-    let mut root_tag = None;
-    let mut artifact_root_tag = None;
-    let mut seen_properties = false;
-    let mut seen_name = false;
-    let mut logical_name = None;
-    loop {
-        match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(event)) => {
-                let tag = String::from_utf8_lossy(event.name().as_ref()).into_owned();
-                if root_tag.is_none() {
-                    root_tag = Some(tag.clone());
-                }
-                if artifact_root_tag.is_none() {
-                    match tag.as_str() {
-                        "MetaDataObject" => {}
-                        "ExternalDataProcessor" | "ExternalReport" => {
-                            artifact_root_tag = Some(tag.clone());
-                        }
-                        _ if root_tag.as_deref() != Some("MetaDataObject") => {
-                            artifact_root_tag = Some(tag.clone());
-                        }
-                        _ => {}
-                    }
-                }
-                if tag == "Properties" {
-                    seen_properties = true;
-                } else if seen_properties && tag == "Name" {
-                    seen_name = true;
-                }
-            }
-            Ok(Event::Text(text)) if seen_name && logical_name.is_none() => {
-                logical_name = Some(
-                    text.unescape()
-                        .map_err(|error| {
-                            AppError::Validation(format!(
-                                "failed to decode logical name in '{}': {error}",
-                                path.display()
-                            ))
-                        })?
-                        .into_owned(),
-                );
-            }
-            Ok(Event::End(event)) => {
-                let tag = String::from_utf8_lossy(event.name().as_ref()).into_owned();
-                if tag == "Name" {
-                    seen_name = false;
-                } else if tag == "Properties" {
-                    seen_properties = false;
-                }
-            }
-            Ok(Event::Eof) => break,
-            Err(error) => {
-                return Err(AppError::Validation(format!(
-                    "failed to parse external descriptor '{}': {error}",
-                    path.display()
-                )));
-            }
-            _ => {}
-        }
-        buf.clear();
-    }
-
-    let artifact_type = match artifact_root_tag.as_deref().or(root_tag.as_deref()) {
-        Some("ExternalDataProcessor") => ExternalArtifactKind::DataProcessor,
-        Some("ExternalReport") => ExternalArtifactKind::Report,
-        Some(other) => {
-            return Err(AppError::Validation(format!(
-                "unsupported root XML element '{other}' in '{}'",
-                path.display()
-            )));
-        }
-        None => {
-            return Err(AppError::Validation(format!(
-                "missing root XML element in '{}'",
-                path.display()
-            )));
-        }
-    };
-    let logical_name = logical_name
-        .map(|value| value.trim().to_owned())
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| {
-            AppError::Validation(format!(
-                "external descriptor '{}' must contain Properties/Name",
-                path.display()
-            ))
-        })?;
+    let parsed = source_descriptor::parse_external_descriptor(&contents)
+        .map_err(|error| map_external_descriptor_parse_error(path, error))?;
+    let artifact_type = map_external_purpose(parsed.purpose, path)?;
 
     Ok(ParsedExternalDescriptor {
-        logical_name,
+        logical_name: parsed.logical_name,
         artifact_type,
     })
+}
+
+fn map_external_purpose(
+    purpose: SourceDescriptorPurpose,
+    path: &Path,
+) -> Result<ExternalArtifactKind, AppError> {
+    match purpose {
+        SourceDescriptorPurpose::ExternalDataProcessors => Ok(ExternalArtifactKind::DataProcessor),
+        SourceDescriptorPurpose::ExternalReports => Ok(ExternalArtifactKind::Report),
+        _ => Err(AppError::Validation(format!(
+            "unsupported root XML element '{}' in '{}'",
+            purpose.external_root_tag().unwrap_or("Configuration"),
+            path.display()
+        ))),
+    }
+}
+
+fn map_external_descriptor_parse_error(
+    path: &Path,
+    error: ExternalDescriptorParseError,
+) -> AppError {
+    match error {
+        ExternalDescriptorParseError::Xml(error) => AppError::Validation(format!(
+            "failed to parse external descriptor '{}': {error}",
+            path.display()
+        )),
+        ExternalDescriptorParseError::DecodeLogicalName(error) => AppError::Validation(format!(
+            "failed to decode logical name in '{}': {error}",
+            path.display()
+        )),
+        ExternalDescriptorParseError::MissingRootElement => {
+            AppError::Validation(format!("missing root XML element in '{}'", path.display()))
+        }
+        ExternalDescriptorParseError::UnsupportedRootElement(root) => {
+            AppError::Validation(format!(
+                "unsupported root XML element '{root}' in '{}'",
+                path.display()
+            ))
+        }
+        ExternalDescriptorParseError::MissingLogicalName => AppError::Validation(format!(
+            "external descriptor '{}' must contain Properties/Name",
+            path.display()
+        )),
+    }
 }
 
 fn stable_id_for_path(logical_name: &str, path: &Path) -> String {
