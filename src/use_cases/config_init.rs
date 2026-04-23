@@ -59,7 +59,7 @@ pub fn execute(request: &ConfigInitRequest) -> Result<ConfigInitResult, AppError
 
     let detected = discover_sources(&project_dir)?;
     let format = choose_format(request.format, &detected);
-    let source_sets = build_source_sets(&project_dir, &detected, format);
+    let source_sets = build_source_sets(&project_dir, &detected, format)?;
     let platform_version = detect_platform_version(&project_dir, format, &source_sets)?;
     let warnings = collect_discovery_warnings(&project_dir, format, &source_sets)?;
     validate_discovered_source_sets(&project_dir, request.builder, &source_sets)?;
@@ -462,7 +462,7 @@ fn build_source_sets(
     project_dir: &Path,
     detected: &DetectedSources,
     format: ConfigFormatRequest,
-) -> Vec<ConfigInitSourceSet> {
+) -> Result<Vec<ConfigInitSourceSet>, AppError> {
     let mut selected = match format {
         ConfigFormatRequest::Auto | ConfigFormatRequest::Designer => &detected.designer,
         ConfigFormatRequest::Edt => &detected.edt,
@@ -479,18 +479,33 @@ fn build_source_sets(
     let mut source_sets: Vec<_> = selected
         .iter()
         .enumerate()
-        .map(|(index, source)| ConfigInitSourceSet {
-            name: source_set_name(&source.path, source.purpose, index),
-            source_type: source.purpose.as_yaml().to_owned(),
-            path: relative_path(project_dir, &source.path),
+        .map(|(index, source)| {
+            Ok(ConfigInitSourceSet {
+                name: source_set_name(project_dir, source, format, index)?,
+                source_type: source.purpose.as_yaml().to_owned(),
+                path: relative_path(project_dir, &source.path),
+            })
         })
-        .collect();
+        .collect::<Result<_, AppError>>()?;
 
-    deduplicate_names(&mut source_sets);
-    source_sets
+    deduplicate_names(&mut source_sets)?;
+    Ok(source_sets)
 }
 
-fn source_set_name(path: &Path, purpose: SourcePurpose, index: usize) -> String {
+fn source_set_name(
+    project_dir: &Path,
+    source: &DetectedSource,
+    format: ConfigFormatRequest,
+    index: usize,
+) -> Result<String, AppError> {
+    if source.purpose == SourcePurpose::Extension {
+        return extension_source_set_name(project_dir, &source.path, format);
+    }
+
+    Ok(path_source_set_name(&source.path, source.purpose, index))
+}
+
+fn path_source_set_name(path: &Path, purpose: SourcePurpose, index: usize) -> String {
     let fallback = match purpose {
         SourcePurpose::Configuration => "main",
         SourcePurpose::Extension => "extension",
@@ -528,9 +543,78 @@ fn normalize_name(raw: &str) -> String {
     }
 }
 
-fn deduplicate_names(source_sets: &mut [ConfigInitSourceSet]) {
+fn extension_source_set_name(
+    project_dir: &Path,
+    source_path: &Path,
+    format: ConfigFormatRequest,
+) -> Result<String, AppError> {
+    let marker_path = match format {
+        ConfigFormatRequest::Auto | ConfigFormatRequest::Designer => {
+            source_path.join("Configuration.xml")
+        }
+        ConfigFormatRequest::Edt => edt_project::ordinary_root_marker_path(source_path),
+    };
+    let raw_name = read_configuration_logical_name(&marker_path)?
+        .map(|name| name.trim().to_owned())
+        .filter(|name| !name.is_empty())
+        .ok_or_else(|| {
+            AppError::Validation(format!(
+                "extension source-set '{}' must declare configuration logical name in '{}'",
+                relative_path(project_dir, source_path),
+                marker_path.display()
+            ))
+        })?;
+    if !is_safe_path_segment(&raw_name) {
+        return Err(AppError::Validation(format!(
+            "extension source-set '{}' declares unsafe configuration logical name '{}'",
+            relative_path(project_dir, source_path),
+            raw_name
+        )));
+    }
+
+    Ok(raw_name)
+}
+
+fn read_configuration_logical_name(path: &Path) -> Result<Option<String>, AppError> {
+    let content = std::fs::read_to_string(path).map_err(|error| {
+        AppError::Runtime(format!(
+            "failed to read configuration marker '{}': {error}",
+            path.display()
+        ))
+    })?;
+    source_descriptor::extract_configuration_logical_name(&content).map_err(|error| match error {
+        SourceDescriptorParseError::Xml(error) => AppError::Validation(format!(
+            "failed to parse configuration marker '{}': {error}",
+            path.display()
+        )),
+        SourceDescriptorParseError::UnexpectedEof => AppError::Validation(format!(
+            "failed to parse configuration marker '{}': unexpected EOF",
+            path.display()
+        )),
+    })
+}
+
+fn deduplicate_names(source_sets: &mut [ConfigInitSourceSet]) -> Result<(), AppError> {
+    let mut protected_extension_names = HashSet::new();
+    for source_set in source_sets
+        .iter()
+        .filter(|source_set| source_set.source_type == SourcePurpose::Extension.as_yaml())
+    {
+        if !protected_extension_names.insert(source_set.name.clone()) {
+            return Err(AppError::Validation(format!(
+                "duplicate extension source-set logical name '{}'",
+                source_set.name
+            )));
+        }
+    }
+
     let mut seen = HashSet::new();
     for source_set in source_sets {
+        if source_set.source_type == SourcePurpose::Extension.as_yaml() {
+            seen.insert(source_set.name.clone());
+            continue;
+        }
+
         let base = if source_set.name.is_empty() {
             "source".to_owned()
         } else {
@@ -538,12 +622,14 @@ fn deduplicate_names(source_sets: &mut [ConfigInitSourceSet]) {
         };
         let mut name = base.clone();
         let mut suffix = 2;
-        while !seen.insert(name.clone()) {
+        while protected_extension_names.contains(&name) || !seen.insert(name.clone()) {
             name = format!("{base}-{suffix}");
             suffix += 1;
         }
         source_set.name = name;
     }
+
+    Ok(())
 }
 
 fn relative_path(root: &Path, path: &Path) -> String {
@@ -577,7 +663,7 @@ fn render_config(
     yaml.push_str(&format!("  connection: '{}'\n", escape_yaml(connection)));
     yaml.push_str("source-set:\n");
     for source_set in source_sets {
-        yaml.push_str(&format!("  - name: {}\n", source_set.name));
+        yaml.push_str(&format!("  - name: '{}'\n", escape_yaml(&source_set.name)));
         yaml.push_str(&format!("    type: {}\n", source_set.source_type));
         yaml.push_str(&format!("    path: '{}'\n", escape_yaml(&source_set.path)));
     }
@@ -736,10 +822,20 @@ mod tests {
         nature: &str,
         base_project: Option<&str>,
     ) {
+        create_native_edt_project_with_config_name(project_dir, name, name, nature, base_project);
+    }
+
+    fn create_native_edt_project_with_config_name(
+        project_dir: &Path,
+        project_name: &str,
+        config_name: &str,
+        nature: &str,
+        base_project: Option<&str>,
+    ) {
         write_file(
             &project_dir.join(".project"),
             &format!(
-                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<projectDescription>\n  <name>{name}</name>\n  <natures>\n    <nature>{nature}</nature>\n  </natures>\n</projectDescription>\n"
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<projectDescription>\n  <name>{project_name}</name>\n  <natures>\n    <nature>{nature}</nature>\n  </natures>\n</projectDescription>\n"
             ),
         );
         let base_line = base_project
@@ -754,7 +850,9 @@ mod tests {
                 .join("src")
                 .join("Configuration")
                 .join("Configuration.mdo"),
-            "<Configuration />\n",
+            &format!(
+                "<mdclass:Configuration xmlns:mdclass=\"http://g5.1c.ru/v8/dt/metadata/mdclass\"><name>{config_name}</name></mdclass:Configuration>\n"
+            ),
         );
         write_file(
             &project_dir
@@ -775,7 +873,7 @@ mod tests {
         std::fs::write(main.join("Configuration.xml"), "<Configuration/>").expect("main xml");
         std::fs::write(
             ext.join("Configuration.xml"),
-            "<Configuration><ConfigurationExtensionPurpose kind=\"Customization\">Customization</ConfigurationExtensionPurpose></Configuration>",
+            "<Configuration><Properties><Name>SalesAddon</Name><ConfigurationExtensionPurpose kind=\"Customization\">Customization</ConfigurationExtensionPurpose></Properties></Configuration>",
         )
         .expect("ext xml");
 
@@ -791,9 +889,90 @@ mod tests {
 
         assert_eq!(result.format, "DESIGNER");
         assert_eq!(result.source_sets.len(), 2);
+        assert!(result.source_sets.iter().any(|source| {
+            source.name == "SalesAddon"
+                && source.path == "extensions/sales"
+                && source.source_type == "EXTENSION"
+        }));
+        assert!(std::fs::read_to_string(dir.path().join("v8project.yaml"))
+            .expect("config")
+            .contains("name: 'SalesAddon'"));
         assert!(std::fs::read_to_string(dir.path().join("v8project.yaml"))
             .expect("config")
             .contains("type: EXTENSION"));
+    }
+
+    #[test]
+    fn quotes_generated_source_set_name_so_config_can_be_reloaded() {
+        let dir = tempdir().expect("tempdir");
+        let main = dir.path().join("src").join("main");
+        let ext = dir.path().join("extensions").join("sales");
+        std::fs::create_dir_all(&main).expect("main");
+        std::fs::create_dir_all(&ext).expect("ext");
+        std::fs::write(main.join("Configuration.xml"), "<Configuration/>").expect("main xml");
+        std::fs::write(
+            ext.join("Configuration.xml"),
+            "<Configuration><Properties><Name>#SalesAddon</Name><ConfigurationExtensionPurpose kind=\"Customization\">Customization</ConfigurationExtensionPurpose></Properties></Configuration>",
+        )
+        .expect("ext xml");
+
+        execute(&ConfigInitRequest {
+            project_dir: dir.path().to_path_buf(),
+            output_path: "v8project.yaml".into(),
+            force: false,
+            connection: None,
+            format: ConfigFormatRequest::Designer,
+            builder: ConfigBuilderRequest::Designer,
+        })
+        .expect("init config");
+
+        let config_text =
+            std::fs::read_to_string(dir.path().join("v8project.yaml")).expect("generated config");
+        assert!(config_text.contains("name: '#SalesAddon'"));
+        let loaded = load_config(
+            Some(
+                dir.path()
+                    .join("v8project.yaml")
+                    .to_str()
+                    .expect("config path"),
+            ),
+            None,
+        )
+        .expect("generated config should reload");
+        assert!(loaded
+            .source_sets
+            .iter()
+            .any(|source_set| source_set.name == "#SalesAddon"));
+    }
+
+    #[test]
+    fn rejects_extension_logical_name_with_control_characters() {
+        let dir = tempdir().expect("tempdir");
+        let main = dir.path().join("src").join("main");
+        let ext = dir.path().join("extensions").join("sales");
+        std::fs::create_dir_all(&main).expect("main");
+        std::fs::create_dir_all(&ext).expect("ext");
+        std::fs::write(main.join("Configuration.xml"), "<Configuration/>").expect("main xml");
+        std::fs::write(
+            ext.join("Configuration.xml"),
+            "<Configuration><Properties><Name>Sales\nAddon</Name><ConfigurationExtensionPurpose kind=\"Customization\">Customization</ConfigurationExtensionPurpose></Properties></Configuration>",
+        )
+        .expect("ext xml");
+
+        let error = execute(&ConfigInitRequest {
+            project_dir: dir.path().to_path_buf(),
+            output_path: "v8project.yaml".into(),
+            force: false,
+            connection: None,
+            format: ConfigFormatRequest::Designer,
+            builder: ConfigBuilderRequest::Designer,
+        })
+        .expect_err("control characters are unsafe");
+
+        assert!(error
+            .to_string()
+            .contains("declares unsafe configuration logical name"));
+        assert!(!dir.path().join("v8project.yaml").exists());
     }
 
     #[test]
@@ -838,7 +1017,7 @@ mod tests {
         std::fs::create_dir_all(&ext).expect("ext dir");
         std::fs::write(
             ext.join("Configuration.xml"),
-            "<Configuration><ConfigurationExtensionPurpose kind=\"Customization\">Customization</ConfigurationExtensionPurpose></Configuration>",
+            "<Configuration><Properties><Name>SalesAddon</Name><ConfigurationExtensionPurpose kind=\"Customization\">Customization</ConfigurationExtensionPurpose></Properties></Configuration>",
         )
         .expect("ext xml");
 
@@ -858,12 +1037,14 @@ mod tests {
             .iter()
             .any(|source| source.path == "." && source.source_type == "CONFIGURATION"));
         assert!(result.source_sets.iter().any(|source| {
-            source.path == "packages/sales-addon" && source.source_type == "EXTENSION"
+            source.name == "SalesAddon"
+                && source.path == "packages/sales-addon"
+                && source.source_type == "EXTENSION"
         }));
     }
 
     #[test]
-    fn detects_native_edt_source_sets_from_project_markers_instead_of_path_name() {
+    fn detects_native_edt_extension_name_from_configuration_file() {
         let dir = tempdir().expect("tempdir");
         let config_project = dir.path().join("workspace").join("cfg-project");
         let extension_project = dir.path().join("workspace").join("addon-project");
@@ -873,9 +1054,10 @@ mod tests {
             crate::support::edt_project::V8_CONFIGURATION_NATURE,
             None,
         );
-        create_native_edt_project(
+        create_native_edt_project_with_config_name(
             &extension_project,
-            "sales",
+            "sales-project",
+            "sales_addon",
             crate::support::edt_project::V8_EXTENSION_NATURE,
             Some("configuration"),
         );
@@ -896,7 +1078,9 @@ mod tests {
             source.path == "workspace/cfg-project" && source.source_type == "CONFIGURATION"
         }));
         assert!(result.source_sets.iter().any(|source| {
-            source.path == "workspace/addon-project" && source.source_type == "EXTENSION"
+            source.name == "sales_addon"
+                && source.path == "workspace/addon-project"
+                && source.source_type == "EXTENSION"
         }));
     }
 
@@ -934,11 +1118,14 @@ mod tests {
             source.path == "workspace/cfg-project" && source.source_type == "CONFIGURATION"
         }));
         assert!(result.source_sets.iter().any(|source| {
-            source.path == "workspace/addon-project" && source.source_type == "EXTENSION"
+            source.name == "sales"
+                && source.path == "workspace/addon-project"
+                && source.source_type == "EXTENSION"
         }));
-        assert!(result.warnings.iter().any(|warning| {
-            warning.contains("addon-project") && warning.contains("Base-Project")
-        }));
+        assert!(result
+            .warnings
+            .iter()
+            .any(|warning| { warning.contains("sales") && warning.contains("Base-Project") }));
     }
 
     #[test]

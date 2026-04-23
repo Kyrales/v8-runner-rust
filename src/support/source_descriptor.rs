@@ -148,6 +148,17 @@ pub fn parse_external_descriptor(
     })
 }
 
+pub fn extract_configuration_logical_name(
+    content: &str,
+) -> Result<Option<String>, SourceDescriptorParseError> {
+    let scan = scan_xml_descriptor(content)?;
+    if scan.kind != Some(XmlDescriptorKind::Configuration) {
+        return Ok(None);
+    }
+
+    extract_configuration_name(content)
+}
+
 pub fn scan_designer_external_root(
     dir: &Path,
 ) -> Result<Vec<DesignerExternalDescriptorEntry>, SourceSetRootScanError> {
@@ -365,6 +376,68 @@ fn extract_logical_name(content: &str) -> Result<Option<String>, ExternalDescrip
     Ok(logical_name)
 }
 
+fn extract_configuration_name(content: &str) -> Result<Option<String>, SourceDescriptorParseError> {
+    let mut reader = Reader::from_str(content);
+    reader.config_mut().trim_text(true);
+    let mut buf = Vec::new();
+    let mut stack = Vec::<String>::new();
+    let mut logical_name = None;
+
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(event)) => {
+                stack.push(xml_local_name(event.name().as_ref()));
+            }
+            Ok(Event::Empty(event)) => {
+                stack.push(xml_local_name(event.name().as_ref()));
+                stack.pop();
+            }
+            Ok(Event::Text(text))
+                if logical_name.is_none() && is_configuration_name_path(&stack) =>
+            {
+                logical_name = Some(
+                    text.unescape()
+                        .map_err(|error| SourceDescriptorParseError::Xml(error.to_string()))?
+                        .into_owned(),
+                );
+            }
+            Ok(Event::End(_)) => {
+                stack.pop();
+            }
+            Ok(Event::Eof) => break,
+            Err(error) => {
+                return Err(SourceDescriptorParseError::Xml(error.to_string()));
+            }
+            _ => {}
+        }
+        buf.clear();
+    }
+
+    if !stack.is_empty() {
+        return Err(SourceDescriptorParseError::UnexpectedEof);
+    }
+
+    Ok(logical_name)
+}
+
+fn is_configuration_name_path(stack: &[String]) -> bool {
+    matches!(
+        stack,
+        [configuration, name] if configuration == "Configuration" && name == "name"
+    ) || matches!(
+        stack,
+        [configuration, properties, name]
+            if configuration == "Configuration" && properties == "Properties" && name == "Name"
+    ) || matches!(
+        stack,
+        [metadata, configuration, properties, name]
+            if metadata == "MetaDataObject"
+                && configuration == "Configuration"
+                && properties == "Properties"
+                && name == "Name"
+    )
+}
+
 fn detect_edt_external_project_purpose(
     project_dir: &Path,
 ) -> Result<Option<SourceDescriptorPurpose>, SourceSetRootScanError> {
@@ -401,8 +474,8 @@ fn xml_local_name(name: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        classify_source_descriptor, parse_external_descriptor, scan_designer_external_root,
-        SourceDescriptorPurpose,
+        classify_source_descriptor, extract_configuration_logical_name, parse_external_descriptor,
+        scan_designer_external_root, SourceDescriptorPurpose,
     };
     use std::fs;
     use tempfile::tempdir;
@@ -414,6 +487,26 @@ mod tests {
         assert_eq!(
             classify_source_descriptor(xml).expect("classify"),
             Some(SourceDescriptorPurpose::Extension)
+        );
+    }
+
+    #[test]
+    fn extracts_configuration_logical_name_from_designer_descriptor() {
+        let xml = "<MetaDataObject><Configuration><Properties><Name>client_mcp</Name><ConfigurationExtensionPurpose>Customization</ConfigurationExtensionPurpose></Properties></Configuration></MetaDataObject>";
+
+        assert_eq!(
+            extract_configuration_logical_name(xml).expect("name"),
+            Some("client_mcp".to_owned())
+        );
+    }
+
+    #[test]
+    fn extracts_configuration_logical_name_from_edt_descriptor() {
+        let xml = r#"<mdclass:Configuration xmlns:mdclass="http://g5.1c.ru/v8/dt/metadata/mdclass"><name>test_client</name><languages><name>Русский</name></languages></mdclass:Configuration>"#;
+
+        assert_eq!(
+            extract_configuration_logical_name(xml).expect("name"),
+            Some("test_client".to_owned())
         );
     }
 

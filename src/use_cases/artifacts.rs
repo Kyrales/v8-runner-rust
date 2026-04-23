@@ -24,7 +24,6 @@ use crate::platform::locator::UtilityType;
 use crate::platform::process::ProcessRunner;
 use crate::platform::result::PlatformCommandResult;
 use crate::platform::utilities::PlatformUtilities;
-use crate::support::edt_project;
 use crate::support::error::AppError;
 use crate::support::fs::{
     acquire_advisory_lock, ensure_dir, is_known_tool_name, metadata_sidecar_path,
@@ -37,6 +36,7 @@ use crate::support::path::{
 use crate::support::temp::platform_logs_dir;
 use crate::use_cases::context::{ExecutionContext, ExecutionInterruption, InterruptionSafetyClass};
 use crate::use_cases::dump_config::run_external_dump_designer;
+use crate::use_cases::extension_identity::platform_extension_name;
 use crate::use_cases::external_artifacts::{
     discover_designer_external_artifacts, prepare_edt_external_artifacts, resolve_source_set_path,
     sanitize_file_stem, source_set_external_kind, ExternalArtifactDescriptor,
@@ -756,7 +756,7 @@ fn resolve_target(
                         "source-set '{source_set_name}' is not an extension source-set"
                     )));
                 }
-                let resolved_extension_name = resolve_extension_name(config, source_set);
+                let resolved_extension_name = platform_extension_name(source_set);
                 if resolved_extension_name != requested_extension {
                     return Err(AppError::Validation(format!(
                         "source-set '{source_set_name}' resolves to extension '{resolved_extension_name}', expected '{requested_extension}'"
@@ -769,7 +769,7 @@ fn resolve_target(
                     .iter()
                     .filter(|source_set| source_set.purpose == SourceSetPurpose::Extension)
                     .filter_map(|source_set| {
-                        let resolved_name = resolve_extension_name(config, source_set);
+                        let resolved_name = platform_extension_name(source_set);
                         (resolved_name == requested_extension).then_some(source_set)
                     })
                     .collect::<Vec<_>>();
@@ -782,7 +782,7 @@ fn resolve_target(
                             format!(
                                 "{}=>{}",
                                 source_set.name,
-                                resolve_extension_name(config, source_set)
+                                platform_extension_name(source_set)
                             )
                         })
                         .collect::<Vec<_>>();
@@ -952,18 +952,6 @@ fn resolve_single_configuration_source_set(
         )));
     }
     Ok(configuration_source_sets[0])
-}
-
-fn resolve_extension_name(config: &AppConfig, source_set: &SourceSetConfig) -> String {
-    if config.format != SourceFormat::Edt {
-        return source_set.name.clone();
-    }
-
-    let project_dir = config.base_path.join(&source_set.path);
-    edt_project::read_project_name_from_dir(&project_dir)
-        .ok()
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| source_set.name.clone())
 }
 
 fn validate_publish_target(resolved: &ResolvedArtifactsTarget) -> Result<(), AppError> {
@@ -1425,20 +1413,21 @@ mod tests {
     }
 
     #[test]
-    fn resolve_target_uses_edt_project_name_for_extension_matching() {
+    fn resolve_target_uses_source_set_name_for_edt_extension_identity() {
         let dir = tempdir().expect("tempdir");
         fs::create_dir_all(dir.path().join("extensions/ext-sales")).expect("extension dir");
         fs::write(
             dir.path().join("extensions/ext-sales/.project"),
-            "<projectDescription><name>SalesAddon</name></projectDescription>",
+            "<projectDescription><name>sales-project</name></projectDescription>",
         )
         .expect("project");
-        let config = sample_config(
+        let mut config = sample_config(
             dir.path(),
             dir.path(),
             Path::new("/tmp/1cv8"),
             SourceFormat::Edt,
         );
+        config.source_sets[1].name = "SalesAddon".to_owned();
         let request = ArtifactsRequest {
             execution: ArtifactsRequest::default_execution(ArtifactsModeRequest::ExtensionCfe),
             mode: ArtifactsModeRequest::ExtensionCfe,
@@ -1449,7 +1438,7 @@ mod tests {
 
         let resolved = resolve_target(&config, &request).expect("resolved");
 
-        assert_eq!(resolved.source_set_name, "ext-sales");
+        assert_eq!(resolved.source_set_name, "SalesAddon");
         assert_eq!(resolved.extension.as_deref(), Some("SalesAddon"));
         assert_eq!(resolved.mode, ArtifactBuildMode::ExtensionCfe);
     }

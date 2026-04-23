@@ -35,19 +35,20 @@
 10. `config init` обязан определять `source-set[].type` по именам marker-файлов и содержимому этих файлов, а не по именам каталогов и не по layout-эвристикам.
 11. Для `format=DESIGNER` кандидат configuration/extension определяется по `Configuration.xml`; различение `CONFIGURATION` и `EXTENSION` выполняется только по содержимому `Configuration.xml`.
 12. Для `format=EDT` кандидат проекта определяется по `.project`; различение `CONFIGURATION` и `EXTENSION` выполняется по содержимому project-local metadata descriptor, а не по имени пути проекта.
-13. `Base-Project` у ordinary EDT `EXTENSION` не является обязательным marker-условием для autodiscovery/validation; если он отсутствует, `config init` обязан явно вывести warning, но не терять source-set.
-14. Если `config init` генерирует `format=EDT`, `Runtime-Version` из EDT `CONFIGURATION` source-set должен попадать в `tools.platform.version`.
-15. Автопоиск внешних артефактов использует aggregate-root contract: один `source-set` на каталог внешних обработок и один `source-set` на каталог внешних отчётов; per-artifact `source-set` не является частью этого решения.
-16. Для `format=DESIGNER` каталог считается external aggregate root только если его top-level XML descriptors однородно классифицируются по содержимому как `ExternalDataProcessor` или `ExternalReport`.
-17. Для `format=EDT` каталог считается external aggregate root только если его direct child projects однородно классифицируются по содержимому проектных файлов как внешние обработки или внешние отчёты.
-18. Mixed или ambiguous external roots не должны autodetect-иться; в таких случаях пользователь должен задавать `source-set` явно.
-19. External source sets требуют `builder=DESIGNER`.
-20. External EDT source-set должен содержать хотя бы один child project с `.project`.
-21. `EXTENSION` source-set требует наличия хотя бы одного `CONFIGURATION` source-set.
-22. EDT source-set path не должен пересекаться с generated work target под `workPath/designer/<sourceSetName>`.
-23. `workPath` является owned runtime root для logs, temp files, hash storages, EDT workspace и generated Designer output; его нельзя трактовать как произвольный scratch без контракта.
-24. Контракт подключения информационной базы описан в [ADR-0018](0018-perenesti-kontrakt-informatsionnoy-bazy-v-infobase.md): `infobase.connection` заменяет top-level `connection`, а `infobase.user/password` заменяют top-level `credentials`.
-25. Config validation должна отклонять неподдерживаемые или unsafe combinations до вызова platform DSL.
+13. Для `EXTENSION` generated `source-set[].name` должен извлекаться из имени конфигурации расширения в `Configuration.xml` / `src/Configuration/Configuration.mdo`, а не из имени каталога или EDT project name; это имя используется как platform extension identity.
+14. `Base-Project` у ordinary EDT `EXTENSION` не является обязательным marker-условием для autodiscovery/validation; если он отсутствует, `config init` обязан явно вывести warning, но не терять source-set.
+15. Если `config init` генерирует `format=EDT`, `Runtime-Version` из EDT `CONFIGURATION` source-set должен попадать в `tools.platform.version`.
+16. Автопоиск внешних артефактов использует aggregate-root contract: один `source-set` на каталог внешних обработок и один `source-set` на каталог внешних отчётов; per-artifact `source-set` не является частью этого решения.
+17. Для `format=DESIGNER` каталог считается external aggregate root только если его top-level XML descriptors однородно классифицируются по содержимому как `ExternalDataProcessor` или `ExternalReport`.
+18. Для `format=EDT` каталог считается external aggregate root только если его direct child projects однородно классифицируются по содержимому проектных файлов как внешние обработки или внешние отчёты.
+19. Mixed или ambiguous external roots не должны autodetect-иться; в таких случаях пользователь должен задавать `source-set` явно.
+20. External source sets требуют `builder=DESIGNER`.
+21. External EDT source-set должен содержать хотя бы один child project с `.project`.
+22. `EXTENSION` source-set требует наличия хотя бы одного `CONFIGURATION` source-set.
+23. EDT source-set path не должен пересекаться с generated work target под `workPath/designer/<sourceSetName>`.
+24. `workPath` является owned runtime root для logs, temp files, hash storages, EDT workspace и generated Designer output; его нельзя трактовать как произвольный scratch без контракта.
+25. Контракт подключения информационной базы описан в [ADR-0018](0018-perenesti-kontrakt-informatsionnoy-bazy-v-infobase.md): `infobase.connection` заменяет top-level `connection`, а `infobase.user/password` заменяют top-level `credentials`.
+26. Config validation должна отклонять неподдерживаемые или unsafe combinations до вызова platform DSL.
 
 ## Неграницы (Non-goals)
 

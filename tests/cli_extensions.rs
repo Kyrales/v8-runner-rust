@@ -105,8 +105,11 @@ fn setup_extensions_project() -> (tempfile::TempDir, PathBuf, PathBuf, PathBuf) 
     fs::create_dir_all(base_path.join("tests")).expect("tests dir");
     fs::create_dir_all(&work_path).expect("work");
     write_edt_configuration_source(&base_path.join("configuration"), "configuration");
-    write_edt_extension_source(&base_path.join("exts").join("client-mcp"), "client_mcp");
-    write_edt_extension_source(&base_path.join("tests"), "tests");
+    write_edt_extension_source(
+        &base_path.join("exts").join("client-mcp"),
+        "client-mcp-project",
+    );
+    write_edt_extension_source(&base_path.join("tests"), "tests-project");
     write_script(
         &ibcmd_path,
         &format!("printf '%s\\n' \"$*\" >> '{}'\nexit 0", calls_log.display()),

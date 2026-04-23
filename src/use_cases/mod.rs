@@ -14,6 +14,8 @@ pub mod context;
 pub mod convert_sources;
 /// Dump orchestration use case.
 pub mod dump_config;
+/// Shared extension identity helpers.
+pub mod extension_identity;
 /// Shared discovery and preparation helpers for external artifacts.
 pub mod external_artifacts;
 /// Shared formatting helpers for IBCMD diagnostics.

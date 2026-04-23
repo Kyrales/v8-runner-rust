@@ -16,10 +16,11 @@ pub fn is_safe_path_segment(value: &str) -> bool {
     }
 
     !value.chars().any(|ch| {
-        matches!(
-            ch,
-            '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' | '\0'
-        )
+        ch.is_control()
+            || matches!(
+                ch,
+                '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' | '\0'
+            )
     })
 }
 
@@ -112,12 +113,19 @@ pub fn normalize_windows_verbatim_path(path: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::{
-        hashed_lock_path, is_filesystem_root, nearest_existing_canonical_path,
-        normalize_windows_verbatim_path, stable_path_identity, strip_windows_verbatim_prefix,
+        hashed_lock_path, is_filesystem_root, is_safe_path_segment,
+        nearest_existing_canonical_path, normalize_windows_verbatim_path, stable_path_identity,
+        strip_windows_verbatim_prefix,
     };
     use std::fs;
     use std::path::PathBuf;
     use tempfile::tempdir;
+
+    #[test]
+    fn safe_path_segment_rejects_control_characters() {
+        assert!(!is_safe_path_segment("Sales\nAddon"));
+        assert!(!is_safe_path_segment("Sales\tAddon"));
+    }
 
     #[test]
     fn nearest_existing_canonical_path_uses_existing_ancestor() {

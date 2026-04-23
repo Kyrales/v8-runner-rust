@@ -70,7 +70,7 @@ fn config_init_creates_yaml_with_detected_designer_sources() {
     fs::write(main.join("Configuration.xml"), "<Configuration/>").expect("main xml");
     fs::write(
         ext.join("Configuration.xml"),
-        "<Configuration><ConfigurationExtensionPurpose kind=\"Customization\">Customization</ConfigurationExtensionPurpose></Configuration>",
+        "<Configuration><Properties><Name>SalesAddon</Name><ConfigurationExtensionPurpose kind=\"Customization\">Customization</ConfigurationExtensionPurpose></Properties></Configuration>",
     )
     .expect("ext xml");
 
@@ -88,6 +88,7 @@ fn config_init_creates_yaml_with_detected_designer_sources() {
     assert!(config.contains("infobase:"));
     assert!(config.contains("  connection: 'File=build/ib'"));
     assert!(config.contains("path: 'src/configuration'"));
+    assert!(config.contains("name: 'SalesAddon'"));
     assert!(config.contains("type: EXTENSION"));
     assert!(String::from_utf8_lossy(&output.stdout).contains("Config written"));
 }
@@ -211,6 +212,7 @@ fn config_init_detects_native_edt_fixture_source_sets() {
     assert!(config.contains("tools:\n  platform:\n    version: '8.3.27'"));
     assert!(config.contains("path: 'workspace/configuration'"));
     assert!(config.contains("path: 'workspace/extension'"));
+    assert!(config.contains("name: 'Расширение1'"));
     assert!(config.contains("type: CONFIGURATION"));
     assert!(config.contains("type: EXTENSION"));
 }
@@ -238,14 +240,15 @@ fn config_init_detects_edt_extension_without_base_project_and_warns() {
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("source-set extension: workspace/extension (EXTENSION)"));
+    assert!(stdout.contains("source-set Расширение1: workspace/extension (EXTENSION)"));
     assert!(stdout.contains("platform version: 8.3.27"));
-    assert!(stdout.contains("[warning] EDT extension source-set 'extension'"));
+    assert!(stdout.contains("[warning] EDT extension source-set 'Расширение1'"));
     assert!(stdout.contains("Base-Project"));
     assert!(stdout.contains("Config written with warnings"));
 
     let config = fs::read_to_string(dir.path().join("v8project.yaml")).expect("config");
     assert!(config.contains("tools:\n  platform:\n    version: '8.3.27'"));
+    assert!(config.contains("name: 'Расширение1'"));
     assert!(config.contains("path: 'workspace/extension'"));
     assert!(config.contains("type: EXTENSION"));
 
@@ -270,7 +273,9 @@ fn config_init_detects_edt_extension_without_base_project_and_warns() {
         .as_array()
         .expect("source sets");
     assert!(source_sets.iter().any(|source_set| {
-        source_set["path"] == "workspace/extension" && source_set["type"] == "EXTENSION"
+        source_set["name"] == "Расширение1"
+            && source_set["path"] == "workspace/extension"
+            && source_set["type"] == "EXTENSION"
     }));
     assert!(payload["data"]["warnings"][0]
         .as_str()

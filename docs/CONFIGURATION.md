@@ -20,6 +20,7 @@ v8-runner config init
 
 - автопоиск опирается на имена файлов-маркеров и их содержимое, а не на имена каталогов;
 - Designer-исходники находятся по файлу `Configuration.xml`, а тип определяется по содержимому этого XML;
+- для `EXTENSION` имя generated `source-set` извлекается из имени конфигурации расширения в `Configuration.xml` / `src/Configuration/Configuration.mdo`, а не из имени каталога;
 - Designer external aggregate root autodetect-ится как один `source-set`, только если top-level XML descriptors каталога однородно классифицируются по содержимому как `ExternalDataProcessor` или `ExternalReport`;
 - ordinary EDT-проекты находятся по файлу `.project`: `CONFIGURATION`/`EXTENSION` определяются по `V8ConfigurationNature` / `V8ExtensionNature`, runtime version читается из `DT-INF/PROJECT.PMF`, а наличие native EDT layout подтверждается `src/Configuration/Configuration.mdo`; runtime version EDT `CONFIGURATION` записывается в `tools.platform.version`; отсутствие `Base-Project` у `EXTENSION` не блокирует autodiscovery/validation, но `config init` выводит warning;
 - EDT external aggregate root autodetect-ится как один `source-set`, только если direct child projects каталога однородно классифицируются как внешние обработки или внешние отчёты по canonical `src/root.xml` и имеют валидные `.project` / `DT-INF/PROJECT.PMF` / `Base-Project`;
