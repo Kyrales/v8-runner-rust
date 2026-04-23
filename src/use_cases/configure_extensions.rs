@@ -9,6 +9,7 @@ use crate::support::error::AppError;
 use crate::use_cases::context::{ExecutionContext, InterruptionSafetyClass};
 use crate::use_cases::extension_identity::platform_extension_name;
 use crate::use_cases::ibcmd_diagnostics::format_ibcmd_failure_details;
+use crate::use_cases::interruption;
 use crate::use_cases::progress::log_live_stage;
 use crate::use_cases::request::ConfigureExtensionsRequest;
 use crate::use_cases::result::{UseCaseFailure, UseCaseResult};
@@ -58,10 +59,10 @@ pub fn execute(
     let mut steps = Vec::new();
     for target in targets {
         if let Some(interruption) = context.interruption() {
-            let message = format!(
-                "{} for command '{}' before entering extension update safe point",
-                interruption.message(context.command()),
-                context.command().as_str()
+            let message = interruption::interruption_before_safe_point_message(
+                context,
+                interruption,
+                "extension update",
             );
             let payload = ExtensionsResult {
                 ok: false,
@@ -201,15 +202,10 @@ fn log_extensions_summary(ok: bool) {
 fn deferred_interruption_warning(
     result: &crate::platform::result::PlatformCommandResult,
 ) -> Option<String> {
-    result.process.interruption.map(|interruption| {
-        let reason = match interruption.reason {
-            crate::platform::process::ProcessInterruptionReason::Cancelled => "cancellation request",
-            crate::platform::process::ProcessInterruptionReason::TimedOut => "timeout",
-        };
-        format!(
-            "extension properties updated successfully after {reason} during critical phase; unsafe interruption was not performed"
-        )
-    })
+    interruption::deferred_process_interruption_warning(
+        "extension properties updated successfully",
+        result,
+    )
 }
 
 fn map_extension_update_error(target: &str, error: IbcmdError) -> AppError {

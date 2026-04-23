@@ -20,10 +20,11 @@ use crate::support::fs::{
 use crate::support::path::{
     is_filesystem_root, nearest_existing_canonical_path, stable_path_identity,
 };
-use crate::use_cases::context::{CommandName, ExecutionContext, InterruptionSafetyClass};
+use crate::use_cases::context::{ExecutionContext, InterruptionSafetyClass};
 use crate::use_cases::external_artifacts::{
     discover_designer_external_artifacts, parse_external_descriptor, ExternalArtifactKind,
 };
+use crate::use_cases::interruption;
 use crate::use_cases::progress::log_live_stage;
 use crate::use_cases::request::{ConvertRequest, ConvertScopeRequest};
 use crate::use_cases::result::{UseCaseFailure, UseCaseResult};
@@ -92,7 +93,10 @@ fn run_convert_with_context(
     let workspace_path = convert_workspace_path(config);
 
     if let Some(interruption) = context.interruption() {
-        let error = AppError::Runtime(interruption.message(context.command()).to_owned());
+        let error = AppError::Runtime(interruption::command_interruption_message(
+            context,
+            interruption,
+        ));
         let message = error.to_string();
         return Err(ConvertExecutionFailure::with_payload(
             error,
@@ -417,10 +421,10 @@ fn execute_with_dsl(
 
         if let Some(interruption) = context.interruption() {
             let _ = remove_path_if_exists(&staging_root);
-            let error = AppError::Runtime(format!(
-                "{} for command '{}' before entering convert publication safe point",
-                interruption.message(context.command()),
-                CommandName::Convert.as_str()
+            let error = AppError::Runtime(interruption::interruption_before_safe_point_message(
+                context,
+                interruption,
+                "convert publication",
             ));
             let message = error.to_string();
             return Err(ConvertExecutionFailure::with_payload(
@@ -1547,12 +1551,9 @@ fn deferred_interruption_warning(
     interruption: Option<crate::use_cases::context::ExecutionInterruption>,
 ) -> Option<String> {
     interruption.map(|interruption| {
-        let reason = match interruption {
-            crate::use_cases::context::ExecutionInterruption::Cancelled => "cancellation request",
-            crate::use_cases::context::ExecutionInterruption::TimedOut => "timeout",
-        };
-        format!(
-            "convert publication completed successfully after {reason} during critical phase; unsafe interruption was not performed"
+        interruption::deferred_interruption_warning(
+            "convert publication completed successfully",
+            interruption,
         )
     })
 }

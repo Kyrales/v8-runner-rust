@@ -6,22 +6,24 @@ use tracing::debug;
 use crate::config::model::{AppConfig, BuilderBackend, SourceFormat};
 use crate::domain::artifact::{ArtifactKind, ArtifactRef, ArtifactSet, ARTIFACT_ROLE_PLATFORM_LOG};
 use crate::domain::artifacts::ArtifactBuildMode;
-use crate::domain::execution::{
-    ExecutionError, ExecutionInterruptionDetails, ExecutionInterruptionKind, ExecutionOutcome,
-    ExecutionStatus,
-};
+use crate::domain::execution::{ExecutionError, ExecutionOutcome, ExecutionStatus};
 use crate::domain::load::{
     CompatibilityState, LoadExecutionMetadata, LoadMode, LoadResult, LoadTargetKind,
 };
 use crate::platform::designer::DesignerDsl;
 use crate::platform::locator::UtilityType;
-use crate::platform::process::{ProcessInterruptionReason, ProcessRunner};
+use crate::platform::process::ProcessRunner;
 use crate::platform::result::PlatformCommandResult;
 use crate::platform::utilities::PlatformUtilities;
 use crate::support::error::AppError;
 use crate::support::temp::platform_logs_dir;
 use crate::use_cases::context::{ExecutionContext, ExecutionInterruption, InterruptionSafetyClass};
 use crate::use_cases::ibcmd_diagnostics::format_ibcmd_failure_details;
+use crate::use_cases::interruption::{
+    command_interruption_details, command_interruption_status,
+    deferred_process_interruption_details, deferred_process_interruption_warning,
+    interruption_before_safe_point_message,
+};
 use crate::use_cases::progress::log_live_stage;
 use crate::use_cases::request::LoadRequest;
 use crate::use_cases::result::{UseCaseFailure, UseCaseResult};
@@ -59,52 +61,6 @@ struct ResolvedLoadRequest {
     target_kind: LoadTargetKind,
     settings_path: Option<PathBuf>,
     extension: Option<String>,
-}
-
-fn command_interruption_status(interruption: ExecutionInterruption) -> ExecutionStatus {
-    match interruption {
-        ExecutionInterruption::Cancelled => ExecutionStatus::Cancelled,
-        ExecutionInterruption::TimedOut => ExecutionStatus::TimedOut,
-    }
-}
-
-fn command_interruption_details(
-    interruption: ExecutionInterruption,
-    phase: &str,
-    message: impl Into<String>,
-) -> ExecutionInterruptionDetails {
-    ExecutionInterruptionDetails::new(
-        match interruption {
-            ExecutionInterruption::Cancelled => ExecutionInterruptionKind::Cancelled,
-            ExecutionInterruption::TimedOut => ExecutionInterruptionKind::TimedOut,
-        },
-        false,
-    )
-    .with_phase(phase)
-    .with_message(message)
-}
-
-fn deferred_interruption_details(
-    action: &str,
-    result: &PlatformCommandResult,
-) -> Option<ExecutionInterruptionDetails> {
-    result.process.interruption.map(|interruption| {
-        ExecutionInterruptionDetails::new(
-            match interruption.reason {
-                ProcessInterruptionReason::Cancelled => ExecutionInterruptionKind::Cancelled,
-                ProcessInterruptionReason::TimedOut => ExecutionInterruptionKind::TimedOut,
-            },
-            true,
-        )
-        .with_phase(action)
-        .with_message(format!(
-            "{action} completed successfully after {} request during critical phase; unsafe interruption was not performed",
-            match interruption.reason {
-                ProcessInterruptionReason::Cancelled => "cancellation",
-                ProcessInterruptionReason::TimedOut => "timeout",
-            }
-        ))
-    })
 }
 
 fn run_load(
@@ -156,11 +112,7 @@ fn run_load(
     };
 
     if let Some(interruption) = context.interruption() {
-        let message = format!(
-            "{} for command '{}' before entering load probe safe point",
-            interruption.message(context.command()),
-            context.command().as_str()
-        );
+        let message = interruption_before_safe_point_message(context, interruption, "load probe");
         return Err(LoadExecutionFailure::with_payload(
             AppError::Runtime(message.clone()),
             interrupted_result_from_resolved(
@@ -330,11 +282,8 @@ fn run_load(
     }
 
     if let Some(interruption) = context.interruption() {
-        let message = format!(
-            "{} for command '{}' before entering update_db_cfg safe point",
-            interruption.message(context.command()),
-            context.command().as_str()
-        );
+        let message =
+            interruption_before_safe_point_message(context, interruption, "update_db_cfg");
         return Err(LoadExecutionFailure::with_payload(
             AppError::Runtime(message.clone()),
             interrupted_result_from_resolved(
@@ -427,8 +376,16 @@ fn run_load(
     .flatten()
     .collect::<Vec<_>>();
     let deferred_interruptions = [
-        deferred_interruption_details("apply", &apply_result),
-        deferred_interruption_details("update_db_cfg", &update_result),
+        deferred_process_interruption_details(
+            "apply",
+            "apply completed successfully",
+            &apply_result,
+        ),
+        deferred_process_interruption_details(
+            "update_db_cfg",
+            "update_db_cfg completed successfully",
+            &update_result,
+        ),
     ]
     .into_iter()
     .flatten()
@@ -858,7 +815,7 @@ fn interrupted_result_from_resolved(
 }
 
 fn deferred_interruption_warning(action: &str, result: &PlatformCommandResult) -> Option<String> {
-    deferred_interruption_details(action, result).and_then(|details| details.message)
+    deferred_process_interruption_warning(&format!("{action} completed successfully"), result)
 }
 
 fn empty_result_from_resolved(

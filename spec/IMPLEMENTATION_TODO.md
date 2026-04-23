@@ -205,12 +205,20 @@ Detailed ADR task decomposition remains in [ADR_DERIVED_BACKLOG.md](ADR_DERIVED_
   not materialize a synthetic artifact, produced stage files stay visible on pre-publish
   interruption, and dump/artifacts publication contracts still pass.
 
-- [ ] `ADR-TASK-028`: Centralize command interruption and deferred-interruption vocabulary across
+- [x] `ADR-TASK-028`: Centralize command interruption and deferred-interruption vocabulary across
   use cases. Remaining duplicate helpers include `command_interruption_status`,
   `command_interruption_details`, `deferred_interruption_warning/details`,
   `interruption_before_safe_point`, and publication warning formatting across `build`, `dump`,
   `load`, `artifacts`, `run_tests`, `init`, `convert`, and `configure_extensions`. Keep ADR-0014
   terminal-state semantics and existing `ExecutionOutcome<T>` projections intact.
+  Completed `2026-04-23`: command interruption status/details, process/command deferred
+  interruption warnings/details, and safe-point message formatting now live in
+  `src/use_cases/interruption.rs`; build, dump, load, artifacts, run_tests, init, convert, staged
+  publication, and configure_extensions call the shared vocabulary while keeping thin
+  domain-specific wrappers where useful. Grep confirms the old hand-formatted
+  `interruption.message(context.command())` use-case pattern remains only inside the shared module.
+  Targeted tester-subagent matrix, full `cargo test --locked --quiet`, reviewer completeness gate,
+  and separate Rust expert subagent pass all passed.
 
 - [ ] `ADR-TASK-029`: Reduce residual build coordinator duplication after the thin-coordinator split.
   `build_project/coordinator.rs` still repeats the `analysis -> StepPlan -> execute or

@@ -20,6 +20,7 @@ use crate::platform::result::PlatformCommandResult;
 use crate::platform::utilities::PlatformUtilities;
 use crate::support::error::AppError;
 use crate::use_cases::context::{ExecutionContext, InterruptionSafetyClass};
+use crate::use_cases::interruption;
 use crate::use_cases::progress::log_live_stage;
 use crate::use_cases::request::InitRequest;
 use crate::use_cases::result::{UseCaseError, UseCaseFailure, UseCaseResult};
@@ -518,16 +519,9 @@ fn interruption_step_outcome(
     safe_point: &str,
 ) -> Option<StepOutcome> {
     context.interruption().map(|interruption| {
-        StepOutcome::failed(
-            target,
-            action,
-            started,
-            AppError::Runtime(format!(
-                "{} for command '{}' before entering {safe_point} safe point",
-                interruption.message(context.command()),
-                context.command().as_str()
-            )),
-        )
+        let message =
+            interruption::interruption_before_safe_point_message(context, interruption, safe_point);
+        StepOutcome::failed(target, action, started, AppError::Runtime(message))
     })
 }
 
@@ -543,26 +537,15 @@ fn with_optional_warning(message: String, warning: Option<String>) -> String {
 }
 
 fn deferred_interruption_warning(result: &PlatformCommandResult) -> Option<String> {
-    result.process.interruption.map(|interruption| {
-        let reason = match interruption.reason {
-            crate::platform::process::ProcessInterruptionReason::Cancelled => "cancellation request",
-            crate::platform::process::ProcessInterruptionReason::TimedOut => "timeout",
-        };
-        format!(
-            "operation completed successfully after {reason} during critical phase; unsafe interruption was not performed"
-        )
-    })
+    interruption::deferred_process_interruption_warning("operation completed successfully", result)
 }
 
 fn context_deferred_warning(context: &ExecutionContext) -> Option<String> {
     context.interruption().map(|interruption| {
-        format!(
-            "operation completed successfully after {} for command '{}' during critical phase; unsafe interruption was not performed",
-            match interruption {
-                crate::use_cases::context::ExecutionInterruption::Cancelled => "cancellation request",
-                crate::use_cases::context::ExecutionInterruption::TimedOut => "timeout",
-            },
-            context.command().as_str()
+        interruption::deferred_interruption_warning_for_command(
+            "operation completed successfully",
+            context.command(),
+            interruption,
         )
     })
 }

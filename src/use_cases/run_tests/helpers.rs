@@ -3,8 +3,7 @@ use std::time::{Duration, Instant};
 use crate::config::model::AppConfig;
 use crate::domain::artifact::ArtifactSet;
 use crate::domain::execution::{
-    ExecutionInterruptionDetails, ExecutionInterruptionKind, ExecutionOutcome, ExecutionStatus,
-    ExecutionStepKind, StepResult,
+    ExecutionInterruptionDetails, ExecutionOutcome, ExecutionStatus, ExecutionStepKind, StepResult,
 };
 use crate::domain::runner::{LaunchClientModeRequest, LaunchOptions, RunnerKind};
 use crate::domain::test::{TestErrorKind, TestOutputMode, TestReport, TestRunResult, TestTarget};
@@ -15,6 +14,10 @@ use crate::platform::utilities::PlatformUtilities;
 use crate::support::error::AppError;
 use crate::support::path::is_safe_path_segment;
 use crate::use_cases::context::{ExecutionContext, ExecutionInterruption, InterruptionSafetyClass};
+use crate::use_cases::interruption::{
+    command_interruption_details, command_interruption_message, command_interruption_status,
+    process_interruption_details,
+};
 use crate::use_cases::request::{TestRequest as TestArgs, TestScopeRequest as TestScope};
 
 use super::{build_yaxunit_config, prepare_vanessa_run, PreparedRun, RunArtifacts};
@@ -28,13 +31,6 @@ pub(super) fn make_test_result(
     duration_ms: u64,
 ) -> TestRunResult {
     TestRunResult::from_outcome(outcome, target, mode, warnings, steps, duration_ms)
-}
-
-pub(super) fn command_interruption_status(interruption: ExecutionInterruption) -> ExecutionStatus {
-    match interruption {
-        ExecutionInterruption::Cancelled => ExecutionStatus::Cancelled,
-        ExecutionInterruption::TimedOut => ExecutionStatus::TimedOut,
-    }
 }
 
 #[cfg(test)]
@@ -146,39 +142,6 @@ mod tests {
     }
 }
 
-pub(super) fn command_interruption_details(
-    interruption: ExecutionInterruption,
-    phase: &str,
-    message: impl Into<String>,
-) -> ExecutionInterruptionDetails {
-    ExecutionInterruptionDetails::new(
-        match interruption {
-            ExecutionInterruption::Cancelled => ExecutionInterruptionKind::Cancelled,
-            ExecutionInterruption::TimedOut => ExecutionInterruptionKind::TimedOut,
-        },
-        false,
-    )
-    .with_phase(phase)
-    .with_message(message)
-}
-
-pub(super) fn process_interruption_details(
-    interruption: ProcessInterruptionReason,
-    phase: &str,
-    deferred: bool,
-    message: impl Into<String>,
-) -> ExecutionInterruptionDetails {
-    ExecutionInterruptionDetails::new(
-        match interruption {
-            ProcessInterruptionReason::Cancelled => ExecutionInterruptionKind::Cancelled,
-            ProcessInterruptionReason::TimedOut => ExecutionInterruptionKind::TimedOut,
-        },
-        deferred,
-    )
-    .with_phase(phase)
-    .with_message(message)
-}
-
 pub(super) fn succeeded_step(
     name: &str,
     kind: ExecutionStepKind,
@@ -274,11 +237,7 @@ pub(super) fn interruption_message(
     context: &ExecutionContext,
     interruption: ExecutionInterruption,
 ) -> String {
-    format!(
-        "{} for command '{}'",
-        interruption.message(context.command()),
-        context.command().as_str()
-    )
+    command_interruption_message(context, interruption)
 }
 
 pub(super) fn validate_runner_profile_id(profile_id: &str) -> Result<&str, AppError> {

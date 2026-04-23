@@ -14,6 +14,7 @@ use crate::support::error::AppError;
 use crate::support::temp::platform_logs_dir;
 use crate::use_cases::context::{ExecutionContext, InterruptionSafetyClass};
 use crate::use_cases::ibcmd_diagnostics::format_ibcmd_failure_details;
+use crate::use_cases::interruption;
 use crate::use_cases::progress::log_live_stage;
 use tracing::info;
 
@@ -252,28 +253,17 @@ pub(super) fn interruption_before_safe_point(
     context: &ExecutionContext,
     safe_point: String,
 ) -> Option<AppError> {
-    context.interruption().map(|interruption| {
-        AppError::Runtime(format!(
-            "{} for command '{}' before entering {safe_point} safe point",
-            interruption.message(context.command()),
-            context.command().as_str()
-        ))
-    })
+    interruption::interruption_before_safe_point(context, safe_point)
 }
 
 pub(super) fn deferred_interruption_warning(
     action: &str,
     result: &PlatformCommandResult,
 ) -> Option<String> {
-    result.process.interruption.map(|interruption| {
-        let reason = match interruption.reason {
-            crate::platform::process::ProcessInterruptionReason::Cancelled => "cancellation request",
-            crate::platform::process::ProcessInterruptionReason::TimedOut => "timeout",
-        };
-        format!(
-            "{action} completed successfully after {reason} during critical phase; unsafe interruption was not performed"
-        )
-    })
+    interruption::deferred_process_interruption_warning(
+        &format!("{action} completed successfully"),
+        result,
+    )
 }
 
 pub(super) fn merge_step_message(message: String, warnings: &[String]) -> String {

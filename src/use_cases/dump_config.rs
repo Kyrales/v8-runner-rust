@@ -25,6 +25,7 @@ use crate::support::path::{
 use crate::support::source_descriptor::{self, ExternalDescriptorParseError};
 use crate::use_cases::context::{ExecutionContext, InterruptionSafetyClass};
 use crate::use_cases::external_artifacts::ExternalArtifactKind;
+use crate::use_cases::interruption;
 use crate::use_cases::progress::log_live_stage;
 use crate::use_cases::request::{DumpModeRequest, DumpRequest as DumpArgs};
 use crate::use_cases::result::{UseCaseFailure, UseCaseResult};
@@ -329,14 +330,7 @@ fn run_partial_dump_ibcmd(
 }
 
 fn ensure_interruption_clear(context: &ExecutionContext, phase: &str) -> Result<(), AppError> {
-    if let Some(interruption) = context.interruption() {
-        return Err(AppError::Runtime(format!(
-            "{} for command '{}' {phase}",
-            interruption.message(context.command()),
-            context.command().as_str()
-        )));
-    }
-    Ok(())
+    interruption::pending_interruption_error(context, phase).map_or(Ok(()), Err)
 }
 
 fn run_incremental_dump_edt_designer(

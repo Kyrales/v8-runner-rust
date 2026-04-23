@@ -19,6 +19,7 @@ use crate::support::path::{is_filesystem_root, nearest_existing_canonical_path};
 use crate::support::temp::{dump_object_list_file, platform_logs_dir};
 use crate::use_cases::context::{ExecutionContext, InterruptionSafetyClass};
 use crate::use_cases::ibcmd_diagnostics::format_ibcmd_failure_details;
+use crate::use_cases::interruption;
 
 use super::ResolvedDumpTarget;
 
@@ -259,13 +260,10 @@ pub(super) fn dump_publication_warning(
     deferred_interruption: Option<crate::use_cases::context::ExecutionInterruption>,
 ) -> Option<String> {
     deferred_interruption.map(|interruption| {
-        format!(
-            "dump publication completed after {} for command '{}' during critical phase; unsafe interruption was not performed",
-            match interruption {
-                crate::use_cases::context::ExecutionInterruption::Cancelled => "cancellation request",
-                crate::use_cases::context::ExecutionInterruption::TimedOut => "timeout",
-            },
-            command.as_str()
+        interruption::deferred_interruption_warning_for_command(
+            "dump publication completed",
+            command,
+            interruption,
         )
     })
 }

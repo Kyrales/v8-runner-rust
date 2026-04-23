@@ -14,10 +14,7 @@ use crate::domain::artifact::{
     ARTIFACT_ROLE_STAGE_FILE,
 };
 use crate::domain::artifacts::{ArtifactBuildMetadata, ArtifactBuildMode, ArtifactsResult};
-use crate::domain::execution::{
-    ExecutionError, ExecutionInterruptionDetails, ExecutionInterruptionKind, ExecutionOutcome,
-    ExecutionStatus,
-};
+use crate::domain::execution::{ExecutionError, ExecutionOutcome, ExecutionStatus};
 use crate::domain::runner::RunnerKind;
 use crate::platform::designer::DesignerDsl;
 use crate::platform::locator::UtilityType;
@@ -33,12 +30,17 @@ use crate::support::path::{
     hashed_lock_path, is_filesystem_root, nearest_existing_canonical_path, stable_path_identity,
 };
 use crate::support::temp::platform_logs_dir;
-use crate::use_cases::context::{ExecutionContext, ExecutionInterruption, InterruptionSafetyClass};
+use crate::use_cases::context::{ExecutionContext, InterruptionSafetyClass};
 use crate::use_cases::dump_config::run_external_dump_designer;
 use crate::use_cases::extension_identity::platform_extension_name;
 use crate::use_cases::external_artifacts::{
     discover_designer_external_artifacts, prepare_edt_external_artifacts, resolve_source_set_path,
     sanitize_file_stem, source_set_external_kind, ExternalArtifactDescriptor,
+};
+use crate::use_cases::interruption::{
+    command_interruption_details, command_interruption_status,
+    deferred_command_interruption_details, deferred_interruption_warning_for_command,
+    interruption_before_safe_point,
 };
 use crate::use_cases::progress::log_live_stage;
 use crate::use_cases::request::{ArtifactsModeRequest, ArtifactsRequest};
@@ -82,30 +84,6 @@ struct ResolvedArtifactsTarget {
     canonical_work_path: PathBuf,
     target_identity: String,
     lock_path: PathBuf,
-}
-
-fn command_interruption_status(interruption: ExecutionInterruption) -> ExecutionStatus {
-    match interruption {
-        ExecutionInterruption::Cancelled => ExecutionStatus::Cancelled,
-        ExecutionInterruption::TimedOut => ExecutionStatus::TimedOut,
-    }
-}
-
-fn command_interruption_details(
-    interruption: ExecutionInterruption,
-    phase: &str,
-    deferred: bool,
-    message: impl Into<String>,
-) -> ExecutionInterruptionDetails {
-    ExecutionInterruptionDetails::new(
-        match interruption {
-            ExecutionInterruption::Cancelled => ExecutionInterruptionKind::Cancelled,
-            ExecutionInterruption::TimedOut => ExecutionInterruptionKind::TimedOut,
-        },
-        deferred,
-    )
-    .with_phase(phase)
-    .with_message(message)
 }
 
 fn run_artifacts(
@@ -252,14 +230,17 @@ fn run_artifacts(
                     .as_deref()
                     .is_some_and(|value| value.contains("critical phase"))
             }) {
-                execution = execution.with_interruptions(vec![command_interruption_details(
-                    interruption,
-                    "publish",
-                    true,
-                    publication_warning(context.command(), Some(interruption)).unwrap_or_else(
-                        || "artifact publication completed after deferred interruption".to_owned(),
-                    ),
-                )]);
+                execution =
+                    execution.with_interruptions(vec![deferred_command_interruption_details(
+                        interruption,
+                        "publish",
+                        publication_warning(context.command(), Some(interruption)).unwrap_or_else(
+                            || {
+                                "artifact publication completed after deferred interruption"
+                                    .to_owned()
+                            },
+                        ),
+                    )]);
             }
             Ok(ArtifactsResult {
                 mode: resolved.mode,
@@ -303,7 +284,6 @@ fn run_artifacts(
                     .with_interruptions(vec![command_interruption_details(
                         interruption,
                         "export_or_publish",
-                        false,
                         message.clone(),
                     )]);
             } else {
@@ -1080,19 +1060,6 @@ fn empty_result(
     }
 }
 
-fn interruption_before_safe_point(
-    context: &ExecutionContext,
-    safe_point: String,
-) -> Option<AppError> {
-    context.interruption().map(|interruption| {
-        AppError::Runtime(format!(
-            "{} for command '{}' before entering {safe_point} safe point",
-            interruption.message(context.command()),
-            context.command().as_str()
-        ))
-    })
-}
-
 fn merge_optional_messages(left: Option<String>, right: Option<String>) -> Option<String> {
     match (left, right) {
         (Some(left), Some(right)) => Some(format!("{left}; {right}")),
@@ -1118,13 +1085,10 @@ fn publication_warning(
     deferred_interruption: Option<crate::use_cases::context::ExecutionInterruption>,
 ) -> Option<String> {
     deferred_interruption.map(|interruption| {
-        format!(
-            "artifact publication completed after {} for command '{}' during critical phase; unsafe interruption was not performed",
-            match interruption {
-                crate::use_cases::context::ExecutionInterruption::Cancelled => "cancellation request",
-                crate::use_cases::context::ExecutionInterruption::TimedOut => "timeout",
-            },
-            command.as_str()
+        deferred_interruption_warning_for_command(
+            "artifact publication completed",
+            command,
+            interruption,
         )
     })
 }

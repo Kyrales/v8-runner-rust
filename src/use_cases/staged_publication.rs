@@ -8,6 +8,7 @@ use crate::support::fs::{
     replace_file_atomically, write_temp_dir_metadata, TempDirKind,
 };
 use crate::use_cases::context::{ExecutionContext, ExecutionInterruption};
+use crate::use_cases::interruption;
 
 #[derive(Debug, Clone)]
 pub(super) struct StagedPublication {
@@ -182,14 +183,7 @@ pub(super) fn interruption_before_publish(
     context: &ExecutionContext,
     safe_point: impl Into<String>,
 ) -> Option<AppError> {
-    let safe_point = safe_point.into();
-    context.interruption().map(|interruption| {
-        AppError::Runtime(format!(
-            "{} for command '{}' before entering {safe_point} safe point",
-            interruption.message(context.command()),
-            context.command().as_str()
-        ))
-    })
+    interruption::interruption_before_safe_point(context, safe_point.into())
 }
 
 fn make_run_id() -> String {

@@ -22,6 +22,8 @@ pub mod external_artifacts;
 pub mod ibcmd_diagnostics;
 /// Init orchestration use case.
 pub mod init_project;
+/// Shared command interruption status, metadata and message vocabulary.
+mod interruption;
 /// Launch orchestration use case.
 pub mod launch_app;
 /// Load packaged artifacts into infobase.
