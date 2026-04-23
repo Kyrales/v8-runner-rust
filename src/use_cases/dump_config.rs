@@ -130,7 +130,7 @@ fn run_incremental_dump_designer(
         &resolved.platform_target_path,
         resolved.extension.as_deref(),
     )
-    .map_err(|error| AppError::Platform(error.to_string()))?;
+    .map_err(AppError::from)?;
     ensure_platform_success("dump", resolved, &dump_result)?;
     Ok((dump_result, None))
 }
@@ -186,7 +186,7 @@ fn run_full_dump_designer(
         "full",
     )?
     .dump_config_to_files(&staging_dir, resolved.extension.as_deref())
-    .map_err(|error| AppError::Platform(error.to_string()))
+    .map_err(AppError::from)
     {
         Ok(result) => result,
         Err(error) => return Err(cleanup_staging_on_platform_failure(&staging_dir, error)),
@@ -368,7 +368,7 @@ fn run_partial_dump_designer(
         list_file.path(),
         resolved.extension.as_deref(),
     )
-    .map_err(|error| AppError::Platform(error.to_string()))?;
+    .map_err(AppError::from)?;
     ensure_platform_success("dump", resolved, &dump_result)?;
     Ok((dump_result, None))
 }
@@ -670,7 +670,7 @@ fn finalize_edt_dump(
             resolved.edt_base_project_name.as_deref(),
             false,
         )
-        .map_err(|error| AppError::Platform(error.to_string()))
+        .map_err(AppError::from)
     {
         Ok(result) => result,
         Err(error) => return Err(cleanup_staging_on_platform_failure(&staging_dir, error)),
@@ -786,7 +786,7 @@ fn build_edt_dsl<'a>(
     if config.tools.edt_cli.interactive_mode {
         let manager =
             EdtSessionManager::for_config(config, EdtSessionHostOptions::for_cli_command(config))
-                .map_err(|error| AppError::Platform(error.to_string()))?;
+                .map_err(AppError::from)?;
         EdtDsl::new_shared_session(
             binary.to_path_buf(),
             workspace,
@@ -794,7 +794,7 @@ fn build_edt_dsl<'a>(
             Duration::from_millis(config.tools.edt_cli.startup_timeout_ms),
             Duration::from_millis(config.tools.edt_cli.command_timeout_ms),
         )
-        .map_err(|error| AppError::Platform(error.to_string()))
+        .map_err(AppError::from)
         .map(|dsl| {
             dsl.with_timeout(context.edt_timeout())
                 .with_execution_policy(policy)
@@ -840,7 +840,7 @@ pub(crate) fn run_external_dump_designer(
     })?;
     let result = dsl
         .dump_external_data_processor_or_report_to_files(binary_path, root_xml_path)
-        .map_err(|error| (AppError::Platform(error.to_string()), None))?;
+        .map_err(|error| (AppError::from(error), None))?;
     if result.process.exit_code != 0 {
         return Err((
             AppError::Platform(format!(
@@ -2986,7 +2986,7 @@ exit 0"#,
         )
         .expect_err("expected EDT DSL initialization failure");
 
-        assert!(matches!(error, AppError::Platform(_)));
+        assert!(matches!(error, AppError::PlatformEdt(_)));
         let leftover_stage_dirs = fs::read_dir(&base)
             .expect("base dir")
             .filter_map(Result::ok)

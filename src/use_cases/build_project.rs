@@ -226,7 +226,7 @@ fn execute_edt_export_step(
     })?;
     let export_result = dsl
         .export_project(&project_name, designer_context.path())
-        .map_err(|error| AppError::Platform(error.to_string()))?;
+        .map_err(AppError::from)?;
     ensure_platform_success("edt_export", source_set, &export_result)?;
     Ok(deferred_interruption_warning("edt_export", &export_result)
         .into_iter()
@@ -311,7 +311,7 @@ fn execute_source_set_step(
             list_file.path(),
             extension_name(source_set),
         )
-        .map_err(|error| AppError::Platform(error.to_string()))?
+        .map_err(AppError::from)?
     } else {
         build_designer_dsl(
             context,
@@ -324,7 +324,7 @@ fn execute_source_set_step(
             InterruptionSafetyClass::CriticalNonAbortable,
         )?
         .load_config_from_files_full(load_context.path(), extension_name(source_set))
-        .map_err(|error| AppError::Platform(error.to_string()))?
+        .map_err(AppError::from)?
     };
     ensure_platform_success("load", source_set, &load_result)?;
 
@@ -350,7 +350,7 @@ fn execute_source_set_step(
         InterruptionSafetyClass::CriticalNonAbortable,
     )?
     .update_db_cfg(extension_name(source_set))
-    .map_err(|error| AppError::Platform(error.to_string()))?;
+    .map_err(AppError::from)?;
     ensure_platform_success("update_db_cfg", source_set, &update_result)?;
 
     match commit {

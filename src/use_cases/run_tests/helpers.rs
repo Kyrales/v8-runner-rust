@@ -37,6 +37,115 @@ pub(super) fn command_interruption_status(interruption: ExecutionInterruption) -
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use super::enterprise_error_kind;
+    use crate::domain::execution::ExecutionStatus;
+    use crate::domain::test::TestErrorKind;
+    use crate::platform::enterprise::EnterpriseError;
+    use crate::platform::process::ProcessError;
+    use crate::support::error::AppError;
+
+    fn assert_process_mapping(
+        process_error: ProcessError,
+        expected_kind: TestErrorKind,
+        assert_typed_error: impl FnOnce(AppError),
+    ) {
+        let (kind, app_error, interruption, status) =
+            enterprise_error_kind(EnterpriseError::Spawn(process_error));
+
+        assert_eq!(kind, Some(expected_kind));
+        assert_typed_error(app_error);
+        assert!(interruption.is_none());
+        assert_eq!(status, ExecutionStatus::Failed);
+    }
+
+    #[test]
+    fn enterprise_process_errors_keep_distinct_test_error_kinds() {
+        assert_process_mapping(
+            ProcessError::SpawnFailed {
+                cmd: "1cv8c ENTERPRISE".to_owned(),
+                source: std::io::Error::new(std::io::ErrorKind::NotFound, "missing"),
+            },
+            TestErrorKind::EnterpriseSpawnFailed,
+            |error| {
+                assert!(matches!(
+                    error,
+                    AppError::PlatformProcess(ProcessError::SpawnFailed { .. })
+                ));
+            },
+        );
+        assert_process_mapping(
+            ProcessError::StartupCheckFailed {
+                cmd: "1cv8c ENTERPRISE".to_owned(),
+                source: std::io::Error::other("probe failed"),
+            },
+            TestErrorKind::EnterpriseStartupCheckFailed,
+            |error| {
+                assert!(matches!(
+                    error,
+                    AppError::PlatformProcess(ProcessError::StartupCheckFailed { .. })
+                ));
+            },
+        );
+        assert_process_mapping(
+            ProcessError::ExitedEarly {
+                cmd: "1cv8c ENTERPRISE".to_owned(),
+                exit_code: 17,
+            },
+            TestErrorKind::EnterpriseExitedEarly,
+            |error| {
+                assert!(matches!(
+                    error,
+                    AppError::PlatformProcess(ProcessError::ExitedEarly { .. })
+                ));
+            },
+        );
+        assert_process_mapping(
+            ProcessError::StdoutLogIo {
+                path: PathBuf::from("stdout.log"),
+                source: std::io::Error::other("stdout write"),
+            },
+            TestErrorKind::EnterpriseStdoutLogIo,
+            |error| {
+                assert!(matches!(
+                    error,
+                    AppError::PlatformProcess(ProcessError::StdoutLogIo { .. })
+                ));
+            },
+        );
+        assert_process_mapping(
+            ProcessError::StderrLogIo {
+                path: PathBuf::from("stderr.log"),
+                source: std::io::Error::other("stderr write"),
+            },
+            TestErrorKind::EnterpriseStderrLogIo,
+            |error| {
+                assert!(matches!(
+                    error,
+                    AppError::PlatformProcess(ProcessError::StderrLogIo { .. })
+                ));
+            },
+        );
+    }
+
+    #[test]
+    fn enterprise_timeout_keeps_interruption_contract() {
+        let (kind, app_error, interruption, status) =
+            enterprise_error_kind(EnterpriseError::Spawn(ProcessError::TimedOut {
+                cmd: "1cv8c ENTERPRISE".to_owned(),
+                timeout_ms: 500,
+            }));
+
+        assert_eq!(kind, None);
+        assert!(matches!(app_error, AppError::Runtime(_)));
+        assert!(interruption.is_some());
+        assert_eq!(status, ExecutionStatus::TimedOut);
+    }
+}
+
 pub(super) fn command_interruption_details(
     interruption: ExecutionInterruption,
     phase: &str,
@@ -271,9 +380,7 @@ pub(super) fn build_enterprise_dsl<'a>(
         LaunchClientModeRequest::Thin => UtilityType::V8C,
         LaunchClientModeRequest::Thick | LaunchClientModeRequest::Ordinary => UtilityType::V8,
     };
-    let location = utilities
-        .locate(utility)
-        .map_err(|error| AppError::Platform(error.to_string()))?;
+    let location = utilities.locate(utility).map_err(AppError::from)?;
     tracing::debug!(
         additional_launch_keys = ?config.tools.enterprise.additional_launch_keys,
         "resolved enterprise additional launch keys"
@@ -382,16 +489,33 @@ pub(super) fn enterprise_error_kind(
             )),
             ExecutionStatus::TimedOut,
         ),
-        EnterpriseError::Spawn(process_error @ ProcessError::SpawnFailed { .. })
-        | EnterpriseError::Spawn(process_error @ ProcessError::ExitedEarly { .. }) => (
+        EnterpriseError::Spawn(process_error @ ProcessError::SpawnFailed { .. }) => (
             Some(TestErrorKind::EnterpriseSpawnFailed),
-            AppError::Platform(process_error.to_string()),
+            AppError::PlatformProcess(process_error),
             None,
             ExecutionStatus::Failed,
         ),
-        EnterpriseError::Spawn(process_error) => (
-            Some(TestErrorKind::EnterpriseSpawnFailed),
-            AppError::Platform(process_error.to_string()),
+        EnterpriseError::Spawn(process_error @ ProcessError::StartupCheckFailed { .. }) => (
+            Some(TestErrorKind::EnterpriseStartupCheckFailed),
+            AppError::PlatformProcess(process_error),
+            None,
+            ExecutionStatus::Failed,
+        ),
+        EnterpriseError::Spawn(process_error @ ProcessError::ExitedEarly { .. }) => (
+            Some(TestErrorKind::EnterpriseExitedEarly),
+            AppError::PlatformProcess(process_error),
+            None,
+            ExecutionStatus::Failed,
+        ),
+        EnterpriseError::Spawn(process_error @ ProcessError::StdoutLogIo { .. }) => (
+            Some(TestErrorKind::EnterpriseStdoutLogIo),
+            AppError::PlatformProcess(process_error),
+            None,
+            ExecutionStatus::Failed,
+        ),
+        EnterpriseError::Spawn(process_error @ ProcessError::StderrLogIo { .. }) => (
+            Some(TestErrorKind::EnterpriseStderrLogIo),
+            AppError::PlatformProcess(process_error),
             None,
             ExecutionStatus::Failed,
         ),

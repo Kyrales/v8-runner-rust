@@ -57,7 +57,7 @@ pub fn execute(
     let mut utilities = PlatformUtilities::from_config(config);
     let location = utilities
         .locate(utility)
-        .map_err(|e| UseCaseFailure::without_payload(AppError::Platform(e.to_string())))?;
+        .map_err(|error| UseCaseFailure::without_payload(AppError::from(error)))?;
 
     let process_args = build_launch_args(
         client_mode,
@@ -77,7 +77,7 @@ pub fn execute(
             stderr_log_path: None,
             startup_probe: Some(LAUNCH_STARTUP_PROBE),
         })
-        .map_err(|e| UseCaseFailure::without_payload(AppError::Platform(e.to_string())))?;
+        .map_err(|error| UseCaseFailure::without_payload(AppError::from(error)))?;
 
     let result = LaunchResult {
         ok: true,

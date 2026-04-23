@@ -239,10 +239,7 @@ pub(super) fn build_ibcmd_dsl<'a>(
 }
 
 pub(super) fn map_ibcmd_error(error: IbcmdError) -> AppError {
-    match error {
-        IbcmdError::MissingServerDbmsField(_) => AppError::Validation(error.to_string()),
-        IbcmdError::Spawn(_) => AppError::Platform(error.to_string()),
-    }
+    AppError::from(error)
 }
 
 pub(super) fn interruption_before_safe_point(

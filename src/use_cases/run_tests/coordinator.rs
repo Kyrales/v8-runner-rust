@@ -48,7 +48,7 @@ pub(super) fn run_tests(
             let outcome = ExecutionOutcome::new(ExecutionStatus::Failed)
                 .with_diagnostics(vec![error.to_string()])
                 .with_errors(vec![test_execution_error(
-                    TestErrorKind::EnterpriseSpawnFailed,
+                    TestErrorKind::TestSetupFailed,
                     error.to_string(),
                 )]);
             let result = make_test_result(
@@ -130,14 +130,14 @@ pub(super) fn run_tests(
                     app_error.to_string(),
                 )
                 .with_errors(vec![test_execution_error(
-                    TestErrorKind::EnterpriseSpawnFailed,
+                    TestErrorKind::TestSetupFailed,
                     app_error.to_string(),
                 )]),
             );
             let outcome = ExecutionOutcome::new(ExecutionStatus::Failed)
                 .with_diagnostics(vec![app_error.to_string()])
                 .with_errors(vec![test_execution_error(
-                    TestErrorKind::EnterpriseSpawnFailed,
+                    TestErrorKind::TestSetupFailed,
                     app_error.to_string(),
                 )]);
             let result = make_test_result(
@@ -190,7 +190,7 @@ pub(super) fn run_tests(
                 )
                 .with_target(artifacts.config_json.display().to_string())
                 .with_errors(vec![test_execution_error(
-                    TestErrorKind::EnterpriseSpawnFailed,
+                    TestErrorKind::TestSetupFailed,
                     error.to_string(),
                 )]),
             );
@@ -199,7 +199,7 @@ pub(super) fn run_tests(
                 ExecutionOutcome::new(ExecutionStatus::Failed)
                     .with_diagnostics(vec![error.to_string()])
                     .with_errors(vec![test_execution_error(
-                        TestErrorKind::EnterpriseSpawnFailed,
+                        TestErrorKind::TestSetupFailed,
                         error.to_string(),
                     )]),
                 retained_paths,
@@ -240,7 +240,7 @@ pub(super) fn run_tests(
                 )
                 .with_target(artifacts.platform_log.display().to_string())
                 .with_errors(vec![test_execution_error(
-                    TestErrorKind::EnterpriseSpawnFailed,
+                    TestErrorKind::TestSetupFailed,
                     error.to_string(),
                 )]),
             );
@@ -249,7 +249,7 @@ pub(super) fn run_tests(
                 ExecutionOutcome::new(ExecutionStatus::Failed)
                     .with_diagnostics(vec![error.to_string()])
                     .with_errors(vec![test_execution_error(
-                        TestErrorKind::EnterpriseSpawnFailed,
+                        TestErrorKind::TestSetupFailed,
                         error.to_string(),
                     )]),
                 retained_paths,

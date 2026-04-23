@@ -178,7 +178,7 @@ fn run_load(
         Err(error) => {
             let message = error.to_string();
             return Err(LoadExecutionFailure::with_payload(
-                AppError::Platform(message.clone()),
+                AppError::from(error),
                 empty_result_from_resolved(
                     &resolved,
                     CompatibilityState::Unknown,
@@ -264,7 +264,7 @@ fn run_load(
     let apply_result = match resolved.mode {
         LoadMode::Load => apply_dsl
             .load_cfg(&resolved.artifact_path, resolved.extension.as_deref())
-            .map_err(|error| (AppError::Platform(error.to_string()), None)),
+            .map_err(|error| (AppError::from(error), None)),
         LoadMode::Merge => apply_dsl
             .merge_cfg(
                 &resolved.artifact_path,
@@ -274,7 +274,7 @@ fn run_load(
                     .expect("merge settings were validated"),
                 resolved.extension.as_deref(),
             )
-            .map_err(|error| (AppError::Platform(error.to_string()), None)),
+            .map_err(|error| (AppError::from(error), None)),
         LoadMode::Update => unreachable!("update mode is rejected during validation"),
     };
 
@@ -365,7 +365,7 @@ fn run_load(
 
     let update_result = update_dsl
         .update_db_cfg(resolved.extension.as_deref())
-        .map_err(|error| AppError::Platform(error.to_string()));
+        .map_err(AppError::from);
 
     let update_result = match update_result {
         Ok(result) => result,
@@ -499,7 +499,7 @@ fn probe_compatibility(
         ),
         LoadTargetKind::Unknown => unreachable!("unknown targets are rejected during validation"),
     }
-    .map_err(|error| (AppError::Platform(error.to_string()), None))?;
+    .map_err(|error| (AppError::from(error), None))?;
 
     if result.process.exit_code == 0 {
         return Ok(ProbeResult {

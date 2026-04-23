@@ -75,9 +75,48 @@ impl From<AppError> for UseCaseError {
     fn from(value: AppError) -> Self {
         match value {
             AppError::Validation(message) => Self::new(UseCaseErrorKind::Validation, message),
+            AppError::ValidationIbcmd(error) => {
+                Self::new(UseCaseErrorKind::Validation, error.to_string())
+            }
+            AppError::ValidationIbcmdContext { context, source } => {
+                Self::new(UseCaseErrorKind::Validation, format!("{context}; {source}"))
+            }
             AppError::Runtime(message) => Self::new(UseCaseErrorKind::Runtime, message),
             AppError::Platform(message) => Self::new(UseCaseErrorKind::Platform, message),
+            AppError::PlatformDesigner(error) => {
+                Self::new(UseCaseErrorKind::Platform, error.to_string())
+            }
+            AppError::PlatformDesignerContext { context, source } => {
+                Self::new(UseCaseErrorKind::Platform, format!("{context}; {source}"))
+            }
+            AppError::PlatformLocator(error) => {
+                Self::new(UseCaseErrorKind::Platform, error.to_string())
+            }
+            AppError::PlatformProcess(error) => {
+                Self::new(UseCaseErrorKind::Platform, error.to_string())
+            }
+            AppError::PlatformLocatorContext { context, source } => {
+                Self::new(UseCaseErrorKind::Platform, format!("{context}; {source}"))
+            }
+            AppError::PlatformProcessContext { context, source } => {
+                Self::new(UseCaseErrorKind::Platform, format!("{context}; {source}"))
+            }
+            AppError::PlatformEdt(error) => {
+                Self::new(UseCaseErrorKind::Platform, error.to_string())
+            }
+            AppError::PlatformEdtContext { context, source } => {
+                Self::new(UseCaseErrorKind::Platform, format!("{context}; {source}"))
+            }
+            AppError::PlatformEdtSession(error) => {
+                Self::new(UseCaseErrorKind::Platform, error.to_string())
+            }
+            AppError::PlatformEdtSessionContext { context, source } => {
+                Self::new(UseCaseErrorKind::Platform, format!("{context}; {source}"))
+            }
             AppError::Config(error) => Self::new(UseCaseErrorKind::Validation, error.to_string()),
+            AppError::ConfigContext { context, source } => {
+                Self::new(UseCaseErrorKind::Validation, format!("{context}; {source}"))
+            }
         }
     }
 }
@@ -112,12 +151,91 @@ pub type UseCaseResult<T> = Result<T, UseCaseFailure<T>>;
 
 #[cfg(test)]
 mod tests {
-    use super::UseCaseErrorKind;
+    use super::{UseCaseError, UseCaseErrorKind};
+    use crate::config::loader::ConfigLoadError;
+    use crate::platform::designer::DesignerError;
+    use crate::platform::edt_session::EdtSessionError;
+    use crate::platform::ibcmd::IbcmdError;
+    use crate::platform::process::ProcessError;
+    use crate::support::error::AppError;
 
     #[test]
     fn use_case_error_kinds_keep_stable_cli_exit_codes() {
         assert_eq!(UseCaseErrorKind::Validation.exit_code(), 2);
         assert_eq!(UseCaseErrorKind::Runtime.exit_code(), 3);
         assert_eq!(UseCaseErrorKind::Platform.exit_code(), 4);
+    }
+
+    #[test]
+    fn process_app_error_normalizes_only_at_adapter_boundary() {
+        let error = UseCaseError::from(AppError::PlatformProcess(ProcessError::SpawnFailed {
+            cmd: "1cv8c ENTERPRISE".to_owned(),
+            source: std::io::Error::new(std::io::ErrorKind::NotFound, "missing binary"),
+        }));
+
+        assert_eq!(error.kind(), UseCaseErrorKind::Platform);
+        assert_eq!(error.exit_code(), 4);
+        assert!(error.message().contains("failed to spawn process"));
+        assert!(error.message().contains("1cv8c ENTERPRISE"));
+    }
+
+    #[test]
+    fn contextual_config_errors_stay_validation_errors() {
+        let app_error = AppError::Config(ConfigLoadError::NotFound("v8project.yaml".to_owned()))
+            .with_context("failed to load project config");
+        assert!(matches!(app_error, AppError::ConfigContext { .. }));
+
+        let error = UseCaseError::from(app_error);
+
+        assert_eq!(error.kind(), UseCaseErrorKind::Validation);
+        assert!(error.message().contains("failed to load project config"));
+        assert!(error.message().contains("v8project.yaml"));
+    }
+
+    #[test]
+    fn contextual_edt_session_errors_stay_platform_errors() {
+        let app_error = AppError::from(EdtSessionError::QueueFull)
+            .with_context("failed to acquire EDT session");
+        assert!(matches!(
+            app_error,
+            AppError::PlatformEdtSessionContext { .. }
+        ));
+
+        let error = UseCaseError::from(app_error);
+
+        assert_eq!(error.kind(), UseCaseErrorKind::Platform);
+        assert!(error.message().contains("failed to acquire EDT session"));
+        assert!(error.message().contains("shared EDT queue is full"));
+    }
+
+    #[test]
+    fn contextual_ibcmd_validation_errors_keep_typed_source() {
+        let app_error = AppError::from(IbcmdError::MissingServerDbmsField("kind"))
+            .with_context("failed to build ibcmd connection");
+        assert!(matches!(app_error, AppError::ValidationIbcmdContext { .. }));
+
+        let error = UseCaseError::from(app_error);
+
+        assert_eq!(error.kind(), UseCaseErrorKind::Validation);
+        assert!(error.message().contains("failed to build ibcmd connection"));
+        assert!(error.message().contains("infobase.dbms.kind"));
+    }
+
+    #[test]
+    fn contextual_designer_errors_keep_typed_platform_source() {
+        let app_error = AppError::from(DesignerError::UtilityNotFound("1cv8".to_owned()))
+            .with_context("failed to resolve designer utility");
+        assert!(matches!(
+            app_error,
+            AppError::PlatformDesignerContext { .. }
+        ));
+
+        let error = UseCaseError::from(app_error);
+
+        assert_eq!(error.kind(), UseCaseErrorKind::Platform);
+        assert!(error
+            .message()
+            .contains("failed to resolve designer utility"));
+        assert!(error.message().contains("designer utility not found"));
     }
 }

@@ -477,7 +477,19 @@ fn map_interactive_command_error(
                 timeout_ms,
             })
         }
-        other => EdtError::Interactive(other),
+        other @ (InteractiveProcessError::SpawnFailed { .. }
+        | InteractiveProcessError::MissingStdin { .. }
+        | InteractiveProcessError::MissingStdout { .. }
+        | InteractiveProcessError::MissingStderr { .. }
+        | InteractiveProcessError::StartupTimeout { .. }
+        | InteractiveProcessError::ProcessExited { .. }
+        | InteractiveProcessError::Poisoned
+        | InteractiveProcessError::Terminated
+        | InteractiveProcessError::StdinWriteFailed { .. }
+        | InteractiveProcessError::StdinFlushFailed { .. }
+        | InteractiveProcessError::StreamReadFailed { .. }
+        | InteractiveProcessError::WaitFailed { .. }
+        | InteractiveProcessError::KillFailed { .. }) => EdtError::Interactive(other),
     }
 }
 
@@ -500,7 +512,11 @@ fn map_shared_session_error(
                 timeout_ms: timeout.as_millis() as u64,
             })
         }
-        other => EdtError::SharedSession(other),
+        other @ (EdtSessionError::QueueFull
+        | EdtSessionError::StartupFailed { .. }
+        | EdtSessionError::SessionFailed { .. }
+        | EdtSessionError::DrainedByRestartOrShutdown { .. }
+        | EdtSessionError::InternalFailure { .. }) => EdtError::SharedSession(other),
     }
 }
 

@@ -347,12 +347,7 @@ fn ensure_edt_workspace(
     let binary = match utilities.locate(UtilityType::EdtCli) {
         Ok(location) => location.path,
         Err(error) => {
-            return StepOutcome::failed(
-                "edt_workspace",
-                "import",
-                started,
-                AppError::Platform(error.to_string()),
-            )
+            return StepOutcome::failed("edt_workspace", "import", started, AppError::from(error))
         }
     };
 
@@ -374,7 +369,7 @@ fn ensure_edt_workspace(
                         "edt_workspace",
                         "import",
                         started,
-                        AppError::Platform(error.to_string()),
+                        AppError::from(error),
                     )
                 }
             },
@@ -383,7 +378,7 @@ fn ensure_edt_workspace(
                     "edt_workspace",
                     "import",
                     started,
-                    AppError::Platform(error.to_string()),
+                    AppError::from(error),
                 )
             }
         }
@@ -423,7 +418,7 @@ fn ensure_edt_workspace(
                     "edt_workspace",
                     "import",
                     started,
-                    AppError::Platform(error.to_string()),
+                    AppError::from(error),
                 )
             }
         }
@@ -459,7 +454,7 @@ fn create_infobase_via_designer(
 ) -> Result<IbcmdInfobaseCreateOutcome, AppError> {
     let binary = utilities
         .locate(UtilityType::V8)
-        .map_err(|error| AppError::Platform(error.to_string()))?
+        .map_err(AppError::from)?
         .path;
     DesignerDsl::new(
         binary,
@@ -479,7 +474,7 @@ fn create_infobase_via_designer(
         },
         result,
     })
-    .map_err(|error| AppError::Platform(error.to_string()))
+    .map_err(AppError::from)
 }
 
 fn create_infobase_via_ibcmd(
@@ -489,21 +484,15 @@ fn create_infobase_via_ibcmd(
 ) -> Result<IbcmdInfobaseCreateOutcome, AppError> {
     let binary = utilities
         .locate(UtilityType::Ibcmd)
-        .map_err(|error| AppError::Platform(error.to_string()))?
+        .map_err(AppError::from)?
         .path;
-    let connection =
-        IbcmdConnection::from_infobase(&config.infobase).map_err(|error| match error {
-            crate::platform::ibcmd::IbcmdError::MissingServerDbmsField(_) => {
-                AppError::Validation(error.to_string())
-            }
-            crate::platform::ibcmd::IbcmdError::Spawn(_) => AppError::Platform(error.to_string()),
-        })?;
+    let connection = IbcmdConnection::from_infobase(&config.infobase).map_err(AppError::from)?;
     IbcmdDsl::new(binary, connection, utilities.runner_for(UtilityType::Ibcmd))
         .with_execution_policy(
             context.process_policy(InterruptionSafetyClass::CriticalNonAbortable, None),
         )
         .ensure_infobase_create()
-        .map_err(|error| AppError::Platform(error.to_string()))
+        .map_err(AppError::from)
 }
 
 fn create_infobase(

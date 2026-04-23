@@ -38,11 +38,7 @@ pub fn execute(
     let connection = match IbcmdConnection::from_infobase(&config.infobase) {
         Ok(connection) => connection,
         Err(error) => {
-            let error = match error {
-                IbcmdError::MissingServerDbmsField(_) => AppError::Validation(error.to_string()),
-                IbcmdError::Spawn(_) => AppError::Platform(error.to_string()),
-            };
-            return Err(UseCaseFailure::without_payload(error));
+            return Err(UseCaseFailure::without_payload(AppError::from(error)));
         }
     };
 
@@ -50,9 +46,7 @@ pub fn execute(
     let binary = match utilities.locate(UtilityType::Ibcmd) {
         Ok(location) => location.path,
         Err(error) => {
-            return Err(UseCaseFailure::without_payload(AppError::Platform(
-                error.to_string(),
-            )));
+            return Err(UseCaseFailure::without_payload(AppError::from(error)));
         }
     };
     let dsl = IbcmdDsl::new(binary, connection, utilities.runner_for(UtilityType::Ibcmd))
@@ -139,8 +133,8 @@ pub fn execute(
                 ));
             }
             Err(error) => {
-                let message =
-                    format!("ibcmd extension update failed for extension '{target}': {error}");
+                let app_error = map_extension_update_error(&target, error);
+                let message = app_error.to_string();
                 let step = ExtensionsStep {
                     target: target.clone(),
                     action: DISABLE_SAFETY_ACTION.to_owned(),
@@ -156,10 +150,7 @@ pub fn execute(
                     steps,
                     duration_ms: started.elapsed().as_millis() as u64,
                 };
-                return Err(UseCaseFailure::with_payload(
-                    AppError::Platform(message),
-                    payload,
-                ));
+                return Err(UseCaseFailure::with_payload(app_error, payload));
             }
         }
     }
@@ -215,6 +206,12 @@ fn deferred_interruption_warning(
     })
 }
 
+fn map_extension_update_error(target: &str, error: IbcmdError) -> AppError {
+    AppError::from(error).with_context(format!(
+        "ibcmd extension update failed for extension '{target}'"
+    ))
+}
+
 fn resolve_targets(
     config: &AppConfig,
     args: &ConfigureExtensionsRequest,
@@ -264,11 +261,14 @@ fn resolve_extension_name(config: &AppConfig, source_set: &SourceSetConfig) -> S
 
 #[cfg(test)]
 mod tests {
-    use super::{execute, resolve_targets};
+    use super::{execute, map_extension_update_error, resolve_targets};
     use crate::config::model::{
         AppConfig, BuildConfig, BuilderBackend, PlatformToolConfig, SourceFormat, SourceSetConfig,
         SourceSetPurpose, TestsConfig, ToolsConfig,
     };
+    use crate::platform::ibcmd::IbcmdError;
+    use crate::platform::process::ProcessError;
+    use crate::support::error::AppError;
     use crate::use_cases::context::{CommandName, ExecutionContext};
     use crate::use_cases::request::ConfigureExtensionsRequest;
     use crate::use_cases::result::UseCaseErrorKind;
@@ -342,6 +342,28 @@ mod tests {
             .expect("targets");
 
         assert_eq!(targets, vec!["client_mcp"]);
+    }
+
+    #[test]
+    fn extension_update_spawn_failure_preserves_typed_process_context() {
+        let error = map_extension_update_error(
+            "client_mcp",
+            IbcmdError::Spawn(ProcessError::SpawnFailed {
+                cmd: "ibcmd extension update".to_owned(),
+                source: std::io::Error::new(std::io::ErrorKind::NotFound, "missing ibcmd"),
+            }),
+        );
+
+        assert!(error
+            .to_string()
+            .contains("ibcmd extension update failed for extension 'client_mcp'"));
+        assert!(matches!(
+            error,
+            AppError::PlatformProcessContext {
+                source: ProcessError::SpawnFailed { .. },
+                ..
+            }
+        ));
     }
 
     #[cfg(unix)]

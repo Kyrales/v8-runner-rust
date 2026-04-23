@@ -10,7 +10,12 @@ use crate::domain::execution::{
 };
 
 pub const TEST_ERROR_CODE_BUILD_FAILED: &str = "build_failed";
+pub const TEST_ERROR_CODE_TEST_SETUP_FAILED: &str = "test_setup_failed";
 pub const TEST_ERROR_CODE_ENTERPRISE_SPAWN_FAILED: &str = "enterprise_spawn_failed";
+pub const TEST_ERROR_CODE_ENTERPRISE_STARTUP_CHECK_FAILED: &str = "enterprise_startup_check_failed";
+pub const TEST_ERROR_CODE_ENTERPRISE_EXITED_EARLY: &str = "enterprise_exited_early";
+pub const TEST_ERROR_CODE_ENTERPRISE_STDOUT_LOG_IO: &str = "enterprise_stdout_log_io";
+pub const TEST_ERROR_CODE_ENTERPRISE_STDERR_LOG_IO: &str = "enterprise_stderr_log_io";
 pub const TEST_ERROR_CODE_ENTERPRISE_TIMED_OUT: &str = "enterprise_timed_out";
 pub const TEST_ERROR_CODE_ENTERPRISE_EXITED_NON_ZERO: &str = "enterprise_exited_non_zero";
 pub const TEST_ERROR_CODE_TEST_FAILURES: &str = "test_failures";
@@ -37,7 +42,12 @@ pub enum TestOutputMode {
 #[serde(rename_all = "snake_case")]
 pub enum TestErrorKind {
     BuildFailed,
+    TestSetupFailed,
     EnterpriseSpawnFailed,
+    EnterpriseStartupCheckFailed,
+    EnterpriseExitedEarly,
+    EnterpriseStdoutLogIo,
+    EnterpriseStderrLogIo,
     EnterpriseTimedOut,
     EnterpriseExitedNonZero,
     TestFailures,
@@ -50,7 +60,12 @@ impl TestErrorKind {
     pub const fn code(self) -> &'static str {
         match self {
             Self::BuildFailed => TEST_ERROR_CODE_BUILD_FAILED,
+            Self::TestSetupFailed => TEST_ERROR_CODE_TEST_SETUP_FAILED,
             Self::EnterpriseSpawnFailed => TEST_ERROR_CODE_ENTERPRISE_SPAWN_FAILED,
+            Self::EnterpriseStartupCheckFailed => TEST_ERROR_CODE_ENTERPRISE_STARTUP_CHECK_FAILED,
+            Self::EnterpriseExitedEarly => TEST_ERROR_CODE_ENTERPRISE_EXITED_EARLY,
+            Self::EnterpriseStdoutLogIo => TEST_ERROR_CODE_ENTERPRISE_STDOUT_LOG_IO,
+            Self::EnterpriseStderrLogIo => TEST_ERROR_CODE_ENTERPRISE_STDERR_LOG_IO,
             Self::EnterpriseTimedOut => TEST_ERROR_CODE_ENTERPRISE_TIMED_OUT,
             Self::EnterpriseExitedNonZero => TEST_ERROR_CODE_ENTERPRISE_EXITED_NON_ZERO,
             Self::TestFailures => TEST_ERROR_CODE_TEST_FAILURES,
@@ -63,7 +78,12 @@ impl TestErrorKind {
     pub fn from_code(code: &str) -> Option<Self> {
         Some(match code {
             TEST_ERROR_CODE_BUILD_FAILED => Self::BuildFailed,
+            TEST_ERROR_CODE_TEST_SETUP_FAILED => Self::TestSetupFailed,
             TEST_ERROR_CODE_ENTERPRISE_SPAWN_FAILED => Self::EnterpriseSpawnFailed,
+            TEST_ERROR_CODE_ENTERPRISE_STARTUP_CHECK_FAILED => Self::EnterpriseStartupCheckFailed,
+            TEST_ERROR_CODE_ENTERPRISE_EXITED_EARLY => Self::EnterpriseExitedEarly,
+            TEST_ERROR_CODE_ENTERPRISE_STDOUT_LOG_IO => Self::EnterpriseStdoutLogIo,
+            TEST_ERROR_CODE_ENTERPRISE_STDERR_LOG_IO => Self::EnterpriseStderrLogIo,
             TEST_ERROR_CODE_ENTERPRISE_TIMED_OUT => Self::EnterpriseTimedOut,
             TEST_ERROR_CODE_ENTERPRISE_EXITED_NON_ZERO => Self::EnterpriseExitedNonZero,
             TEST_ERROR_CODE_TEST_FAILURES => Self::TestFailures,
@@ -273,18 +293,29 @@ pub fn test_execution_error(kind: TestErrorKind, message: impl Into<String>) -> 
 }
 
 pub fn test_execution_status(kind: Option<TestErrorKind>, ok: bool) -> ExecutionStatus {
-    match (ok, kind) {
-        (true, _) => ExecutionStatus::Succeeded,
-        (_, Some(TestErrorKind::EnterpriseTimedOut)) => ExecutionStatus::TimedOut,
-        (
-            _,
-            Some(
-                TestErrorKind::JunitMalformed
-                | TestErrorKind::JunitEmpty
-                | TestErrorKind::JunitNotProduced,
-            ),
+    if ok {
+        return ExecutionStatus::Succeeded;
+    }
+
+    match kind {
+        Some(TestErrorKind::EnterpriseTimedOut) => ExecutionStatus::TimedOut,
+        Some(
+            TestErrorKind::JunitMalformed
+            | TestErrorKind::JunitEmpty
+            | TestErrorKind::JunitNotProduced,
         ) => ExecutionStatus::InvalidOutput,
-        _ => ExecutionStatus::Failed,
+        Some(
+            TestErrorKind::BuildFailed
+            | TestErrorKind::TestSetupFailed
+            | TestErrorKind::EnterpriseSpawnFailed
+            | TestErrorKind::EnterpriseStartupCheckFailed
+            | TestErrorKind::EnterpriseExitedEarly
+            | TestErrorKind::EnterpriseStdoutLogIo
+            | TestErrorKind::EnterpriseStderrLogIo
+            | TestErrorKind::EnterpriseExitedNonZero
+            | TestErrorKind::TestFailures,
+        )
+        | None => ExecutionStatus::Failed,
     }
 }
 
@@ -311,6 +342,41 @@ mod tests {
         let set = retained.clone().into_artifact_set();
 
         assert_eq!(RetainedPaths::from_artifact_set(&set), Some(retained));
+    }
+
+    #[test]
+    fn test_error_kind_codes_roundtrip_for_setup_and_process_failures() {
+        let kinds = [
+            TestErrorKind::TestSetupFailed,
+            TestErrorKind::EnterpriseSpawnFailed,
+            TestErrorKind::EnterpriseStartupCheckFailed,
+            TestErrorKind::EnterpriseExitedEarly,
+            TestErrorKind::EnterpriseStdoutLogIo,
+            TestErrorKind::EnterpriseStderrLogIo,
+            TestErrorKind::EnterpriseTimedOut,
+        ];
+
+        for kind in kinds {
+            let code = kind.clone().code();
+            assert_eq!(TestErrorKind::from_code(code), Some(kind));
+        }
+    }
+
+    #[test]
+    fn test_error_status_maps_new_process_failures_explicitly() {
+        for kind in [
+            TestErrorKind::TestSetupFailed,
+            TestErrorKind::EnterpriseSpawnFailed,
+            TestErrorKind::EnterpriseStartupCheckFailed,
+            TestErrorKind::EnterpriseExitedEarly,
+            TestErrorKind::EnterpriseStdoutLogIo,
+            TestErrorKind::EnterpriseStderrLogIo,
+        ] {
+            assert_eq!(
+                super::test_execution_status(Some(kind), false),
+                ExecutionStatus::Failed
+            );
+        }
     }
 
     #[test]

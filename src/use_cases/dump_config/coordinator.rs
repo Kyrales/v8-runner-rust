@@ -77,7 +77,7 @@ pub(super) fn run_dump_with_context(
         Ok(location) => location,
         Err(error) => {
             let message = error.to_string();
-            let app_error = AppError::Platform(message.clone());
+            let app_error = AppError::from(error);
             return Err(DumpExecutionFailure::with_payload(
                 app_error,
                 empty_result(
@@ -96,7 +96,7 @@ pub(super) fn run_dump_with_context(
             Ok(location) => location.path,
             Err(error) => {
                 let message = error.to_string();
-                let app_error = AppError::Platform(message.clone());
+                let app_error = AppError::from(error);
                 return Err(DumpExecutionFailure::with_payload(
                     app_error,
                     empty_result(

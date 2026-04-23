@@ -127,7 +127,7 @@ fn run_convert_with_context(
     let location = match utilities.locate(UtilityType::EdtCli) {
         Ok(location) => location,
         Err(error) => {
-            let app_error = AppError::Platform(error.to_string());
+            let app_error = AppError::from(error);
             let message = app_error.to_string();
             return Err(ConvertExecutionFailure::with_payload(
                 app_error,
@@ -152,8 +152,10 @@ fn run_convert_with_context(
             convert_session_host_options(config, &resolved.workspace_path),
         )
         .map_err(|error| {
+            let app_error = AppError::from(error);
+            let message = app_error.to_string();
             ConvertExecutionFailure::with_payload(
-                AppError::Platform(error.to_string()),
+                app_error,
                 result_snapshot(
                     false,
                     resolved.direction,
@@ -162,7 +164,7 @@ fn run_convert_with_context(
                     resolved.workspace_path.clone(),
                     Vec::new(),
                     started,
-                    Some(error.to_string()),
+                    Some(message),
                 ),
             )
         })?;
@@ -174,8 +176,10 @@ fn run_convert_with_context(
             Duration::from_millis(config.tools.edt_cli.command_timeout_ms),
         )
         .map_err(|error| {
+            let app_error = AppError::from(error);
+            let message = app_error.to_string();
             ConvertExecutionFailure::with_payload(
-                AppError::Platform(error.to_string()),
+                app_error,
                 result_snapshot(
                     false,
                     resolved.direction,
@@ -184,7 +188,7 @@ fn run_convert_with_context(
                     resolved.workspace_path.clone(),
                     Vec::new(),
                     started,
-                    Some(error.to_string()),
+                    Some(message),
                 ),
             )
         })?
@@ -807,9 +811,36 @@ fn discover_edt_external_projects(
                         child.display(),
                         source_set_name
                     )),
+                    AppError::ValidationIbcmd(error) => AppError::ValidationIbcmd(error),
+                    AppError::ValidationIbcmdContext { context, source } => {
+                        AppError::ValidationIbcmdContext { context, source }
+                    }
                     AppError::Runtime(message) => AppError::Runtime(message),
                     AppError::Platform(message) => AppError::Platform(message),
+                    AppError::PlatformDesigner(error) => AppError::PlatformDesigner(error),
+                    AppError::PlatformDesignerContext { context, source } => {
+                        AppError::PlatformDesignerContext { context, source }
+                    }
+                    AppError::PlatformLocator(error) => AppError::PlatformLocator(error),
+                    AppError::PlatformProcess(error) => AppError::PlatformProcess(error),
+                    AppError::PlatformLocatorContext { context, source } => {
+                        AppError::PlatformLocatorContext { context, source }
+                    }
+                    AppError::PlatformProcessContext { context, source } => {
+                        AppError::PlatformProcessContext { context, source }
+                    }
+                    AppError::PlatformEdt(error) => AppError::PlatformEdt(error),
+                    AppError::PlatformEdtContext { context, source } => {
+                        AppError::PlatformEdtContext { context, source }
+                    }
+                    AppError::PlatformEdtSession(error) => AppError::PlatformEdtSession(error),
+                    AppError::PlatformEdtSessionContext { context, source } => {
+                        AppError::PlatformEdtSessionContext { context, source }
+                    }
                     AppError::Config(error) => AppError::Config(error),
+                    AppError::ConfigContext { context, source } => {
+                        AppError::ConfigContext { context, source }
+                    }
                 })?;
         if descriptor.artifact_type != expected_kind {
             return Err(AppError::Validation(format!(
@@ -981,7 +1012,7 @@ fn infer_runtime_base_project_name(
             None,
             false,
         )
-        .map_err(|error| AppError::Platform(error.to_string()));
+        .map_err(AppError::from);
     let outcome = (|| {
         let result = import_result?;
         ensure_platform_success(
@@ -1056,7 +1087,7 @@ fn run_platform_conversion(
                     })?;
                     let result = dsl
                         .export_project_path(project_path, &export_target)
-                        .map_err(|error| AppError::Platform(error.to_string()))?;
+                        .map_err(AppError::from)?;
                     ensure_platform_success(&item.source_set_name, "edt-to-designer", &result)?;
                     let discovered = discover_designer_external_artifacts(
                         &item.source_set_name,
@@ -1094,7 +1125,7 @@ fn run_platform_conversion(
             } else {
                 let result = dsl
                     .export_project_path(&item.source_path, staging_dir)
-                    .map_err(|error| AppError::Platform(error.to_string()))?;
+                    .map_err(AppError::from)?;
                 ensure_platform_success(&item.source_set_name, "edt-to-designer", &result)
             }
         }
@@ -1107,7 +1138,7 @@ fn run_platform_conversion(
                     import_options.base_project_name.as_deref(),
                     import_options.build,
                 )
-                .map_err(|error| AppError::Platform(error.to_string()))?;
+                .map_err(AppError::from)?;
             ensure_platform_success(&item.source_set_name, "designer-to-edt", &result)
         }
     }

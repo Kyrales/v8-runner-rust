@@ -165,7 +165,7 @@ fn run_syntax_with_context(
         Ok(location) => location,
         Err(error) => {
             let message = error.to_string();
-            let app_error = AppError::Platform(message.clone());
+            let app_error = AppError::from(error);
             return Err(SyntaxExecutionFailure::with_payload(
                 app_error,
                 failed_result(
@@ -200,8 +200,8 @@ fn run_syntax_with_context(
     let platform_result = match platform_result {
         Ok(result) => result,
         Err(error) => {
-            let message = error.to_string();
-            let app_error = AppError::Platform(message.clone());
+            let app_error = AppError::from(error);
+            let message = app_error.to_string();
             return Err(SyntaxExecutionFailure::with_payload(
                 app_error,
                 failed_result(
@@ -480,7 +480,7 @@ fn run_edt_syntax(
         Ok(location) => location,
         Err(error) => {
             let message = error.to_string();
-            let app_error = AppError::Platform(message.clone());
+            let app_error = AppError::from(error);
             return Err(SyntaxExecutionFailure::with_payload(
                 app_error,
                 failed_result(
@@ -516,8 +516,8 @@ fn run_edt_syntax(
                         )),
                 ),
                 Err(error) => {
-                    let message = error.to_string();
-                    let app_error = AppError::Platform(message.clone());
+                    let app_error = AppError::from(error);
+                    let message = app_error.to_string();
                     return Err(SyntaxExecutionFailure::with_payload(
                         app_error,
                         failed_result(
@@ -534,8 +534,8 @@ fn run_edt_syntax(
                 }
             },
             Err(error) => {
-                let message = error.to_string();
-                let app_error = AppError::Platform(message.clone());
+                let app_error = AppError::from(error);
+                let message = app_error.to_string();
                 return Err(SyntaxExecutionFailure::with_payload(
                     app_error,
                     failed_result(
@@ -590,8 +590,8 @@ fn run_edt_syntax(
         } {
             Ok(result) => result,
             Err(error) => {
-                let message = error.to_string();
-                let app_error = AppError::Platform(message.clone());
+                let app_error = AppError::from(error);
+                let message = app_error.to_string();
                 return Err(SyntaxExecutionFailure::with_payload(
                     app_error,
                     failed_result(

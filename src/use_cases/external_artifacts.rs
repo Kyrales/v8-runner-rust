@@ -112,7 +112,7 @@ pub fn prepare_edt_external_artifacts(
         })?;
         let result = dsl
             .export_project(&item.logical_name, &export_target)
-            .map_err(|error| AppError::Platform(error.to_string()))?;
+            .map_err(AppError::from)?;
         ensure_build_platform_success("edt_export", source_set, &result)?;
         let mut discovered =
             discover_designer_external_artifacts(&source_set.name, &export_target, expected_kind)?;

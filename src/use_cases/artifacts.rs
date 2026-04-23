@@ -167,7 +167,7 @@ fn run_artifacts(
         Err(error) => {
             let message = error.to_string();
             return Err(ArtifactsExecutionFailure::with_payload(
-                AppError::Platform(message.clone()),
+                AppError::from(error),
                 empty_result(
                     resolved.mode,
                     started,
@@ -404,13 +404,7 @@ fn run_designer_export(
     .map_err(|error| (error, ArtifactSet::default(), None))?;
     let dump_result = dsl
         .dump_cfg(&staging_file, resolved.extension.as_deref())
-        .map_err(|error| {
-            (
-                AppError::Platform(error.to_string()),
-                ArtifactSet::default(),
-                None,
-            )
-        })?;
+        .map_err(|error| (AppError::from(error), ArtifactSet::default(), None))?;
 
     let mut artifacts = ArtifactSet::default();
     if staging_file.exists() {
@@ -602,13 +596,7 @@ fn run_external_designer_export(
                 &descriptor.descriptor_xml_path,
                 &staging_file,
             )
-            .map_err(|error| {
-                (
-                    AppError::Platform(error.to_string()),
-                    artifacts.clone(),
-                    None,
-                )
-            })?;
+            .map_err(|error| (AppError::from(error), artifacts.clone(), None))?;
         last_result = result.clone();
         if staging_file.exists() {
             artifacts.push(
@@ -1259,7 +1247,7 @@ fn external_descriptors(
             let mut utilities = PlatformUtilities::from_config(config);
             let location = utilities
                 .locate(UtilityType::EdtCli)
-                .map_err(|error| AppError::Platform(error.to_string()))?;
+                .map_err(AppError::from)?;
             let edt = crate::platform::edt::EdtDsl::new(
                 location.path,
                 config.work_path.join("edt-workspace"),

@@ -239,10 +239,7 @@ pub(super) fn build_ibcmd_dsl<'a>(
 }
 
 pub(super) fn map_ibcmd_error(error: IbcmdError) -> AppError {
-    match error {
-        IbcmdError::MissingServerDbmsField(_) => AppError::Validation(error.to_string()),
-        IbcmdError::Spawn(_) => AppError::Platform(error.to_string()),
-    }
+    AppError::from(error)
 }
 
 pub(super) fn merge_optional_messages(
@@ -367,12 +364,7 @@ pub(super) fn ibcmd_partial_warning(resolved: &ResolvedDumpTarget) -> String {
 }
 
 pub(super) fn decorate_ibcmd_partial_error(error: AppError, warning: &str) -> AppError {
-    match error {
-        AppError::Validation(message) => AppError::Validation(format!("{warning}; {message}")),
-        AppError::Runtime(message) => AppError::Runtime(format!("{warning}; {message}")),
-        AppError::Platform(message) => AppError::Platform(format!("{warning}; {message}")),
-        AppError::Config(error) => AppError::Runtime(format!("{warning}; {error}")),
-    }
+    error.with_context(warning)
 }
 
 pub(super) fn ensure_platform_success(
@@ -419,4 +411,32 @@ pub(super) fn empty_result(
 pub(super) fn make_run_id() -> String {
     let timestamp = chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default();
     format!("{}-{timestamp:x}", std::process::id())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::decorate_ibcmd_partial_error;
+    use crate::platform::process::ProcessError;
+    use crate::support::error::AppError;
+
+    #[test]
+    fn ibcmd_partial_warning_preserves_typed_process_error_source() {
+        let warning = "IBCMD does not support object-scoped partial dump";
+        let error = decorate_ibcmd_partial_error(
+            AppError::PlatformProcess(ProcessError::SpawnFailed {
+                cmd: "ibcmd config export".to_owned(),
+                source: std::io::Error::new(std::io::ErrorKind::NotFound, "missing ibcmd"),
+            }),
+            warning,
+        );
+
+        assert!(error.to_string().contains(warning));
+        assert!(matches!(
+            error,
+            AppError::PlatformProcessContext {
+                source: ProcessError::SpawnFailed { .. },
+                ..
+            }
+        ));
+    }
 }

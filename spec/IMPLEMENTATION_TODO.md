@@ -80,10 +80,21 @@ Detailed ADR task decomposition remains in [ADR_DERIVED_BACKLOG.md](ADR_DERIVED_
   reviewer, separate Rust expert, and final completeness subagent passes returned `no findings` /
   `APPROVED`, and full `cargo test --locked --quiet` passed.
 
-- [ ] `ADR-TASK-024`: Strengthen the typed error contract and remove string erasure on the
+- [x] `ADR-TASK-024`: Strengthen the typed error contract and remove string erasure on the
   use-case boundary. `AppError` should evolve from string categories toward typed variants with
   preserved platform/runtime/validation distinctions, and test-runner process errors should stop
   collapsing into one broad spawn failure.
+  Completed `2026-04-23`: `AppError` now preserves typed locator, process, Designer, EDT,
+  shared-session, IBCMD validation, and config sources through the use-case layer, with contextual
+  variants keeping the original platform/validation/runtime class until `UseCaseError`
+  normalization. Launch, init, build, dump, load, artifacts, syntax, convert, extensions, and test
+  flows now propagate typed platform sources instead of stringifying locator/process/DSL errors;
+  test-runner setup failures use `test_setup_failed`, and Enterprise process failures map
+  exhaustively to distinct `TestErrorKind` codes for spawn, startup probe, early exit, and
+  stdout/stderr log I/O. Cancellation/timeouts intentionally remain command-interruption runtime
+  outcomes with `ExecutionStatus` and interruption metadata. Targeted rustfmt/tests, full
+  `cargo test --locked`, reviewer, separate Rust expert, tester, and final completeness subagent
+  gates passed.
 
 - [ ] `ADR-TASK-025`: Finish the migration to canonical `ExecutionOutcome<T>` and remove legacy
   duplicated result fields. For runner-like commands, `execution` should become the only domain

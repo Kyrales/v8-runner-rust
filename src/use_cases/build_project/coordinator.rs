@@ -226,7 +226,7 @@ pub(super) fn run_build_designer(
                                     error.to_string(),
                                 );
                                 return Err(BuildExecutionFailure::with_payload(
-                                    AppError::Platform(error.to_string()),
+                                    AppError::from(error),
                                     result,
                                 ));
                             }
@@ -475,7 +475,7 @@ pub(super) fn run_build_ibcmd(
                                     error.to_string(),
                                 );
                                 return Err(BuildExecutionFailure::with_payload(
-                                    AppError::Platform(error.to_string()),
+                                    AppError::from(error),
                                     result,
                                 ));
                             }
@@ -686,7 +686,7 @@ pub(super) fn run_build_edt(
                                 error.to_string(),
                             );
                             return Err(BuildExecutionFailure::with_payload(
-                                AppError::Platform(error.to_string()),
+                                AppError::from(error),
                                 result,
                             ));
                         }
@@ -736,7 +736,7 @@ pub(super) fn run_build_edt(
                                     None,
                                 )),
                                 Err(error) => {
-                                    let app_error = AppError::Platform(error.to_string());
+                                    let app_error = AppError::from(error);
                                     let result = fail_with_remaining_steps(
                                         started,
                                         steps,
@@ -755,7 +755,7 @@ pub(super) fn run_build_edt(
                                 }
                             },
                             Err(error) => {
-                                let app_error = AppError::Platform(error.to_string());
+                                let app_error = AppError::from(error);
                                 let result = fail_with_remaining_steps(
                                     started,
                                     steps,
@@ -915,7 +915,7 @@ pub(super) fn run_build_edt(
                                     error.to_string(),
                                 );
                                 return Err(BuildExecutionFailure::with_payload(
-                                    AppError::Platform(error.to_string()),
+                                    AppError::from(error),
                                     result,
                                 ));
                             }
@@ -951,7 +951,7 @@ pub(super) fn run_build_edt(
                                         None,
                                     )),
                                     Err(error) => {
-                                        let app_error = AppError::Platform(error.to_string());
+                                        let app_error = AppError::from(error);
                                         let result = fail_with_remaining_steps(
                                             started,
                                             steps,
@@ -970,7 +970,7 @@ pub(super) fn run_build_edt(
                                     }
                                 },
                                 Err(error) => {
-                                    let app_error = AppError::Platform(error.to_string());
+                                    let app_error = AppError::from(error);
                                     let result = fail_with_remaining_steps(
                                         started,
                                         steps,
@@ -1248,7 +1248,7 @@ pub(super) fn run_build_edt(
                                             error.to_string(),
                                         );
                                         return Err(BuildExecutionFailure::with_payload(
-                                            AppError::Platform(error.to_string()),
+                                            AppError::from(error),
                                             result,
                                         ));
                                     }
@@ -1290,7 +1290,7 @@ pub(super) fn run_build_edt(
                                             error.to_string(),
                                         );
                                         return Err(BuildExecutionFailure::with_payload(
-                                            AppError::Platform(error.to_string()),
+                                            AppError::from(error),
                                             result,
                                         ));
                                     }
