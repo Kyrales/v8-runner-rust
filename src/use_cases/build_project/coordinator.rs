@@ -744,6 +744,7 @@ pub(super) fn run_build_edt(
                         source_set,
                         &edt_context,
                         &designer_context,
+                        index,
                     )
                 } else {
                     let one_shot_edt = EdtDsl::new(
@@ -761,6 +762,7 @@ pub(super) fn run_build_edt(
                         source_set,
                         &edt_context,
                         &designer_context,
+                        index,
                     )
                 };
                 let export_warnings = match export_result {

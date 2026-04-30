@@ -17,7 +17,7 @@ use crate::platform::process::ProcessRunner;
 use crate::platform::utilities::PlatformUtilities;
 use crate::support::edt_project;
 use crate::support::error::AppError;
-use crate::support::temp::{partial_list_file, reserved_source_set_dir};
+use crate::support::temp::{partial_list_file, platform_logs_dir, reserved_source_set_dir};
 use crate::use_cases::context::{ExecutionContext, InterruptionSafetyClass};
 use crate::use_cases::external_artifacts::{
     discover_designer_external_artifacts, prepare_edt_external_artifacts, source_set_external_kind,
@@ -243,6 +243,7 @@ fn execute_edt_export_step(
     source_set: &SourceSetConfig,
     edt_context: &SourceSetContext,
     designer_context: &SourceSetContext,
+    step_index: usize,
 ) -> Result<Vec<String>, AppError> {
     if let Some(error) = interruption_before_safe_point(
         context,
@@ -261,10 +262,116 @@ fn execute_edt_export_step(
     let export_result = dsl
         .export_project(&project_name, designer_context.path())
         .map_err(AppError::from)?;
-    ensure_platform_success("edt_export", source_set, &export_result)?;
+    let export_log_path = write_edt_export_log(
+        config,
+        source_set,
+        step_index,
+        &project_name,
+        designer_context.path(),
+        &export_result,
+    )?;
+    ensure_edt_export_success(source_set, &export_result, &export_log_path)?;
+    ensure_edt_export_output(
+        source_set,
+        &project_name,
+        designer_context.path(),
+        &export_result,
+        &export_log_path,
+    )?;
     Ok(deferred_interruption_warning("edt_export", &export_result)
         .into_iter()
         .collect())
+}
+
+fn write_edt_export_log(
+    config: &AppConfig,
+    source_set: &SourceSetConfig,
+    step_index: usize,
+    project_name: &str,
+    export_target: &Path,
+    result: &crate::platform::result::PlatformCommandResult,
+) -> Result<PathBuf, AppError> {
+    let log_dir = platform_logs_dir(&config.work_path).map_err(|error| {
+        AppError::Runtime(format!("failed to create platform logs dir: {error}"))
+    })?;
+    let log_path = log_dir.join(format!(
+        "build-{step_index:02}-{}-edt-export.log",
+        source_set.name
+    ));
+    let contents = format!(
+        "action: edt_export\nsource-set: {}\nproject-name: {project_name}\nexport-target: {}\nexit-code: {}\nstdout:\n{}\nstderr:\n{}\n",
+        source_set.name,
+        export_target.display(),
+        result.process.exit_code,
+        result.process.stdout,
+        result.process.stderr
+    );
+    std::fs::write(&log_path, contents).map_err(|error| {
+        AppError::Runtime(format!(
+            "failed to write EDT export log '{}': {error}",
+            log_path.display()
+        ))
+    })?;
+    Ok(log_path)
+}
+
+fn ensure_edt_export_success(
+    source_set: &SourceSetConfig,
+    result: &crate::platform::result::PlatformCommandResult,
+    export_log_path: &Path,
+) -> Result<(), AppError> {
+    ensure_platform_success("edt_export", source_set, result).map_err(|error| match error {
+        AppError::Platform(message) => AppError::Platform(format!(
+            "{message}; edt export log path: {}",
+            export_log_path.display()
+        )),
+        other => other,
+    })
+}
+
+fn ensure_edt_export_output(
+    source_set: &SourceSetConfig,
+    project_name: &str,
+    export_target: &Path,
+    result: &crate::platform::result::PlatformCommandResult,
+    export_log_path: &Path,
+) -> Result<(), AppError> {
+    if !edt_export_requires_configuration_xml(source_set) {
+        return Ok(());
+    }
+
+    let expected = export_target.join("Configuration.xml");
+    if expected.is_file() {
+        return Ok(());
+    }
+
+    let mut details = vec![
+        format!(
+            "EDT export for source-set '{}' completed with exit code 0 but did not produce required Designer file '{}'",
+            source_set.name,
+            expected.display()
+        ),
+        format!("EDT project: '{project_name}'"),
+        format!("export target: {}", export_target.display()),
+        format!("edt export log path: {}", export_log_path.display()),
+    ];
+    if !result.process.stdout.trim().is_empty() {
+        details.push(format!("stdout: {}", result.process.stdout.trim()));
+    }
+    if !result.process.stderr.trim().is_empty() {
+        details.push(format!("stderr: {}", result.process.stderr.trim()));
+    }
+
+    Err(AppError::Platform(details.join("; ")))
+}
+
+fn edt_export_requires_configuration_xml(source_set: &SourceSetConfig) -> bool {
+    match source_set.purpose {
+        crate::config::model::SourceSetPurpose::Configuration
+        | crate::config::model::SourceSetPurpose::Extension => true,
+        crate::config::model::SourceSetPurpose::ExternalDataProcessors
+        | crate::config::model::SourceSetPurpose::ExternalReports => false,
+    }
 }
 
 fn resolve_edt_project_name(
@@ -593,9 +700,37 @@ mod tests {
             })
             .unwrap_or_default();
         let body = format!(
-            "args=\"$*\"\nproject=\"\"\ntarget=\"\"\nprev=\"\"\nfor arg in \"$@\"; do\n  if [ \"$prev\" = \"--project-name\" ]; then project=\"$arg\"; fi\n  if [ \"$prev\" = \"--configuration-files\" ]; then target=\"$arg\"; fi\n  prev=\"$arg\"\ndone\nif [ -n \"$target\" ]; then mkdir -p \"$target\"; printf 'exported from %s\\n' \"$project\" > \"$target/exported.txt\"; fi\nprintf '%s\\n' \"$args\" >> \"{}\"\n{}\nexit 0",
+            "args=\"$*\"\nproject=\"\"\ntarget=\"\"\nprev=\"\"\nfor arg in \"$@\"; do\n  if [ \"$prev\" = \"--project-name\" ]; then project=\"$arg\"; fi\n  if [ \"$prev\" = \"--configuration-files\" ]; then target=\"$arg\"; fi\n  prev=\"$arg\"\ndone\nif [ -n \"$target\" ]; then mkdir -p \"$target\"; printf 'exported from %s\\n' \"$project\" > \"$target/exported.txt\"; printf '<Configuration />\\n' > \"$target/Configuration.xml\"; fi\nprintf '%s\\n' \"$args\" >> \"{}\"\n{}\nexit 0",
             calls_log.display(),
             pattern_branch
+        );
+
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).expect("create dirs");
+        }
+        fs::write(path, format!("#!/bin/sh\n{body}\n")).expect("write script");
+        make_executable(path);
+    }
+
+    #[cfg(unix)]
+    fn write_edt_script_without_configuration(path: &Path, calls_log: &Path) {
+        let body = format!(
+            "args=\"$*\"\ntarget=\"\"\nprev=\"\"\nfor arg in \"$@\"; do\n  if [ \"$prev\" = \"--configuration-files\" ]; then target=\"$arg\"; fi\n  prev=\"$arg\"\ndone\nif [ -n \"$target\" ]; then mkdir -p \"$target\"; printf 'diagnostic marker\\n' > \"$target/exported.txt\"; fi\nprintf 'edt stdout detail\\n'\nprintf 'edt stderr detail\\n' >&2\nprintf '%s\\n' \"$args\" >> \"{}\"\nexit 0",
+            calls_log.display()
+        );
+
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).expect("create dirs");
+        }
+        fs::write(path, format!("#!/bin/sh\n{body}\n")).expect("write script");
+        make_executable(path);
+    }
+
+    #[cfg(unix)]
+    fn write_edt_external_processor_script(path: &Path, calls_log: &Path) {
+        let body = format!(
+            "args=\"$*\"\ntarget=\"\"\nprev=\"\"\nfor arg in \"$@\"; do\n  if [ \"$prev\" = \"--configuration-files\" ]; then target=\"$arg\"; fi\n  prev=\"$arg\"\ndone\nif [ -n \"$target\" ]; then mkdir -p \"$target\"; printf '<ExternalDataProcessor><Properties><Name>Processor One</Name></Properties></ExternalDataProcessor>\\n' > \"$target/Processor One.xml\"; fi\nprintf '%s\\n' \"$args\" >> \"{}\"\nexit 0",
+            calls_log.display()
         );
 
         if let Some(parent) = path.parent() {
@@ -642,7 +777,7 @@ mod tests {
                      if [ \"$prev\" = \"--configuration-files\" ]; then target=\"$arg\"; fi\n\
                      prev=\"$arg\"\n\
                    done\n\
-                   if [ -n \"$target\" ]; then mkdir -p \"$target\"; printf 'exported from %s\\n' \"$project\" > \"$target/exported.txt\"; fi\n\
+                   if [ -n \"$target\" ]; then mkdir -p \"$target\"; printf 'exported from %s\\n' \"$project\" > \"$target/exported.txt\"; printf '<Configuration />\\n' > \"$target/Configuration.xml\"; fi\n\
                    prompt\n\
                    ;;\n\
                  *)\n\
@@ -933,6 +1068,87 @@ mod tests {
         .expect("ext bsl");
     }
 
+    #[test]
+    fn edt_export_configuration_xml_check_applies_only_to_configuration_and_extension() {
+        let source_set = |purpose| SourceSetConfig {
+            name: "set".to_owned(),
+            purpose,
+            path: PathBuf::from("set"),
+        };
+
+        assert!(super::edt_export_requires_configuration_xml(&source_set(
+            SourceSetPurpose::Configuration
+        )));
+        assert!(super::edt_export_requires_configuration_xml(&source_set(
+            SourceSetPurpose::Extension
+        )));
+        assert!(!super::edt_export_requires_configuration_xml(&source_set(
+            SourceSetPurpose::ExternalDataProcessors
+        )));
+        assert!(!super::edt_export_requires_configuration_xml(&source_set(
+            SourceSetPurpose::ExternalReports
+        )));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn edt_external_export_uses_external_descriptor_without_configuration_xml() {
+        let dir = tempdir().expect("tempdir");
+        let base = dir.path().join("base");
+        let work = dir.path().join("work");
+        let platform_script = dir.path().join("platform").join("bin").join("1cv8");
+        let edt_script = dir.path().join("edt").join("1cedtcli");
+        let edt_calls = dir.path().join("edt-calls.log");
+        let source = base.join("processors").join("ProcessorOne");
+        fs::create_dir_all(source.join("DT-INF")).expect("dt-inf");
+        fs::create_dir_all(source.join("src")).expect("src");
+        fs::write(
+            source.join(".project"),
+            format!(
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<projectDescription>\n  <name>Processor One</name>\n  <natures>\n    <nature>{}</nature>\n  </natures>\n</projectDescription>\n",
+                crate::support::edt_project::V8_EXTERNAL_OBJECTS_NATURE
+            ),
+        )
+        .expect("project");
+        fs::write(
+            source.join("DT-INF").join("PROJECT.PMF"),
+            "Base-Project: main\nManifest-Version: 1.0\nRuntime-Version: 8.3.27\n",
+        )
+        .expect("manifest");
+        fs::write(
+            source.join("src").join("root.xml"),
+            "<ExternalDataProcessor><Properties><Name>Processor One</Name></Properties></ExternalDataProcessor>\n",
+        )
+        .expect("root xml");
+        fs::create_dir_all(&work).expect("work");
+        let designer_calls = dir.path().join("designer-calls.log");
+        write_designer_script(&platform_script, &designer_calls, None);
+        write_edt_external_processor_script(&edt_script, &edt_calls);
+
+        let mut config = build_edt_config(&base, &work, &dir.path().join("platform"), &edt_script);
+        config.source_sets = vec![SourceSetConfig {
+            name: "processors".to_owned(),
+            purpose: SourceSetPurpose::ExternalDataProcessors,
+            path: PathBuf::from("processors"),
+        }];
+
+        let result = run_build(&config, &build_args(true)).expect("build");
+        let mut export_roots = fs::read_dir(work.join("designer").join("processors"))
+            .expect("external export dir")
+            .map(|entry| entry.expect("entry").path())
+            .collect::<Vec<_>>();
+        export_roots.sort();
+        assert_eq!(export_roots.len(), 1);
+        let export_root = &export_roots[0];
+
+        assert!(result.ok);
+        assert!(result.steps.iter().any(|step| {
+            step.source_set == "processors" && matches!(step.mode, BuildMode::EdtExport) && step.ok
+        }));
+        assert!(export_root.join("Processor One.xml").is_file());
+        assert!(!export_root.join("Configuration.xml").exists());
+    }
+
     fn prime_snapshots(config: &AppConfig) {
         let service = SourceSetsService::new(config);
         for context in service.designer_contexts() {
@@ -1111,11 +1327,11 @@ mod tests {
             .iter()
             .any(|step| matches!(step.mode, BuildMode::EdtExport) && step.ok));
         assert!(result.steps.iter().any(|step| {
-            step.source_set == "main" && matches!(step.mode, BuildMode::Partial { .. }) && step.ok
+            step.source_set == "main" && matches!(step.mode, BuildMode::Full) && step.ok
         }));
         assert!(edt_calls_text.contains("export --project-name main"));
         assert!(designer_calls_text.contains("/LoadConfigFromFiles"));
-        assert!(designer_calls_text.contains("-partial"));
+        assert!(!designer_calls_text.contains("-partial"));
         assert!(designer_calls_text.contains(
             work.join("designer")
                 .join("main")
@@ -1177,11 +1393,12 @@ mod tests {
             .iter()
             .any(|step| matches!(step.mode, BuildMode::EdtExport) && step.ok));
         assert!(result.steps.iter().any(|step| {
-            step.source_set == "main" && matches!(step.mode, BuildMode::Partial { .. }) && step.ok
+            step.source_set == "main" && matches!(step.mode, BuildMode::Full) && step.ok
         }));
         assert!(edt_calls_text.contains("export --project-name main"));
-        assert!(ibcmd_calls_text.contains("infobase --db-path /tmp/ib config import files"));
-        assert!(ibcmd_calls_text.contains("--base-dir"));
+        assert!(ibcmd_calls_text.contains("infobase --db-path /tmp/ib config import"));
+        assert!(!ibcmd_calls_text.contains("config import files"));
+        assert!(!ibcmd_calls_text.contains("--partial"));
         assert!(ibcmd_calls_text.contains("infobase --db-path /tmp/ib config apply"));
         assert!(ibcmd_calls_text.contains(
             work.join("designer")
@@ -1622,6 +1839,59 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn edt_export_success_without_configuration_xml_reports_export_diagnostics() {
+        let dir = tempdir().expect("tempdir");
+        let base = dir.path().join("base");
+        let work = dir.path().join("work");
+        let platform_script = dir.path().join("platform").join("bin").join("1cv8");
+        let edt_script = dir.path().join("edt").join("1cedtcli");
+        let designer_calls = dir.path().join("designer-calls.log");
+        let edt_calls = dir.path().join("edt-calls.log");
+        create_source_tree(&base);
+        write_designer_script(&platform_script, &designer_calls, None);
+        write_edt_script_without_configuration(&edt_script, &edt_calls);
+        let config = build_edt_config(&base, &work, &dir.path().join("platform"), &edt_script);
+        prime_edt_snapshots(&config);
+
+        fs::write(
+            base.join("main")
+                .join("Catalogs.Items")
+                .join("ObjectModule.bsl"),
+            "procedure Test()\n  // changed in edt\nendprocedure",
+        )
+        .expect("modify edt main");
+
+        let failure = run_build(&config, &build_args(false)).expect_err("expected failure");
+        let result = failure
+            .payload
+            .expect("build failures should preserve a structured payload");
+        let log_path = work
+            .join("logs")
+            .join("platform")
+            .join("build-00-main-edt-export.log");
+        let log_contents = fs::read_to_string(&log_path).expect("edt export log");
+
+        assert!(!result.ok);
+        assert!(matches!(result.steps[0].mode, BuildMode::EdtExport));
+        assert!(!result.steps[0].ok);
+        assert!(!designer_calls.exists());
+        assert_eq!(edt_storage_generation(&config, "main"), 1);
+        assert!(failure
+            .error
+            .message()
+            .contains("did not produce required Designer file"));
+        assert!(failure.error.message().contains("Configuration.xml"));
+        assert!(failure.error.message().contains("edt export log path"));
+        assert!(failure.error.message().contains("edt stdout detail"));
+        assert!(failure.error.message().contains("edt stderr detail"));
+        assert!(log_contents.contains("action: edt_export"));
+        assert!(log_contents.contains("project-name: main"));
+        assert!(log_contents.contains("edt stdout detail"));
+        assert!(log_contents.contains("edt stderr detail"));
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn edt_build_failure_does_not_commit_generated_designer_snapshot() {
         let dir = tempdir().expect("tempdir");
         let base = dir.path().join("base");
@@ -1659,7 +1929,7 @@ mod tests {
         assert!(matches!(result.steps[0].mode, BuildMode::EdtExport));
         assert!(result.steps[0].ok);
         assert!(result.steps.iter().any(|step| {
-            step.source_set == "main" && matches!(step.mode, BuildMode::Partial { .. }) && !step.ok
+            step.source_set == "main" && matches!(step.mode, BuildMode::Full) && !step.ok
         }));
         assert_eq!(edt_storage_generation(&config, "main"), 2);
         assert!(!designer_storage_path.exists());
