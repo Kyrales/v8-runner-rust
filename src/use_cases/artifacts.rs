@@ -22,7 +22,7 @@ use crate::platform::utilities::PlatformUtilities;
 use crate::support::error::AppError;
 use crate::support::fs::{
     acquire_advisory_lock, is_known_tool_name, metadata_sidecar_path, read_temp_dir_metadata,
-    remove_path_if_exists, write_temp_dir_metadata, TempDirKind,
+    remove_path_if_exists, write_temp_dir_metadata, TempDirKind, TempDirMetadata,
 };
 use crate::support::path::{
     hashed_lock_path, is_filesystem_root, nearest_existing_canonical_path, stable_path_identity,
@@ -342,6 +342,13 @@ fn run_designer_export(
     )
     .map_err(|error| (error, ArtifactSet::default(), None))?;
     let staging_file = publication.staging_path().to_path_buf();
+    let cleanup_unmaterialized_stage = |error: AppError| {
+        if staging_file.is_file() {
+            error
+        } else {
+            publication.cleanup_failure(error)
+        }
+    };
 
     let dsl = build_designer_dsl(
         context,
@@ -351,11 +358,23 @@ fn run_designer_export(
         &resolved.source_set_name,
         resolved.mode,
     )
-    .map_err(|error| (error, ArtifactSet::default(), None))?;
+    .map_err(|error| {
+        (
+            cleanup_unmaterialized_stage(error),
+            ArtifactSet::default(),
+            None,
+        )
+    })?;
     log_live_stage("make: export", "[Конфигуратор] exporting artifact package");
     let dump_result = dsl
         .dump_cfg(&staging_file, resolved.extension.as_deref())
-        .map_err(|error| (AppError::from(error), ArtifactSet::default(), None))?;
+        .map_err(|error| {
+            (
+                cleanup_unmaterialized_stage(AppError::from(error)),
+                ArtifactSet::default(),
+                None,
+            )
+        })?;
 
     let mut artifacts = ArtifactSet::default();
     if staging_file.exists() {
@@ -374,14 +393,18 @@ fn run_designer_export(
     }
 
     if let Err(error) = ensure_platform_success(&resolved.source_set_name, &dump_result) {
-        return Err((error, artifacts, dump_result.platform_log_path.clone()));
+        return Err((
+            cleanup_unmaterialized_stage(error),
+            artifacts,
+            dump_result.platform_log_path.clone(),
+        ));
     }
     if !staging_file.is_file() {
         return Err((
-            AppError::Platform(format!(
+            cleanup_unmaterialized_stage(AppError::Platform(format!(
                 "designer did not produce artifact file '{}'",
                 staging_file.display()
-            )),
+            ))),
             artifacts,
             dump_result.platform_log_path.clone(),
         ));
@@ -909,6 +932,7 @@ fn cleanup_orphan_files(resolved: &ResolvedArtifactsTarget) -> Result<(), AppErr
             let entry = entry
                 .map_err(|error| AppError::Runtime(format!("failed to read dir entry: {error}")))?;
             let path = entry.path();
+            let (temp_path, metadata_path) = orphan_cleanup_paths(&path);
             let Some(file_name) = path.file_name().and_then(|value| value.to_str()) else {
                 continue;
             };
@@ -918,7 +942,7 @@ fn cleanup_orphan_files(resolved: &ResolvedArtifactsTarget) -> Result<(), AppErr
             {
                 continue;
             }
-            let Ok(metadata) = read_temp_dir_metadata(&path) else {
+            let Ok(metadata) = read_orphan_metadata(&temp_path, &metadata_path) else {
                 continue;
             };
             if !is_known_tool_name(&metadata.tool)
@@ -934,21 +958,49 @@ fn cleanup_orphan_files(resolved: &ResolvedArtifactsTarget) -> Result<(), AppErr
                 continue;
             }
 
-            remove_path_if_exists(&path).map_err(|error| {
+            remove_path_if_exists(&temp_path).map_err(|error| {
                 AppError::Runtime(format!(
                     "failed to remove stale artifact temp '{}': {error}",
-                    path.display()
+                    temp_path.display()
                 ))
             })?;
-            remove_path_if_exists(&metadata_sidecar_path(&path)).map_err(|error| {
+            remove_path_if_exists(&metadata_path).map_err(|error| {
                 AppError::Runtime(format!(
                     "failed to remove stale artifact metadata '{}': {error}",
-                    metadata_sidecar_path(&path).display()
+                    metadata_path.display()
                 ))
             })?;
         }
     }
     Ok(())
+}
+
+fn orphan_cleanup_paths(path: &Path) -> (PathBuf, PathBuf) {
+    let Some(file_name) = path.file_name().and_then(|value| value.to_str()) else {
+        return (path.to_path_buf(), metadata_sidecar_path(path));
+    };
+    let Some(temp_name) = file_name.strip_suffix(".meta.json") else {
+        return (path.to_path_buf(), metadata_sidecar_path(path));
+    };
+    (
+        path.parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join(temp_name),
+        path.to_path_buf(),
+    )
+}
+
+fn read_orphan_metadata(
+    temp_path: &Path,
+    metadata_path: &Path,
+) -> std::io::Result<TempDirMetadata> {
+    if metadata_path == metadata_sidecar_path(temp_path) {
+        return read_temp_dir_metadata(temp_path);
+    }
+
+    let raw = std::fs::read(metadata_path)?;
+    serde_json::from_slice(&raw)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
 }
 
 fn build_designer_dsl<'a>(
@@ -1491,10 +1543,19 @@ mod tests {
         .expect_err("failure");
         let payload = failure.payload.expect("payload");
         let artifacts = artifacts_set(&payload);
+        let dist_dir = dir.path().join("dist");
 
         assert!(artifacts.get_by_role(ARTIFACT_ROLE_STAGE_FILE).is_none());
         assert!(artifacts.get_by_role(ARTIFACT_ROLE_PACKAGE_FILE).is_none());
         assert!(artifacts.get_by_role(ARTIFACT_ROLE_PLATFORM_LOG).is_some());
+        assert!(!dist_dir
+            .read_dir()
+            .expect("dist entries")
+            .flatten()
+            .any(|entry| entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".artifacts-stage-")));
     }
 
     #[cfg(unix)]
@@ -1822,6 +1883,51 @@ mod tests {
         cleanup_orphan_files(&resolved).expect("cleanup");
 
         assert!(!stage_dir.exists());
+        assert!(!meta_path.exists());
+    }
+
+    #[test]
+    fn cleanup_orphan_files_removes_old_stage_metadata_sidecar_without_stage_file() {
+        let dir = tempdir().expect("tempdir");
+        let output = dir.path().join("dist/external");
+        fs::create_dir_all(&output).expect("output");
+        let stage_file = output
+            .parent()
+            .expect("parent")
+            .join(".artifacts-stage-orphan.cf");
+        write_temp_dir_metadata(
+            &stage_file,
+            TempDirKind::Stage,
+            "run-1",
+            &output,
+            "identity",
+        )
+        .expect("metadata");
+        let meta_path = metadata_sidecar_path(&stage_file);
+        let mut metadata = read_temp_dir_metadata(&stage_file).expect("read metadata");
+        metadata.created_at -= chrono::Duration::days(2);
+        fs::write(
+            &meta_path,
+            serde_json::to_vec_pretty(&metadata).expect("json"),
+        )
+        .expect("rewrite metadata");
+        let resolved = ResolvedArtifactsTarget {
+            mode: ArtifactBuildMode::ExternalDataProcessorEpf,
+            source_set_name: "external".to_owned(),
+            extension: None,
+            output_path: output.clone(),
+            source_path: dir.path().join("external"),
+            is_directory_output: true,
+            canonical_output_path: output.clone(),
+            canonical_base_path: dir.path().to_path_buf(),
+            canonical_work_path: dir.path().to_path_buf(),
+            target_identity: "identity".to_owned(),
+            lock_path: dir.path().join("lock"),
+        };
+
+        cleanup_orphan_files(&resolved).expect("cleanup");
+
+        assert!(!stage_file.exists());
         assert!(!meta_path.exists());
     }
 

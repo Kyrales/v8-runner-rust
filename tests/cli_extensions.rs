@@ -245,3 +245,39 @@ fn extensions_command_json_failure_reports_operation_target_and_exit_code() {
         .expect("message")
         .contains("stderr: cannot update extension"));
 }
+
+#[test]
+fn extensions_command_json_failure_without_payload_keeps_machine_readable_error() {
+    let (_dir, config_path, _calls_log, _ibcmd_path) = setup_extensions_project();
+
+    let output = v8_runner_command()
+        .args([
+            "--config",
+            &config_path.display().to_string(),
+            "--json-message",
+            "extensions",
+            "--name",
+            "missing",
+        ])
+        .output()
+        .expect("run command");
+
+    assert!(!output.status.success());
+    assert_eq!(output.status.code(), Some(2));
+    let payload: serde_json::Value = serde_json::from_slice(&output.stdout).expect("json");
+    assert_eq!(payload["ok"], false);
+    assert_eq!(payload["command"], "extensions");
+    assert_eq!(payload["duration_ms"], 0);
+    assert_eq!(
+        payload["error"]["code"],
+        serde_json::Value::String("invalid_argument".to_owned())
+    );
+    assert!(payload["error"]["message"]
+        .as_str()
+        .expect("message")
+        .contains("unknown extension source-set 'missing'"));
+    assert!(payload["data"]["message"]
+        .as_str()
+        .expect("data message")
+        .contains("unknown extension source-set 'missing'"));
+}

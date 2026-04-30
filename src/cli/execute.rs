@@ -10,7 +10,9 @@ use crate::cli::args::{
     DesignerModulesSyntaxArgs, DumpArgs, ExtensionsArgs, LaunchArgs, LaunchOptionsArgs, LoadArgs,
     SyntaxArgs, SyntaxTarget, TestArgs, TestRunner, TestScope, TestYaxunitArgs,
 };
-use crate::cli::output::{failure_envelope, print_command_use_case_error, with_cli_error};
+use crate::cli::output::{
+    failure_envelope, pre_dispatch_error_envelope, print_command_use_case_error, with_cli_error,
+};
 use crate::cli::signal::CliSignalGuard;
 use crate::command_envelope::{test_envelope, Envelope};
 use crate::config::model::{AppConfig, SourceSetPurpose};
@@ -193,13 +195,17 @@ fn execute_extensions(
             Err(failure) => {
                 let error = failure.error;
                 if presenter.is_json() {
-                    if let Some(result) = failure.payload {
-                        presenter.print_envelope(&failure_envelope(
+                    match failure.payload {
+                        Some(result) => presenter.print_envelope(&failure_envelope(
                             CommandName::Extensions.as_str(),
                             result.duration_ms,
                             result,
                             &error,
-                        ));
+                        )),
+                        None => presenter.print_envelope(&pre_dispatch_error_envelope(
+                            CommandName::Extensions.as_str(),
+                            &error,
+                        )),
                     }
                 } else {
                     presenter.print_error(&error.to_string());
