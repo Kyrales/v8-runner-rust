@@ -537,6 +537,15 @@ pub enum EnterpriseLaunchTarget {
     ThinClient,
     ThickClient,
     OrdinaryApplication,
+    ClientMcp { mode: ClientMcpMode },
+}
+
+/// Client mode used by the 1C client-side MCP launcher.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClientMcpMode {
+    Thin,
+    Thick,
+    Ordinary,
 }
 
 /// Transport-neutral launch target grouped by launcher family.
@@ -562,6 +571,30 @@ impl LaunchTargetRequest {
     pub const fn ordinary_application() -> Self {
         Self::Enterprise(EnterpriseLaunchTarget::OrdinaryApplication)
     }
+
+    pub const fn client_mcp() -> Self {
+        Self::Enterprise(EnterpriseLaunchTarget::ClientMcp {
+            mode: ClientMcpMode::Thin,
+        })
+    }
+
+    pub const fn client_mcp_with_mode(mode: ClientMcpMode) -> Self {
+        Self::Enterprise(EnterpriseLaunchTarget::ClientMcp { mode })
+    }
+}
+
+/// Optional scenario launched alongside the client-side MCP server.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClientMcpAddonRequest {
+    VanessaAutomation,
+}
+
+/// Transport-neutral options for `launch mcp`.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ClientMcpOptionsRequest {
+    pub config_path: Option<String>,
+    pub port: Option<u16>,
+    pub addon: Option<ClientMcpAddonRequest>,
 }
 
 /// Transport-neutral request for the `launch` use case.
@@ -571,6 +604,8 @@ pub struct LaunchRequest {
     pub target: LaunchTargetRequest,
     /// Shared launch options mapped from CLI/test scenarios.
     pub launch: LaunchOptions,
+    /// Client-side MCP launch options. Present only for `LaunchTargetRequest::client_mcp*`.
+    pub client_mcp: Option<ClientMcpOptionsRequest>,
 }
 
 /// Transport-neutral request for the `init` use case.

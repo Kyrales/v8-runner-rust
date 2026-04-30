@@ -265,6 +265,9 @@ pub struct McpConfig {
 
     /// Shared execution limits for MCP calls.
     pub execution: McpExecutionConfig,
+
+    /// Client-side MCP launcher settings.
+    pub client: McpClientConfig,
 }
 
 impl Default for McpConfig {
@@ -272,8 +275,17 @@ impl Default for McpConfig {
         Self {
             http: McpHttpConfig::default(),
             execution: McpExecutionConfig::default(),
+            client: McpClientConfig::default(),
         }
     }
+}
+
+/// Client-side MCP launcher configuration.
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+#[serde(default, rename_all = "snake_case")]
+pub struct McpClientConfig {
+    /// Default port passed to onec-client-mcp-devkit via `/C"...;mcpPort=<PORT>"`.
+    pub port: Option<u16>,
 }
 
 /// HTTP-specific MCP configuration.

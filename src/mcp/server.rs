@@ -1536,6 +1536,7 @@ mod tests {
                     max_concurrent_calls,
                     shutdown_grace_period_secs,
                 },
+                client: Default::default(),
             },
             tests: TestsConfig::default(),
         }

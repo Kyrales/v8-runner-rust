@@ -146,6 +146,9 @@ pub enum ConfigValidationError {
     #[error("mcp.execution.shutdown_grace_period_secs must be greater than or equal to 1")]
     InvalidMcpShutdownGracePeriodSecs,
 
+    #[error("mcp.client.port must be greater than or equal to 1")]
+    InvalidMcpClientPort,
+
     #[error("tools.edt_cli.startup_timeout_ms must be greater than or equal to 1")]
     InvalidEdtCliStartupTimeoutMs,
 
@@ -771,6 +774,10 @@ fn validate_mcp_config(config: &AppConfig) -> Result<(), ConfigValidationError> 
 
     if config.mcp.execution.shutdown_grace_period_secs == 0 {
         return Err(ConfigValidationError::InvalidMcpShutdownGracePeriodSecs);
+    }
+
+    if config.mcp.client.port == Some(0) {
+        return Err(ConfigValidationError::InvalidMcpClientPort);
     }
 
     Ok(())
@@ -2212,6 +2219,11 @@ mod tests {
             err,
             ConfigValidationError::InvalidMcpMaxConcurrentCalls
         ));
+
+        config.mcp.execution.max_concurrent_calls = 1;
+        config.mcp.client.port = Some(0);
+        let err = validate(&config).expect_err("expected invalid MCP client port");
+        assert!(matches!(err, ConfigValidationError::InvalidMcpClientPort));
     }
 
     #[test]

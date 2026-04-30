@@ -257,11 +257,27 @@ pub enum SyntaxTarget {
 #[command(next_help_heading = "Command options")]
 pub struct LaunchArgs {
     /// Launch mode
-    #[arg(value_name = "MODE", value_parser = ["designer", "thin", "thick", "ordinary"])]
+    #[arg(value_name = "MODE", value_parser = ["designer", "thin", "thick", "ordinary", "mcp"])]
     pub target: String,
+
+    /// Optional client-side MCP scenario to start with the MCP server
+    #[arg(value_name = "MCP_SCENARIO", value_parser = ["va"])]
+    pub mcp_scenario: Option<String>,
+
+    /// 1C client mode for `launch mcp`
+    #[arg(long = "mode", value_parser = ["thin", "thick", "ordinary"])]
+    pub mcp_mode: Option<String>,
 
     #[command(flatten)]
     pub launch: LaunchOptionsArgs,
+
+    /// JSON config path for onec-client-mcp-devkit `/C"runMcp=<FILE>"`
+    #[arg(long = "mcp-config")]
+    pub mcp_config: Option<String>,
+
+    /// Port override for onec-client-mcp-devkit `/C"...;mcpPort=<PORT>"`
+    #[arg(long = "mcp-port")]
+    pub mcp_port: Option<u16>,
 }
 
 #[derive(Args, Debug, Clone, Default, PartialEq, Eq)]
@@ -593,13 +609,24 @@ mod tests {
         .expect("parse launch");
 
         match cli.command {
-            Command::Launch(LaunchArgs { target, launch }) => {
+            Command::Launch(LaunchArgs {
+                target,
+                launch,
+                mcp_scenario,
+                mcp_mode,
+                mcp_config,
+                mcp_port,
+            }) => {
                 assert_eq!(target, "ordinary");
                 assert_eq!(launch.c.as_deref(), Some("DoWork"));
                 assert_eq!(launch.execute.as_deref(), Some("tool.epf"));
                 assert!(launch.use_privileged_mode);
                 assert_eq!(launch.output.as_deref(), Some("launch.log"));
                 assert_eq!(launch.raw_keys, vec!["/WA-", "/DisplayAllFunctions"]);
+                assert_eq!(mcp_scenario, None);
+                assert_eq!(mcp_mode, None);
+                assert_eq!(mcp_config, None);
+                assert_eq!(mcp_port, None);
             }
             _ => panic!("unexpected command"),
         }
@@ -631,9 +658,56 @@ mod tests {
         let cli = Cli::try_parse_from(["v8-runner", "launch", "designer"]).expect("parse launch");
 
         match cli.command {
-            Command::Launch(LaunchArgs { target, launch }) => {
+            Command::Launch(LaunchArgs {
+                target,
+                launch,
+                mcp_scenario,
+                mcp_mode,
+                mcp_config,
+                mcp_port,
+            }) => {
                 assert_eq!(target, "designer");
                 assert_eq!(launch, LaunchOptionsArgs::default());
+                assert_eq!(mcp_scenario, None);
+                assert_eq!(mcp_mode, None);
+                assert_eq!(mcp_config, None);
+                assert_eq!(mcp_port, None);
+            }
+            _ => panic!("unexpected command"),
+        }
+    }
+
+    #[test]
+    fn parses_launch_mcp_command_with_mcp_options() {
+        let cli = Cli::try_parse_from([
+            "v8-runner",
+            "launch",
+            "mcp",
+            "va",
+            "--mode",
+            "ordinary",
+            "--mcp-config",
+            "mcp-conf.json",
+            "--mcp-port",
+            "9876",
+        ])
+        .expect("parse launch");
+
+        match cli.command {
+            Command::Launch(LaunchArgs {
+                target,
+                launch,
+                mcp_scenario,
+                mcp_mode,
+                mcp_config,
+                mcp_port,
+            }) => {
+                assert_eq!(target, "mcp");
+                assert_eq!(launch, LaunchOptionsArgs::default());
+                assert_eq!(mcp_scenario.as_deref(), Some("va"));
+                assert_eq!(mcp_mode.as_deref(), Some("ordinary"));
+                assert_eq!(mcp_config.as_deref(), Some("mcp-conf.json"));
+                assert_eq!(mcp_port, Some(9876));
             }
             _ => panic!("unexpected command"),
         }

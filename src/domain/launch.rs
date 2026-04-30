@@ -25,4 +25,5 @@ pub enum LaunchMode {
     Thin,
     Thick,
     Ordinary,
+    Mcp,
 }

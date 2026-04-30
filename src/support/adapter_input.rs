@@ -71,6 +71,7 @@ pub fn parse_launch_target(
             "thin" => Some(LaunchTargetRequest::thin_client()),
             "thick" => Some(LaunchTargetRequest::thick_client()),
             "ordinary" => Some(LaunchTargetRequest::ordinary_application()),
+            "mcp" => Some(LaunchTargetRequest::client_mcp()),
             _ => None,
         },
         LaunchModeAliases::Mcp => match normalized.as_str() {
@@ -149,6 +150,10 @@ mod tests {
         assert_eq!(
             parse_launch_target("ordinary", "mode", LaunchModeAliases::Cli).expect("cli ordinary"),
             LaunchTargetRequest::ordinary_application()
+        );
+        assert_eq!(
+            parse_launch_target("mcp", "mode", LaunchModeAliases::Cli).expect("cli mcp"),
+            LaunchTargetRequest::client_mcp()
         );
         assert_eq!(
             parse_launch_target("Тонкий клиент", "utility_type", LaunchModeAliases::Mcp)

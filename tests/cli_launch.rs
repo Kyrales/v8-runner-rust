@@ -3,6 +3,7 @@
 mod support;
 
 use std::fs;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use serde_json::Value;
@@ -76,6 +77,48 @@ fn setup_versioned_project() -> (tempfile::TempDir, PathBuf, PathBuf, PathBuf) {
     );
 
     (dir, config_path, version, work_path)
+}
+
+fn setup_mcp_va_project() -> (tempfile::TempDir, PathBuf, PathBuf, PathBuf) {
+    setup_mcp_va_project_with_work_name("work")
+}
+
+fn setup_mcp_va_project_with_work_name(
+    work_name: &str,
+) -> (tempfile::TempDir, PathBuf, PathBuf, PathBuf) {
+    let dir = temp_workspace();
+    let base_path = dir.path().join("project");
+    let work_path = dir.path().join(work_name);
+    let install_dir = dir.path().join("platform");
+    let config_path = dir.path().join("v8project.yaml");
+    let args_log = install_dir.join("mcp-va.args.log");
+    let va_epf = dir.path().join("va").join("vanessa-automation.epf");
+    let va_params = dir.path().join("cfg").join("va-base.json");
+    let features_dir = dir.path().join("features").join("smoke");
+
+    fs::create_dir_all(&base_path).expect("base");
+    fs::create_dir_all(&work_path).expect("work");
+    fs::create_dir_all(va_epf.parent().expect("va dir")).expect("va dir");
+    fs::create_dir_all(va_params.parent().expect("cfg dir")).expect("cfg dir");
+    fs::create_dir_all(&features_dir).expect("features");
+    fs::write(&va_epf, "epf").expect("epf");
+    fs::write(&va_params, "{\n  \"existing\": true\n}\n").expect("params");
+    fs::write(features_dir.join("login.feature"), "Feature: Login\n").expect("feature");
+    write_script(&install_dir.join("bin").join("1cv8c"));
+    write_logging_script(&install_dir.join("bin").join("1cv8"), &args_log);
+
+    let config = format!(
+        "basePath: '{}'\nworkPath: '{}'\nformat: DESIGNER\nbuilder: DESIGNER\ninfobase:\n  connection: 'File=/tmp/ib'\nmcp:\n  client:\n    port: 9874\ntests:\n  va:\n    epf_path: '{}'\n    params_path: '{}'\n    profile: smoke\n    fail_fast: true\n    profiles:\n      smoke:\n        feature_path: '{}'\n        features_to_run:\n          - login\n        filter_tags:\n          - '@smoke'\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: .\ntools:\n  platform:\n    path: '{}'\n",
+        base_path.display(),
+        work_path.display(),
+        va_epf.display(),
+        va_params.display(),
+        features_dir.display(),
+        install_dir.display(),
+    );
+    fs::write(&config_path, config).expect("config");
+
+    (dir, config_path, install_dir, args_log)
 }
 
 #[test]
@@ -304,4 +347,222 @@ fn launch_ordinary_supports_typed_keys_and_filters_reserved_raw_duplicates() {
     assert!(args.contains("/WA-"));
     assert!(args.contains("/tmp/user.out.log"));
     assert!(!args.contains("/tmp/ignored.out.log"));
+}
+
+#[test]
+fn launch_mcp_va_builds_payload_from_configured_port_and_ordinary_mode() {
+    let (_dir, config_path, install_dir, args_log) = setup_mcp_va_project();
+    let output = v8_runner_command()
+        .args([
+            "--config",
+            &config_path.display().to_string(),
+            "--json-message",
+            "launch",
+            "mcp",
+            "va",
+            "--mode",
+            "ordinary",
+            "--mcp-config",
+            "/tmp/mcp conf.json",
+            "--raw-key",
+            "/WA-",
+        ])
+        .output()
+        .expect("run command");
+
+    assert!(
+        output.status.success(),
+        "status={:?}\nstdout={}\nstderr={}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let payload: Value = serde_json::from_slice(&output.stdout).expect("json");
+    assert_eq!(payload["data"]["mode"], "mcp");
+    assert_eq!(
+        payload["data"]["binary"].as_str().expect("binary"),
+        install_dir.join("bin").join("1cv8").to_string_lossy()
+    );
+
+    let args = fs::read_to_string(args_log).expect("args log");
+    assert!(args.contains("ENTERPRISE"));
+    assert!(args.contains("/DisableStartupDialogs"));
+    assert!(args.contains("/RunModeOrdinaryApplication"));
+    assert!(args.contains("/Execute"));
+    assert!(args.contains("vanessa-automation.epf"));
+    assert!(args.contains("/C"));
+    assert!(args.contains("runMcp=/tmp/mcp conf.json;mcpPort=9874;StartFeaturePlayer;VAParams="));
+    assert!(args.contains("/WA-"));
+    let params_arg = args
+        .lines()
+        .find(|line| line.contains("VAParams="))
+        .expect("VAParams argument");
+    let params_path = params_arg.split("VAParams=").nth(1).expect("VAParams path");
+    let params = fs::read_to_string(params_path).expect("runtime params");
+    let params_json: Value = serde_json::from_str(&params).expect("runtime params JSON");
+    assert_eq!(params_json["existing"], true);
+    assert_eq!(params_json["stoponerror"], true);
+    assert_eq!(params_json["FeaturesToRun"][0], "login");
+    assert_eq!(params_json["filtertags"][0], "@smoke");
+    assert_eq!(
+        fs::metadata(params_path)
+            .expect("params metadata")
+            .permissions()
+            .mode()
+            & 0o777,
+        0o600
+    );
+    let params_dir = Path::new(params_path).parent().expect("params dir");
+    assert_eq!(
+        fs::metadata(params_dir)
+            .expect("params dir metadata")
+            .permissions()
+            .mode()
+            & 0o777,
+        0o700
+    );
+}
+
+#[test]
+fn launch_mcp_rejects_user_managed_c_payload() {
+    let (_dir, config_path, _install_dir, _work_path) = setup_project();
+    let output = v8_runner_command()
+        .args([
+            "--config",
+            &config_path.display().to_string(),
+            "launch",
+            "mcp",
+            "--c",
+            "runMcp",
+        ])
+        .output()
+        .expect("run command");
+
+    assert!(!output.status.success());
+    assert_eq!(output.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("launch mcp manages /C internally"));
+}
+
+#[test]
+fn launch_mcp_rejects_user_managed_execute_payload() {
+    let (_dir, config_path, _install_dir, _work_path) = setup_project();
+    let output = v8_runner_command()
+        .args([
+            "--config",
+            &config_path.display().to_string(),
+            "launch",
+            "mcp",
+            "--execute",
+            "tool.epf",
+        ])
+        .output()
+        .expect("run command");
+
+    assert!(!output.status.success());
+    assert_eq!(output.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("launch mcp manages /C internally"));
+}
+
+#[test]
+fn launch_mcp_rejects_reserved_raw_payloads() {
+    let (_dir, config_path, _install_dir, _work_path) = setup_project();
+    let output = v8_runner_command()
+        .args([
+            "--config",
+            &config_path.display().to_string(),
+            "launch",
+            "mcp",
+            "--raw-key",
+            "/C\"runOther\"",
+        ])
+        .output()
+        .expect("run command");
+
+    assert!(!output.status.success());
+    assert_eq!(output.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("does not support raw /C"));
+}
+
+#[test]
+fn launch_mcp_rejects_semicolon_in_mcp_config_path() {
+    let (_dir, config_path, _install_dir, _work_path) = setup_project();
+    let output = v8_runner_command()
+        .args([
+            "--config",
+            &config_path.display().to_string(),
+            "launch",
+            "mcp",
+            "--mcp-config",
+            "/tmp/conf;mcpPort=1.json",
+        ])
+        .output()
+        .expect("run command");
+
+    assert!(!output.status.success());
+    assert_eq!(output.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("must not contain ';'"));
+}
+
+#[test]
+fn launch_mcp_rejects_zero_mcp_port() {
+    let (_dir, config_path, _install_dir, _work_path) = setup_project();
+    let output = v8_runner_command()
+        .args([
+            "--config",
+            &config_path.display().to_string(),
+            "launch",
+            "mcp",
+            "--mcp-port",
+            "0",
+        ])
+        .output()
+        .expect("run command");
+
+    assert!(!output.status.success());
+    assert_eq!(output.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&output.stderr)
+        .contains("--mcp-port must be greater than or equal to 1"));
+}
+
+#[test]
+fn launch_mcp_va_rejects_semicolon_in_generated_params_path() {
+    let (_dir, config_path, _install_dir, _args_log) =
+        setup_mcp_va_project_with_work_name("work;bad");
+    let output = v8_runner_command()
+        .args([
+            "--config",
+            &config_path.display().to_string(),
+            "launch",
+            "mcp",
+            "va",
+        ])
+        .output()
+        .expect("run command");
+
+    assert!(!output.status.success());
+    assert_eq!(output.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&output.stderr)
+        .contains("generated Vanessa params path for launch mcp must not contain ';'"));
+}
+
+#[test]
+fn launch_non_mcp_rejects_mcp_options() {
+    let (_dir, config_path, _install_dir, _work_path) = setup_project();
+    let output = v8_runner_command()
+        .args([
+            "--config",
+            &config_path.display().to_string(),
+            "launch",
+            "thin",
+            "--mcp-port",
+            "9876",
+        ])
+        .output()
+        .expect("run command");
+
+    assert!(!output.status.success());
+    assert_eq!(output.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&output.stderr).contains(
+        "--mcp-config, --mcp-port, --mode, and MCP_SCENARIO are supported only for `launch mcp`"
+    ));
 }

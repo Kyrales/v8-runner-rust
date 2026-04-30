@@ -114,6 +114,8 @@ mcp:
   execution:
     max_concurrent_calls: 1
     shutdown_grace_period_secs: 30
+  client:
+    port: 9874
 
 tests:
   execution_timeout_seconds: 300
@@ -321,6 +323,15 @@ Validation rules:
 
 - `max_concurrent_calls`, по умолчанию `1`
 - `shutdown_grace_period_secs`, по умолчанию `30`
+
+### `mcp.client`
+
+Поддержанные поля:
+
+- `port`, опциональный порт клиентского MCP-сервера onec-client-mcp-devkit.
+
+`launch mcp` передаёт это значение как `mcpPort` внутри `/C"runMcp..."`
+если CLI не указал `--mcp-port`.
 
 ## `tools.platform`
 

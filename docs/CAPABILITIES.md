@@ -210,13 +210,28 @@ v8-runner artifacts --output <TARGET> [--source-set <NAME>] [--extension <NAME>]
 
 ```bash
 v8-runner launch <designer|thin|thick|ordinary> [FLAGS]
+v8-runner launch mcp [va] [--mode <thin|thick|ordinary>] [FLAGS]
 ```
 
-- Принимает mode только позиционным аргументом.
+- Для обычного запуска (`designer`/`thin`/`thick`/`ordinary`) режим задаётся позиционным
+  аргументом.
 - `designer` использует `1cv8`.
 - `thin` использует `1cv8c`.
 - `thick` и `ordinary` используют `1cv8`.
-- Дополнительные typed flags: `--c`, `--execute`, `--use-privileged-mode`, `--output`,
+- `mcp` запускает клиентский MCP-сервер onec-client-mcp-devkit через `/C"runMcp"`.
+- `launch mcp` по умолчанию использует `--mode thin` и `1cv8c`.
+- `launch mcp --mode thick` использует `1cv8`; `launch mcp --mode ordinary` использует `1cv8`
+  и добавляет `/RunModeOrdinaryApplication`.
+- `launch mcp va` дополнительно запускает Vanessa Automation из `tests.va` через `/Execute <epf>`
+  и `StartFeaturePlayer;VAParams=<runtime params>`.
+- Для `mcp` доступны typed flags `--mcp-config <FILE>` и `--mcp-port <PORT>`;
+  итоговый payload: `/C"runMcp[=<FILE>][;mcpPort=<PORT>]"`.
+- Если `--mcp-port` не указан, используется `mcp.client.port` из `v8project.yaml`.
+- `--mcp-config` не должен содержать `;`, потому что `/C` payload разделяется точкой с запятой.
+- `launch mcp` не принимает `--c` и `--execute`, потому что `/C` управляется командой.
+- `launch mcp` принимает общие launch flags `--use-privileged-mode`, `--output` и `--raw-key`, но
+  `--raw-key` не может задавать `/C` или `/Execute`.
+- Для `designer`/`thin`/`thick`/`ordinary` дополнительные typed flags: `--c`, `--execute`, `--use-privileged-mode`, `--output`,
   повторяемый `--raw-key`.
 
 ### `mcp serve`

@@ -235,6 +235,7 @@ where
                 ))
             })?,
             launch: LaunchOptions::default(),
+            client_mcp: None,
         };
         let started = Instant::now();
 

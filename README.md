@@ -52,7 +52,7 @@ If `config init` is not enough for your repository layout, use
 | Project setup | `config init`, `init`, `extensions`, `build` |
 | Verification | `test`, `syntax` |
 | File materialization | `dump`, `convert`, `load`, `make` / `artifacts` |
-| Direct launch | `launch <designer|thin|thick|ordinary>` |
+| Direct launch | `launch <designer|thin|thick|ordinary>`, `launch mcp [va] --mode=<thin|thick|ordinary>` |
 | MCP | `mcp serve stdio|http`, 8 published tools |
 
 ## Documentation Map

@@ -59,11 +59,12 @@ use crate::use_cases::init_project;
 use crate::use_cases::launch_app;
 use crate::use_cases::load_artifact;
 use crate::use_cases::request::{
-    ArtifactsModeRequest, ArtifactsRequest, BuildRequest, ConfigureExtensionsRequest,
-    ConvertRequest, ConvertScopeRequest, DesignerClientScope, DesignerClientScopes,
-    DesignerConfigCheck, DesignerConfigChecks, DesignerConfigSyntaxRequest,
-    DesignerModulesSyntaxRequest, DumpRequest, InitRequest, LaunchRequest, LoadRequest,
-    SyntaxExtensionScope, SyntaxRequest, SyntaxTargetRequest, TestRequest, TestScopeRequest,
+    ArtifactsModeRequest, ArtifactsRequest, BuildRequest, ClientMcpAddonRequest, ClientMcpMode,
+    ClientMcpOptionsRequest, ConfigureExtensionsRequest, ConvertRequest, ConvertScopeRequest,
+    DesignerClientScope, DesignerClientScopes, DesignerConfigCheck, DesignerConfigChecks,
+    DesignerConfigSyntaxRequest, DesignerModulesSyntaxRequest, DumpRequest, InitRequest,
+    LaunchRequest, LoadRequest, SyntaxExtensionScope, SyntaxRequest, SyntaxTargetRequest,
+    TestRequest, TestScopeRequest,
 };
 use crate::use_cases::result::{UseCaseError, UseCaseErrorKind};
 use crate::use_cases::run_tests;
@@ -1089,21 +1090,142 @@ fn map_designer_modules_request(
 }
 
 fn map_launch_request(args: &LaunchArgs) -> Result<LaunchRequest, UseCaseError> {
+    let mut target = parse_launch_target(&args.target, "mode", LaunchModeAliases::Cli)?;
+    let client_mcp = if matches!(
+        target,
+        crate::use_cases::request::LaunchTargetRequest::Enterprise(
+            crate::use_cases::request::EnterpriseLaunchTarget::ClientMcp { .. }
+        )
+    ) {
+        let mode = map_mcp_client_mode(args.mcp_mode.as_deref())?;
+        target = crate::use_cases::request::LaunchTargetRequest::client_mcp_with_mode(mode);
+        Some(map_mcp_options(args)?)
+    } else {
+        if args.mcp_config.is_some()
+            || args.mcp_port.is_some()
+            || args.mcp_mode.is_some()
+            || args.mcp_scenario.is_some()
+        {
+            return Err(UseCaseError::new(
+                UseCaseErrorKind::Validation,
+                "--mcp-config, --mcp-port, --mode, and MCP_SCENARIO are supported only for `launch mcp`",
+            ));
+        }
+        None
+    };
     Ok(LaunchRequest {
-        target: parse_launch_target(&args.target, "mode", LaunchModeAliases::Cli)?,
-        launch: map_direct_launch_options(&args.launch),
+        target,
+        launch: map_direct_launch_options(target, &args.launch, client_mcp.is_some())?,
+        client_mcp,
     })
 }
 
-fn map_direct_launch_options(args: &LaunchOptionsArgs) -> LaunchOptions {
-    LaunchOptions {
+fn map_direct_launch_options(
+    target: crate::use_cases::request::LaunchTargetRequest,
+    args: &LaunchOptionsArgs,
+    is_client_mcp: bool,
+) -> Result<LaunchOptions, UseCaseError> {
+    if is_client_mcp {
+        return map_mcp_launch_options(args);
+    }
+    let _ = target;
+    Ok(LaunchOptions {
         c: args.c.clone(),
         execute: args.execute.clone(),
         use_privileged_mode: args.use_privileged_mode,
         out: args.output.clone(),
         internal_out: None,
         raw_args: args.raw_keys.clone(),
+    })
+}
+
+fn map_mcp_launch_options(args: &LaunchOptionsArgs) -> Result<LaunchOptions, UseCaseError> {
+    if args.c.is_some() || args.execute.is_some() {
+        return Err(UseCaseError::new(
+            UseCaseErrorKind::Validation,
+            "launch mcp manages /C internally and does not support --c or --execute",
+        ));
     }
+    if args
+        .raw_keys
+        .iter()
+        .any(|raw| is_reserved_mcp_raw_launch_key(raw))
+    {
+        return Err(UseCaseError::new(
+            UseCaseErrorKind::Validation,
+            "launch mcp manages /C and /Execute internally and does not support raw /C or /Execute keys",
+        ));
+    }
+
+    Ok(LaunchOptions {
+        c: None,
+        execute: None,
+        use_privileged_mode: args.use_privileged_mode,
+        out: args.output.clone(),
+        internal_out: None,
+        raw_args: args.raw_keys.clone(),
+    })
+}
+
+fn map_mcp_options(args: &LaunchArgs) -> Result<ClientMcpOptionsRequest, UseCaseError> {
+    if args
+        .mcp_config
+        .as_deref()
+        .is_some_and(|path| path.contains(';'))
+    {
+        return Err(UseCaseError::new(
+            UseCaseErrorKind::Validation,
+            "--mcp-config must not contain ';' because the /C runMcp payload is semicolon-delimited",
+        ));
+    }
+    if args.mcp_port == Some(0) {
+        return Err(UseCaseError::new(
+            UseCaseErrorKind::Validation,
+            "--mcp-port must be greater than or equal to 1",
+        ));
+    }
+    let addon = match args.mcp_scenario.as_deref() {
+        Some("va") => Some(ClientMcpAddonRequest::VanessaAutomation),
+        Some(other) => {
+            return Err(UseCaseError::new(
+                UseCaseErrorKind::Validation,
+                format!("unsupported launch mcp scenario: {other}"),
+            ));
+        }
+        None => None,
+    };
+    Ok(ClientMcpOptionsRequest {
+        config_path: args.mcp_config.clone(),
+        port: args.mcp_port,
+        addon,
+    })
+}
+
+fn map_mcp_client_mode(mode: Option<&str>) -> Result<ClientMcpMode, UseCaseError> {
+    Ok(match mode.unwrap_or("thin") {
+        "thin" => ClientMcpMode::Thin,
+        "thick" => ClientMcpMode::Thick,
+        "ordinary" => ClientMcpMode::Ordinary,
+        other => {
+            return Err(UseCaseError::new(
+                UseCaseErrorKind::Validation,
+                format!("unsupported launch mcp mode: {other}"),
+            ));
+        }
+    })
+}
+
+fn is_reserved_mcp_raw_launch_key(raw: &str) -> bool {
+    let normalized = raw
+        .trim_start()
+        .trim_start_matches(['/', '-'])
+        .to_ascii_lowercase();
+    normalized == "c"
+        || normalized.starts_with("c\"")
+        || normalized.starts_with("c=")
+        || normalized == "execute"
+        || normalized.starts_with("execute\"")
+        || normalized.starts_with("execute=")
 }
 
 #[derive(Debug, Serialize)]
@@ -1913,6 +2035,7 @@ fn render_launch_mode(mode: &LaunchMode) -> &'static str {
         LaunchMode::Thin => "тонкий клиент",
         LaunchMode::Thick => "толстый клиент",
         LaunchMode::Ordinary => "обычное приложение",
+        LaunchMode::Mcp => "клиентский MCP-сервер",
     }
 }
 
@@ -2064,8 +2187,9 @@ mod tests {
     use crate::support::temp::platform_logs_dir;
     use crate::use_cases::context::CommandName;
     use crate::use_cases::request::{
-        ArtifactsModeRequest, DesignerClientScope, DesignerConfigCheck, DumpModeRequest,
-        LaunchRequest, LaunchTargetRequest, SyntaxTargetRequest, TestScopeRequest,
+        ArtifactsModeRequest, ClientMcpAddonRequest, ClientMcpMode, ClientMcpOptionsRequest,
+        DesignerClientScope, DesignerConfigCheck, DumpModeRequest, LaunchRequest,
+        LaunchTargetRequest, SyntaxTargetRequest, TestScopeRequest,
     };
     use crate::use_cases::result::{UseCaseError, UseCaseErrorKind};
     use crate::use_cases::workspace_lock::workspace_lock_path;
@@ -2233,6 +2357,8 @@ mod tests {
         assert_eq!(
             map_launch_request(&LaunchArgs {
                 target: "thin".to_owned(),
+                mcp_scenario: None,
+                mcp_mode: None,
                 launch: LaunchOptionsArgs {
                     c: Some("Command".to_owned()),
                     execute: Some("tool.epf".to_owned()),
@@ -2240,6 +2366,8 @@ mod tests {
                     output: Some("launch.log".to_owned()),
                     raw_keys: vec!["/WA-".to_owned(), "/DisplayAllFunctions".to_owned()],
                 },
+                mcp_config: None,
+                mcp_port: None,
             })
             .expect("request"),
             LaunchRequest {
@@ -2252,12 +2380,17 @@ mod tests {
                     internal_out: None,
                     raw_args: vec!["/WA-".to_owned(), "/DisplayAllFunctions".to_owned()],
                 },
+                client_mcp: None,
             }
         );
         assert_eq!(
             map_launch_request(&LaunchArgs {
                 target: "ordinary".to_owned(),
+                mcp_scenario: None,
+                mcp_mode: None,
                 launch: LaunchOptionsArgs::default(),
+                mcp_config: None,
+                mcp_port: None,
             })
             .expect("request")
             .target,
@@ -2266,11 +2399,42 @@ mod tests {
         assert_eq!(
             map_launch_request(&LaunchArgs {
                 target: "thin".to_owned(),
+                mcp_scenario: None,
+                mcp_mode: None,
                 launch: LaunchOptionsArgs::default(),
+                mcp_config: None,
+                mcp_port: None,
             })
             .expect("request")
             .target,
             LaunchTargetRequest::thin_client()
+        );
+        assert_eq!(
+            map_launch_request(&LaunchArgs {
+                target: "mcp".to_owned(),
+                mcp_scenario: Some("va".to_owned()),
+                mcp_mode: Some("ordinary".to_owned()),
+                launch: LaunchOptionsArgs::default(),
+                mcp_config: Some("C:\\tmp\\mcp-conf.json".to_owned()),
+                mcp_port: Some(123),
+            })
+            .expect("request"),
+            LaunchRequest {
+                target: LaunchTargetRequest::client_mcp_with_mode(ClientMcpMode::Ordinary),
+                launch: LaunchOptions {
+                    c: None,
+                    execute: None,
+                    use_privileged_mode: false,
+                    out: None,
+                    internal_out: None,
+                    raw_args: Vec::new(),
+                },
+                client_mcp: Some(ClientMcpOptionsRequest {
+                    config_path: Some("C:\\tmp\\mcp-conf.json".to_owned()),
+                    port: Some(123),
+                    addon: Some(ClientMcpAddonRequest::VanessaAutomation),
+                }),
+            }
         );
         let load = map_load_request(&LoadArgs {
             path: "dist/main.cf".to_owned(),
@@ -2325,7 +2489,11 @@ mod tests {
         .expect_err("dump mode should be rejected");
         let launch_error = map_launch_request(&LaunchArgs {
             target: "garbage".to_owned(),
+            mcp_scenario: None,
+            mcp_mode: None,
             launch: LaunchOptionsArgs::default(),
+            mcp_config: None,
+            mcp_port: None,
         })
         .expect_err("launch mode should be rejected");
 
@@ -2557,7 +2725,11 @@ mod tests {
             &config,
             &Command::Launch(LaunchArgs {
                 target: "garbage".to_owned(),
+                mcp_scenario: None,
+                mcp_mode: None,
                 launch: LaunchOptionsArgs::default(),
+                mcp_config: None,
+                mcp_port: None,
             }),
             &presenter,
             false,
