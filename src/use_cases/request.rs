@@ -13,6 +13,8 @@ use crate::use_cases::result::{UseCaseError, UseCaseErrorKind};
 pub struct BuildRequest {
     /// Forces a full rebuild instead of change-based execution.
     pub full_rebuild: bool,
+    /// Optional source-set selector. When absent, all configured source-sets are built.
+    pub source_set: Option<String>,
 }
 
 /// Transport-neutral request for the `load` use case.

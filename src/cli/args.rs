@@ -112,6 +112,10 @@ pub struct BuildArgs {
     /// Clear change cache and rebuild everything
     #[arg(long)]
     pub full_rebuild: bool,
+
+    /// Limit build to one source-set from v8project.yaml
+    #[arg(long)]
+    pub source_set: Option<String>,
 }
 
 #[derive(Args, Debug)]

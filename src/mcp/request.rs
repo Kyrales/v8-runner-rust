@@ -8,6 +8,9 @@ pub struct McpBuildProjectRequest {
     /// Optional full-rebuild flag from the MCP tool surface.
     #[schemars(description = "Run a full rebuild instead of an incremental build.")]
     pub full_rebuild: Option<bool>,
+    /// Optional source-set selector from v8project.yaml.
+    #[schemars(description = "Source-set name to build. When omitted, all source-sets are built.")]
+    pub source_set: Option<String>,
 }
 
 /// MCP request for `run_all_tests`.

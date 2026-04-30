@@ -39,7 +39,8 @@ MCP DTO в одном слое.
 - Generated Designer output для EDT flow живёт под `workPath/designer/<sourceSetName>`.
 
 Change detection выполняется on-demand во время build/export/load decision и не требует
-background watcher.
+background watcher. `build --source-set <NAME>` ограничивает анализ, export/load decision и
+runtime snapshot commit только указанным source-set.
 
 ## Пайплайн `build`
 
@@ -52,7 +53,7 @@ background watcher.
 
 Для `EDT`:
 
-1. Анализ EDT source-set.
+1. Анализ выбранных EDT source-set.
 2. Export затронутых EDT source-set в generated Designer representation.
 3. Повторный анализ generated Designer files.
 4. Load/apply generated files через `DESIGNER` или `IBCMD`.

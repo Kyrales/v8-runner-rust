@@ -36,6 +36,21 @@ fn config_init_help_separates_global_and_command_options() {
 }
 
 #[test]
+fn build_help_exposes_source_set_selector() {
+    let output = v8_runner_command()
+        .args(["build", "--help"])
+        .output()
+        .expect("run command");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Command options:"));
+    assert!(stdout.contains("--source-set <SOURCE_SET>"));
+    assert!(stdout.contains("--full-rebuild"));
+    assert!(stdout.contains("--json-message"));
+}
+
+#[test]
 fn launch_help_uses_output_path_name_and_global_json_selector() {
     let output = v8_runner_command()
         .args(["launch", "--help"])

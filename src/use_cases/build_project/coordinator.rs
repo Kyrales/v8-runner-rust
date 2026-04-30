@@ -5,18 +5,37 @@ pub(super) fn run_build_designer(
     config: &AppConfig,
     args: &BuildArgs,
 ) -> Result<BuildResult, BuildExecutionFailure> {
-    debug!(full_rebuild = args.full_rebuild, "preparing build plan");
+    debug!(
+        full_rebuild = args.full_rebuild,
+        source_set = args.source_set.as_deref(),
+        "preparing build plan"
+    );
 
     let started = Instant::now();
     let inventory = SourceSetInventory::new(config);
-    let ordered_source_sets = inventory.ordered_source_sets();
+    let ordered_source_sets =
+        match selected_ordered_source_sets(&inventory, args.source_set.as_deref()) {
+            Ok(source_sets) => source_sets,
+            Err(error) => {
+                return Err(BuildExecutionFailure::with_payload(
+                    error,
+                    BuildResult {
+                        ok: false,
+                        steps: vec![],
+                        duration_ms: started.elapsed().as_millis() as u64,
+                    },
+                ));
+            }
+        };
+    let selected_designer_contexts =
+        designer_contexts_for_source_sets(&inventory, &ordered_source_sets);
 
     let analysis_by_name = if args.full_rebuild {
         None
     } else {
         Some(analyze_contexts_by_name(
             &inventory,
-            inventory.designer_contexts(),
+            &selected_designer_contexts,
         ))
     };
 
@@ -195,19 +214,35 @@ pub(super) fn run_build_ibcmd(
 ) -> Result<BuildResult, BuildExecutionFailure> {
     debug!(
         full_rebuild = args.full_rebuild,
+        source_set = args.source_set.as_deref(),
         "preparing ibcmd build plan"
     );
 
     let started = Instant::now();
     let inventory = SourceSetInventory::new(config);
-    let ordered_source_sets = inventory.ordered_source_sets();
+    let ordered_source_sets =
+        match selected_ordered_source_sets(&inventory, args.source_set.as_deref()) {
+            Ok(source_sets) => source_sets,
+            Err(error) => {
+                return Err(BuildExecutionFailure::with_payload(
+                    error,
+                    BuildResult {
+                        ok: false,
+                        steps: vec![],
+                        duration_ms: started.elapsed().as_millis() as u64,
+                    },
+                ));
+            }
+        };
+    let selected_designer_contexts =
+        designer_contexts_for_source_sets(&inventory, &ordered_source_sets);
 
     let analysis_by_name = if args.full_rebuild {
         None
     } else {
         Some(analyze_contexts_by_name(
             &inventory,
-            inventory.designer_contexts(),
+            &selected_designer_contexts,
         ))
     };
 
@@ -348,7 +383,11 @@ pub(super) fn run_build_edt(
     config: &AppConfig,
     args: &BuildArgs,
 ) -> Result<BuildResult, BuildExecutionFailure> {
-    debug!(full_rebuild = args.full_rebuild, "preparing edt build plan");
+    debug!(
+        full_rebuild = args.full_rebuild,
+        source_set = args.source_set.as_deref(),
+        "preparing edt build plan"
+    );
     if let Some(error) = validate_edt_supported_matrix(config) {
         return Err(BuildExecutionFailure::with_payload(
             error,
@@ -362,15 +401,26 @@ pub(super) fn run_build_edt(
 
     let started = Instant::now();
     let inventory = SourceSetInventory::new(config);
-    let ordered_source_sets = inventory.ordered_source_sets();
+    let ordered_source_sets =
+        match selected_ordered_source_sets(&inventory, args.source_set.as_deref()) {
+            Ok(source_sets) => source_sets,
+            Err(error) => {
+                return Err(BuildExecutionFailure::with_payload(
+                    error,
+                    BuildResult {
+                        ok: false,
+                        steps: vec![],
+                        duration_ms: started.elapsed().as_millis() as u64,
+                    },
+                ));
+            }
+        };
+    let selected_edt_contexts = edt_contexts_for_source_sets(&inventory, &ordered_source_sets);
 
     let edt_analysis_by_name = if args.full_rebuild {
         None
     } else {
-        Some(analyze_contexts_by_name(
-            &inventory,
-            inventory.edt_contexts(),
-        ))
+        Some(analyze_contexts_by_name(&inventory, &selected_edt_contexts))
     };
 
     let mut utilities = PlatformUtilities::from_config(config);

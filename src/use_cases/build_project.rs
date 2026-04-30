@@ -168,6 +168,63 @@ fn run_build_edt(
     coordinator::run_build_edt(context, config, args)
 }
 
+fn selected_ordered_source_sets<'a>(
+    inventory: &'a SourceSetInventory<'a>,
+    source_set_name: Option<&str>,
+) -> Result<Vec<&'a SourceSetConfig>, AppError> {
+    match source_set_name
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+    {
+        Some(name) => inventory
+            .ordered_source_sets()
+            .into_iter()
+            .find(|source_set| source_set.name == name)
+            .map(|source_set| vec![source_set])
+            .ok_or_else(|| AppError::Validation(format!("unknown source-set '{name}'"))),
+        None => {
+            if source_set_name.is_some() {
+                return Err(AppError::Validation(
+                    "build source-set requires a non-empty name".to_owned(),
+                ));
+            }
+            Ok(inventory.ordered_source_sets())
+        }
+    }
+}
+
+fn designer_contexts_for_source_sets(
+    inventory: &SourceSetInventory<'_>,
+    source_sets: &[&SourceSetConfig],
+) -> Vec<SourceSetContext> {
+    inventory
+        .designer_contexts()
+        .iter()
+        .filter(|context| {
+            source_sets
+                .iter()
+                .any(|source_set| source_set.name == context.name())
+        })
+        .cloned()
+        .collect()
+}
+
+fn edt_contexts_for_source_sets(
+    inventory: &SourceSetInventory<'_>,
+    source_sets: &[&SourceSetConfig],
+) -> Vec<SourceSetContext> {
+    inventory
+        .edt_contexts()
+        .iter()
+        .filter(|context| {
+            source_sets
+                .iter()
+                .any(|source_set| source_set.name == context.name())
+        })
+        .cloned()
+        .collect()
+}
+
 fn analyze_contexts_by_name(
     inventory: &SourceSetInventory<'_>,
     contexts: &[SourceSetContext],
@@ -693,6 +750,13 @@ mod tests {
         }
     }
 
+    fn build_args(full_rebuild: bool) -> BuildArgs {
+        BuildArgs {
+            full_rebuild,
+            source_set: None,
+        }
+    }
+
     #[cfg(unix)]
     #[test]
     fn execute_build_honors_interruption_before_load_safe_point() {
@@ -720,7 +784,7 @@ mod tests {
         let failure = super::execute(
             &ExecutionContext::cli(CommandName::Build).with_cancellation(cancellation),
             &config,
-            &BuildArgs { full_rebuild: true },
+            &build_args(true),
         )
         .expect_err("build must stop before load");
 
@@ -782,7 +846,7 @@ mod tests {
         let failure = super::execute(
             &ExecutionContext::cli(CommandName::Build).with_cancellation(cancellation),
             &config,
-            &BuildArgs { full_rebuild: true },
+            &build_args(true),
         )
         .expect_err("build must stop before ibcmd apply");
 
@@ -929,7 +993,7 @@ mod tests {
             SourceFormat::Designer,
             BuilderBackend::Ibcmd,
         );
-        let result = run_build(&config, &BuildArgs { full_rebuild: true }).expect("build");
+        let result = run_build(&config, &build_args(true)).expect("build");
 
         assert!(result.ok);
         let calls_text = fs::read_to_string(&calls).expect("calls");
@@ -962,7 +1026,7 @@ mod tests {
         )
         .with_credentials(Some("Admin".to_owned()), Some("secret".to_owned()));
 
-        let result = run_build(&config, &BuildArgs { full_rebuild: true }).expect("build");
+        let result = run_build(&config, &build_args(true)).expect("build");
 
         assert!(result.ok);
         let calls_text = fs::read_to_string(&calls).expect("calls");
@@ -1004,13 +1068,7 @@ mod tests {
         )
         .expect("modify main");
 
-        let failure = run_build(
-            &config,
-            &BuildArgs {
-                full_rebuild: false,
-            },
-        )
-        .expect_err("expected failure");
+        let failure = run_build(&config, &build_args(false)).expect_err("expected failure");
         let result = failure
             .payload
             .expect("build failures should preserve a structured payload");
@@ -1043,13 +1101,7 @@ mod tests {
         )
         .expect("modify edt main");
 
-        let result = run_build(
-            &config,
-            &BuildArgs {
-                full_rebuild: false,
-            },
-        )
-        .expect("build");
+        let result = run_build(&config, &build_args(false)).expect("build");
         let edt_calls_text = fs::read_to_string(&edt_calls).expect("edt calls");
         let designer_calls_text = fs::read_to_string(&designer_calls).expect("designer calls");
 
@@ -1074,13 +1126,7 @@ mod tests {
         assert_eq!(edt_storage_generation(&config, "main"), 2);
         assert_eq!(storage_generation(&config, "main"), 1);
 
-        let rerun = run_build(
-            &config,
-            &BuildArgs {
-                full_rebuild: false,
-            },
-        )
-        .expect("rerun");
+        let rerun = run_build(&config, &build_args(false)).expect("rerun");
         let rerun_edt_calls = fs::read_to_string(&edt_calls).expect("edt calls after rerun");
 
         assert!(rerun
@@ -1121,13 +1167,7 @@ mod tests {
         )
         .expect("modify edt main");
 
-        let result = run_build(
-            &config,
-            &BuildArgs {
-                full_rebuild: false,
-            },
-        )
-        .expect("build");
+        let result = run_build(&config, &build_args(false)).expect("build");
         let edt_calls_text = fs::read_to_string(&edt_calls).expect("edt calls");
         let ibcmd_calls_text = fs::read_to_string(&ibcmd_calls).expect("ibcmd calls");
 
@@ -1192,13 +1232,7 @@ mod tests {
         )
         .expect("modify ext");
 
-        let result = run_build(
-            &config,
-            &BuildArgs {
-                full_rebuild: false,
-            },
-        )
-        .expect("build");
+        let result = run_build(&config, &build_args(false)).expect("build");
         let edt_calls_text = fs::read_to_string(&edt_calls).expect("edt calls");
 
         assert!(result.ok);
@@ -1238,13 +1272,8 @@ mod tests {
         )
         .expect("modify ext");
 
-        let error = run_build(
-            &config,
-            &BuildArgs {
-                full_rebuild: false,
-            },
-        )
-        .expect_err("build should fail without valid .project");
+        let error = run_build(&config, &build_args(false))
+            .expect_err("build should fail without valid .project");
 
         assert_eq!(error.error.kind(), UseCaseErrorKind::Validation);
         assert!(error
@@ -1290,13 +1319,7 @@ mod tests {
         )
         .expect("modify ext");
 
-        let result = run_build(
-            &config,
-            &BuildArgs {
-                full_rebuild: false,
-            },
-        )
-        .expect("build");
+        let result = run_build(&config, &build_args(false)).expect("build");
         let edt_calls_text = fs::read_to_string(&edt_calls).expect("edt calls");
         let designer_calls_text = fs::read_to_string(&designer_calls).expect("designer calls");
 
@@ -1317,13 +1340,7 @@ mod tests {
         assert_eq!(edt_storage_generation(&config, "client_mcp"), 2);
         assert_eq!(storage_generation(&config, "client_mcp"), 1);
 
-        let rerun = run_build(
-            &config,
-            &BuildArgs {
-                full_rebuild: false,
-            },
-        )
-        .expect("rerun");
+        let rerun = run_build(&config, &build_args(false)).expect("rerun");
         let rerun_designer_calls =
             fs::read_to_string(&designer_calls).expect("designer calls after rerun");
 
@@ -1376,13 +1393,7 @@ mod tests {
         )
         .expect("modify ext");
 
-        let result = run_build(
-            &config,
-            &BuildArgs {
-                full_rebuild: false,
-            },
-        )
-        .expect("build");
+        let result = run_build(&config, &build_args(false)).expect("build");
         let edt_calls_text = fs::read_to_string(&edt_calls).expect("edt calls");
         let ibcmd_calls_text = fs::read_to_string(&ibcmd_calls).expect("ibcmd calls");
 
@@ -1446,13 +1457,7 @@ mod tests {
         )
         .expect("modify ext");
 
-        let failure = run_build(
-            &config,
-            &BuildArgs {
-                full_rebuild: false,
-            },
-        )
-        .expect_err("expected failure");
+        let failure = run_build(&config, &build_args(false)).expect_err("expected failure");
         let result = failure
             .payload
             .expect("build failures should preserve a structured payload");
@@ -1508,13 +1513,7 @@ mod tests {
         )
         .expect("modify edt ext");
 
-        let result = run_build(
-            &config,
-            &BuildArgs {
-                full_rebuild: false,
-            },
-        )
-        .expect("build");
+        let result = run_build(&config, &build_args(false)).expect("build");
         let edt_calls_text = fs::read_to_string(&edt_calls).expect("edt calls");
 
         assert!(result.ok);
@@ -1547,13 +1546,7 @@ mod tests {
         )
         .expect("modify edt main");
 
-        run_build(
-            &config,
-            &BuildArgs {
-                full_rebuild: false,
-            },
-        )
-        .expect("initial build");
+        run_build(&config, &build_args(false)).expect("initial build");
 
         fs::write(
             work.join("designer").join("main").join("exported.txt"),
@@ -1564,13 +1557,7 @@ mod tests {
         let edt_generation_before = edt_storage_generation(&config, "main");
         let designer_generation_before = storage_generation(&config, "main");
 
-        let result = run_build(
-            &config,
-            &BuildArgs {
-                full_rebuild: false,
-            },
-        )
-        .expect("second build");
+        let result = run_build(&config, &build_args(false)).expect("second build");
         let designer_calls_text = fs::read_to_string(&designer_calls).expect("designer calls");
         let edt_calls_text = fs::read_to_string(&edt_calls).expect("edt calls");
 
@@ -1622,13 +1609,7 @@ mod tests {
         )
         .expect("modify edt main");
 
-        let failure = run_build(
-            &config,
-            &BuildArgs {
-                full_rebuild: false,
-            },
-        )
-        .expect_err("expected failure");
+        let failure = run_build(&config, &build_args(false)).expect_err("expected failure");
         let result = failure
             .payload
             .expect("build failures should preserve a structured payload");
@@ -1663,13 +1644,7 @@ mod tests {
         )
         .expect("modify edt main");
 
-        let failure = run_build(
-            &config,
-            &BuildArgs {
-                full_rebuild: false,
-            },
-        )
-        .expect_err("expected failure");
+        let failure = run_build(&config, &build_args(false)).expect_err("expected failure");
         let result = failure
             .payload
             .expect("build failures should preserve a structured payload");
@@ -1710,13 +1685,7 @@ mod tests {
         );
         prime_snapshots(&config);
 
-        let result = run_build(
-            &config,
-            &BuildArgs {
-                full_rebuild: false,
-            },
-        )
-        .expect("build");
+        let result = run_build(&config, &build_args(false)).expect("build");
 
         assert!(result.ok);
         assert_eq!(result.steps.len(), 2);
@@ -1755,13 +1724,7 @@ mod tests {
         )
         .expect("modify main");
 
-        let result = run_build(
-            &config,
-            &BuildArgs {
-                full_rebuild: false,
-            },
-        )
-        .expect("build");
+        let result = run_build(&config, &build_args(false)).expect("build");
         let calls_text = fs::read_to_string(&calls).expect("calls");
 
         assert!(matches!(result.steps[0].mode, BuildMode::Partial { .. }));
@@ -1772,13 +1735,7 @@ mod tests {
         assert!(calls_text.contains("-listFile"));
         assert_eq!(storage_generation(&config, "main"), 2);
 
-        let rerun = run_build(
-            &config,
-            &BuildArgs {
-                full_rebuild: false,
-            },
-        )
-        .expect("rerun");
+        let rerun = run_build(&config, &build_args(false)).expect("rerun");
         assert!(matches!(rerun.steps[0].mode, BuildMode::Skipped));
     }
 
@@ -1808,13 +1765,7 @@ mod tests {
         )
         .expect("modify ext");
 
-        let result = run_build(
-            &config,
-            &BuildArgs {
-                full_rebuild: false,
-            },
-        )
-        .expect("build");
+        let result = run_build(&config, &build_args(false)).expect("build");
         let calls_text = fs::read_to_string(&calls).expect("calls");
 
         assert!(matches!(result.steps[0].mode, BuildMode::Skipped));
@@ -1822,6 +1773,88 @@ mod tests {
         assert!(calls_text.contains("-Extension ext"));
         assert_eq!(storage_generation(&config, "main"), 1);
         assert_eq!(storage_generation(&config, "ext"), 2);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn source_set_build_analyzes_and_loads_only_requested_source_set() {
+        let dir = tempdir().expect("tempdir");
+        let base = dir.path().join("base");
+        let work = dir.path().join("work");
+        let script = dir.path().join("1cv8");
+        let calls = dir.path().join("calls.log");
+        create_source_tree(&base);
+        write_designer_script(&script, &calls, None);
+        let config = build_config(
+            &base,
+            &work,
+            &script,
+            20,
+            SourceFormat::Designer,
+            BuilderBackend::Designer,
+        );
+        prime_snapshots(&config);
+
+        let service = SourceSetsService::new(&config);
+        let main_context = service
+            .designer_contexts()
+            .into_iter()
+            .find(|context| context.name() == "main")
+            .expect("main context");
+        fs::write(main_context.storage_path(&config.work_path), "corrupt").expect("corrupt main");
+        fs::write(
+            base.join("ext").join("CommonModules").join("Module.bsl"),
+            "procedure Test()\n  // ext changed\nendprocedure",
+        )
+        .expect("modify ext");
+
+        let result = run_build(
+            &config,
+            &BuildArgs {
+                full_rebuild: false,
+                source_set: Some("ext".to_owned()),
+            },
+        )
+        .expect("build");
+        let calls_text = fs::read_to_string(&calls).expect("calls");
+
+        assert_eq!(result.steps.len(), 1);
+        assert_eq!(result.steps[0].source_set, "ext");
+        assert!(matches!(result.steps[0].mode, BuildMode::Partial { .. }));
+        assert!(calls_text.contains("-Extension ext"));
+        assert_eq!(storage_generation(&config, "ext"), 2);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn source_set_build_rejects_unknown_source_set() {
+        let dir = tempdir().expect("tempdir");
+        let base = dir.path().join("base");
+        let work = dir.path().join("work");
+        let script = dir.path().join("1cv8");
+        create_source_tree(&base);
+        write_designer_script(&script, &dir.path().join("calls.log"), None);
+        let config = build_config(
+            &base,
+            &work,
+            &script,
+            20,
+            SourceFormat::Designer,
+            BuilderBackend::Designer,
+        );
+
+        let failure = run_build(
+            &config,
+            &BuildArgs {
+                full_rebuild: false,
+                source_set: Some("missing".to_owned()),
+            },
+        )
+        .expect_err("unknown source-set must fail");
+
+        assert_eq!(failure.error.kind(), UseCaseErrorKind::Validation);
+        assert_eq!(failure.error.message(), "unknown source-set 'missing'");
+        assert!(failure.payload.expect("payload").steps.is_empty());
     }
 
     #[cfg(unix)]
@@ -1850,7 +1883,7 @@ mod tests {
             fs::write(storage_path, "corrupt").expect("corrupt storage");
         }
 
-        let result = run_build(&config, &BuildArgs { full_rebuild: true }).expect("build");
+        let result = run_build(&config, &build_args(true)).expect("build");
         let calls_text = fs::read_to_string(&calls).expect("calls");
 
         assert!(result
@@ -1891,7 +1924,7 @@ mod tests {
         std::fs::remove_file(&storage_path).expect("remove storage file");
         std::fs::create_dir_all(&storage_path).expect("replace with directory");
 
-        let failure = run_build(&config, &BuildArgs { full_rebuild: true }).expect_err("failure");
+        let failure = run_build(&config, &build_args(true)).expect_err("failure");
 
         assert_eq!(failure.error.kind(), UseCaseErrorKind::Runtime);
         assert!(storage_path.exists());
@@ -1931,13 +1964,7 @@ mod tests {
         )
         .expect("modify ext");
 
-        let failure = run_build(
-            &config,
-            &BuildArgs {
-                full_rebuild: false,
-            },
-        )
-        .expect_err("failure");
+        let failure = run_build(&config, &build_args(false)).expect_err("failure");
         let result = failure
             .payload
             .expect("build failures should preserve a structured payload");

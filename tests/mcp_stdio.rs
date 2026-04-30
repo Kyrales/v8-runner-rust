@@ -633,6 +633,10 @@ async fn mcp_stdio_exposes_expected_tools_and_capabilities() {
         &build_schema["properties"]["fullRebuild"]["type"],
         "boolean"
     ));
+    assert!(schema_supports_type(
+        &build_schema["properties"]["sourceSet"]["type"],
+        "string"
+    ));
 
     let tests_schema = tools
         .iter()

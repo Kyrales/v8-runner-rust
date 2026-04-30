@@ -58,6 +58,7 @@ where
             .map_err(McpServiceError::Internal)?;
         let use_case_request = BuildRequest {
             full_rebuild: request.full_rebuild.unwrap_or(false),
+            source_set: request.source_set.clone(),
         };
 
         match self
@@ -821,6 +822,7 @@ mod tests {
                 McpCallContext::stdio(),
                 &McpBuildProjectRequest {
                     full_rebuild: Some(true),
+                    source_set: Some("main".to_owned()),
                 },
             )
             .expect("success");
@@ -835,6 +837,7 @@ mod tests {
         assert_eq!(requests[0].0.command(), CommandName::Build);
         assert_eq!(requests[0].0.transport(), ExecutionTransport::McpStdio);
         assert_eq!(requests[0].1.full_rebuild, true);
+        assert_eq!(requests[0].1.source_set.as_deref(), Some("main"));
     }
 
     #[test]

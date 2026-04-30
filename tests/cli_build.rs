@@ -597,6 +597,56 @@ fn build_text_no_changes_collapses_per_source_set_noise() {
 }
 
 #[test]
+fn build_source_set_json_limits_steps_to_requested_source_set() {
+    let (_dir, config_path, _binary_path, _work_path) = setup_project();
+
+    let output = v8_runner_command()
+        .args([
+            "--config",
+            &config_path.display().to_string(),
+            "--json-message",
+            "build",
+            "--source-set",
+            "ext",
+            "--full-rebuild",
+        ])
+        .output()
+        .expect("run command");
+
+    assert!(output.status.success());
+    let payload: Value = serde_json::from_slice(&output.stdout).expect("json");
+    let steps = payload["data"]["steps"].as_array().expect("steps");
+    assert_eq!(steps.len(), 1);
+    assert_eq!(steps[0]["source_set"], "ext");
+    assert_eq!(steps[0]["mode"], "full");
+}
+
+#[test]
+fn build_source_set_json_rejects_unknown_source_set() {
+    let (_dir, config_path, _binary_path, _work_path) = setup_project();
+
+    let output = v8_runner_command()
+        .args([
+            "--config",
+            &config_path.display().to_string(),
+            "--json-message",
+            "build",
+            "--source-set",
+            "missing",
+        ])
+        .output()
+        .expect("run command");
+
+    assert!(!output.status.success());
+    assert_eq!(output.status.code(), Some(2));
+    let payload: Value = serde_json::from_slice(&output.stdout).expect("json");
+    assert_eq!(payload["command"], "build");
+    assert_eq!(payload["error"]["kind"], "validation");
+    assert_eq!(payload["error"]["message"], "unknown source-set 'missing'");
+    assert_eq!(payload["data"]["steps"].as_array().expect("steps").len(), 0);
+}
+
+#[test]
 fn build_edt_text_interleaves_export_stage_after_edt_log() {
     let (_dir, config_path, ibcmd_calls_log, edt_calls_log) = setup_edt_ibcmd_project();
 

@@ -228,7 +228,10 @@ mod tests {
             .build_project(
                 &ExecutionContext::mcp_stdio(CommandName::Build),
                 &config,
-                &BuildRequest { full_rebuild: true },
+                &BuildRequest {
+                    full_rebuild: true,
+                    source_set: None,
+                },
             )
             .expect_err("busy workspace");
 

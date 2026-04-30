@@ -270,6 +270,10 @@ Validation rules:
 
 Порог между partial и full load.
 
+CLI selector `v8-runner build --source-set <name>` использует `source-set[].name` как stable
+runtime identity и не добавляет отдельное поле конфигурации. Если selector не задан, `build`
+обрабатывает все `source-set`.
+
 ### `tests`
 
 #### `tests.execution_timeout_seconds`

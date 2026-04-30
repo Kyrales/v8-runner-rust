@@ -699,6 +699,7 @@ fn render_pre_dispatch_error(
 fn map_build_request(args: &BuildArgs) -> BuildRequest {
     BuildRequest {
         full_rebuild: args.full_rebuild,
+        source_set: args.source_set.clone(),
     }
 }
 
@@ -2323,7 +2324,13 @@ mod tests {
 
     #[test]
     fn maps_build_dump_launch_and_load_requests() {
-        assert!(map_build_request(&BuildArgs { full_rebuild: true }).full_rebuild);
+        assert!(
+            map_build_request(&BuildArgs {
+                full_rebuild: true,
+                source_set: None,
+            })
+            .full_rebuild
+        );
         assert_eq!(
             map_extensions_request(&ExtensionsArgs {
                 names: vec!["client_mcp".to_owned()],
@@ -2600,7 +2607,8 @@ mod tests {
         );
         assert_eq!(
             command_name(&Command::Build(BuildArgs {
-                full_rebuild: false
+                full_rebuild: false,
+                source_set: None,
             })),
             CommandName::Build
         );
@@ -2668,7 +2676,10 @@ mod tests {
 
         let error = execute_command(
             &config,
-            &Command::Build(BuildArgs { full_rebuild: true }),
+            &Command::Build(BuildArgs {
+                full_rebuild: true,
+                source_set: None,
+            }),
             &presenter,
             false,
         )
@@ -2789,7 +2800,10 @@ mod tests {
 
         let _ = execute_command(
             &config,
-            &Command::Build(BuildArgs { full_rebuild: true }),
+            &Command::Build(BuildArgs {
+                full_rebuild: true,
+                source_set: None,
+            }),
             &presenter,
             true,
         )

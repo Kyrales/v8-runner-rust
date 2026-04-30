@@ -75,6 +75,7 @@ pub(super) fn run_tests(
         config,
         &BuildArgs {
             full_rebuild: false,
+            source_set: None,
         },
     ) {
         Ok(result) => result,

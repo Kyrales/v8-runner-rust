@@ -101,11 +101,14 @@ v8-runner extensions [--name <SOURCE_SET>...]
 ### `build`
 
 ```bash
-v8-runner build [--full-rebuild]
+v8-runner build [--source-set <NAME>] [--full-rebuild]
 ```
 
-- Для `DESIGNER` выбирает incremental, partial или full path по изменённым файлам.
-- Для `EDT` сначала анализирует и экспортирует изменённые EDT `source-set`, затем грузит generated
+- Без `--source-set` обрабатывает все configured `source-set` в canonical order.
+- С `--source-set` анализирует и строит только указанный `source-set`; неизвестное имя
+  отклоняется как validation error.
+- Для `DESIGNER` выбирает incremental, partial или full path по изменённым файлам выбранного scope.
+- Для `EDT` сначала анализирует и экспортирует выбранные EDT `source-set`, затем грузит generated
   Designer files выбранным backend.
 - Не является атомарной multi-source-set операцией: ранние успешные шаги не откатываются, если
   поздний шаг падает.
@@ -251,7 +254,7 @@ v8-runner mcp serve http
 
 | Инструмент | Основные поля запроса | Примечания |
 | --- | --- | --- |
-| `build_project` | `fullRebuild` | По умолчанию `false` |
+| `build_project` | `fullRebuild`, `sourceSet` | `fullRebuild=false`; `sourceSet` omitted значит все source-set |
 | `run_all_tests` | `full` | Компактный вывод по умолчанию |
 | `run_module_tests` | `moduleName`, `full` | Отклоняет пустой `moduleName` |
 | `dump_config` | `mode`, `extension`, `objects` | Пустой `mode` нормализуется в `INCREMENTAL` |
