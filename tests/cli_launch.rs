@@ -409,9 +409,8 @@ fn launch_mcp_va_builds_payload_from_configured_port_and_ordinary_mode() {
     assert!(args.contains("/RunModeOrdinaryApplication"));
     assert!(args.contains("/Execute"));
     assert!(args.contains("vanessa-automation.epf"));
-    assert!(
-        args.contains("/C\"runMcp=/tmp/mcp conf.json;mcpPort=9874;StartFeaturePlayer;VAParams=")
-    );
+    assert!(args.contains("/C\"runMcp=/tmp/mcp conf.json;mcpPort=9874;VAParams="));
+    assert!(!args.contains("StartFeaturePlayer"));
     assert!(args.contains("/TESTMANAGER"));
     assert!(args.contains("/WA-"));
     let params_arg = args

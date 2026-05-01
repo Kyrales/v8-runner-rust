@@ -206,9 +206,7 @@ fn effective_launch_options(
             ));
         }
         launch.execute = Some(normalize_launch_payload_path(&epf_path));
-        payload.push_str(&format!(
-            ";StartFeaturePlayer;VAParams={params_payload_path}"
-        ));
+        payload.push_str(&format!(";VAParams={params_payload_path}"));
     }
     launch.c = Some(payload);
     Ok(launch)
