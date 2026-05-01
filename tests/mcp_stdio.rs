@@ -568,6 +568,43 @@ fn mcp_legacy_top_level_credentials_reports_error_on_stderr() {
     assert!(stderr.contains("legacy top-level key 'credentials'"));
 }
 
+#[test]
+fn mcp_top_level_execution_timeout_seconds_reports_error_on_stderr() {
+    let dir = temp_workspace();
+    let config_path = dir.path().join("v8project.yaml");
+    let base_path = dir.path().join("project");
+    let work_path = dir.path().join("work");
+    fs::create_dir_all(&base_path).expect("base");
+    fs::create_dir_all(&work_path).expect("work");
+    fs::write(
+        &config_path,
+        format!(
+            "basePath: '{}'\nworkPath: '{}'\nexecution_timeout_seconds: 300\nformat: DESIGNER\nbuilder: DESIGNER\ninfobase:\n  connection: 'File=/tmp/ib'\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: .\n",
+            base_path.display(),
+            work_path.display()
+        ),
+    )
+    .expect("config");
+
+    let output = v8_runner_command()
+        .args([
+            "--config",
+            &config_path.display().to_string(),
+            "mcp",
+            "serve",
+            "stdio",
+        ])
+        .output()
+        .expect("run command");
+
+    assert!(!output.status.success());
+    assert_eq!(output.status.code(), Some(2));
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("top-level key 'execution_timeout_seconds'"));
+    assert!(stderr.contains("execution_timeout in milliseconds"));
+}
+
 #[tokio::test]
 async fn mcp_stdio_exposes_expected_tools_and_capabilities() {
     let (_dir, config_path) = setup_project();

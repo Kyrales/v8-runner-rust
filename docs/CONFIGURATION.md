@@ -174,7 +174,6 @@ tests:
 
 - `executionTimeout`
 - `execution_timeout_ms`
-- `execution_timeout_seconds`
 
 ### `format`
 

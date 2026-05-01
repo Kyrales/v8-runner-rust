@@ -290,3 +290,41 @@ fn legacy_top_level_credentials_is_rejected_in_json_mode() {
         .expect("message")
         .contains("legacy top-level key 'credentials'"));
 }
+
+#[test]
+fn top_level_execution_timeout_seconds_is_rejected_in_json_mode() {
+    let dir = temp_workspace();
+    let config_path = dir.path().join("v8project.yaml");
+    let base_path = dir.path().join("project");
+    let work_path = dir.path().join("work");
+    fs::create_dir_all(&base_path).expect("base");
+    fs::create_dir_all(&work_path).expect("work");
+    fs::write(
+        &config_path,
+        format!(
+            "basePath: '{}'\nworkPath: '{}'\nexecution_timeout_seconds: 300\nformat: DESIGNER\nbuilder: DESIGNER\ninfobase:\n  connection: 'File=/tmp/ib'\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: .\n",
+            base_path.display(),
+            work_path.display()
+        ),
+    )
+    .expect("config");
+
+    let output = v8_runner_command()
+        .args([
+            "--config",
+            &config_path.display().to_string(),
+            "--json-message",
+            "build",
+        ])
+        .output()
+        .expect("run command");
+
+    assert!(!output.status.success());
+    assert_eq!(output.status.code(), Some(2));
+    let payload: Value = serde_json::from_slice(&output.stdout).expect("json");
+    assert_eq!(payload["command"], "build");
+    assert_eq!(payload["error"]["code"], "invalid_argument");
+    let message = payload["data"]["message"].as_str().expect("message");
+    assert!(message.contains("top-level key 'execution_timeout_seconds'"));
+    assert!(message.contains("execution_timeout in milliseconds"));
+}

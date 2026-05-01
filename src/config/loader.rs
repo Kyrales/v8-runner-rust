@@ -80,6 +80,10 @@ fn reject_legacy_config_keys(root: &serde_yaml::Value) -> Result<(), ConfigValid
         return Err(ConfigValidationError::LegacyTopLevelCredentials);
     }
 
+    if mapping_contains_key(mapping, "execution_timeout_seconds") {
+        return Err(ConfigValidationError::LegacyTopLevelExecutionTimeoutSeconds);
+    }
+
     if let Some(mcp) = mapping
         .get(serde_yaml::Value::String("mcp".to_owned()))
         .and_then(serde_yaml::Value::as_mapping)
@@ -253,8 +257,9 @@ fn resolve_config_path(config_path: Option<&str>) -> Result<PathBuf, ConfigLoadE
 
 #[cfg(test)]
 mod tests {
-    use super::load_config;
+    use super::{load_config, ConfigLoadError};
     use crate::change_detection::partial_load::DEFAULT_PARTIAL_LOAD_THRESHOLD;
+    use crate::config::validate::ConfigValidationError;
     use tempfile::tempdir;
 
     #[test]
@@ -373,6 +378,34 @@ mod tests {
         let config = load_config(config_path.to_str(), None).expect("load config");
 
         assert_eq!(config.execution_timeout, 4321);
+    }
+
+    #[test]
+    fn load_config_rejects_top_level_execution_timeout_seconds() {
+        let dir = tempdir().expect("tempdir");
+        let base = dir.path().join("base");
+        let work = dir.path().join("work");
+        let src = base.join("src");
+        std::fs::create_dir_all(&src).expect("src dir");
+        let config_path = dir.path().join("v8project.yaml");
+        std::fs::write(
+            &config_path,
+            format!(
+                "basePath: {}\nworkPath: {}\nexecution_timeout_seconds: 300\nformat: DESIGNER\nbuilder: DESIGNER\ninfobase:\n  connection: \"File=/tmp/ib\"\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+                base.display(),
+                work.display()
+            ),
+        )
+        .expect("write config");
+
+        let err = load_config(config_path.to_str(), None).expect_err("expected legacy key error");
+
+        assert!(matches!(
+            err,
+            ConfigLoadError::ValidationError(
+                ConfigValidationError::LegacyTopLevelExecutionTimeoutSeconds
+            )
+        ));
     }
 
     #[test]

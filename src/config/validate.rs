@@ -65,6 +65,11 @@ pub enum ConfigValidationError {
     #[error("legacy key 'tests.va.epf_path' is not supported; use tools.va.epf_path")]
     LegacyVanessaEpfPath,
 
+    #[error(
+        "top-level key 'execution_timeout_seconds' is not supported; use execution_timeout in milliseconds or tests.execution_timeout_seconds for test runs"
+    )]
+    LegacyTopLevelExecutionTimeoutSeconds,
+
     #[error("infobase.dbms is not allowed for file-based infobase.connection")]
     DbmsNotAllowedForFileConnection,
 

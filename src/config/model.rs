@@ -21,8 +21,7 @@ pub struct AppConfig {
         rename = "execution_timeout",
         default = "default_execution_timeout_ms",
         alias = "executionTimeout",
-        alias = "execution_timeout_ms",
-        alias = "execution_timeout_seconds"
+        alias = "execution_timeout_ms"
     )]
     pub execution_timeout: u64,
 
