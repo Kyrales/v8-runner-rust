@@ -361,7 +361,7 @@ fn launch_ordinary_supports_typed_keys_and_filters_reserved_raw_duplicates() {
     assert!(args.contains("/UsePrivilegedMode"));
     assert!(args.contains("/Execute"));
     assert!(args.contains("/tmp/tool.epf"));
-    assert!(args.contains("/C"));
+    assert!(args.contains("/C\"DoWork\""));
     assert!(args.contains("DoWork"));
     assert!(args.contains("/WA-"));
     assert!(args.contains("/tmp/user.out.log"));
@@ -409,15 +409,20 @@ fn launch_mcp_va_builds_payload_from_configured_port_and_ordinary_mode() {
     assert!(args.contains("/RunModeOrdinaryApplication"));
     assert!(args.contains("/Execute"));
     assert!(args.contains("vanessa-automation.epf"));
-    assert!(args.contains("/C"));
-    assert!(args.contains("runMcp=/tmp/mcp conf.json;mcpPort=9874;StartFeaturePlayer;VAParams="));
+    assert!(
+        args.contains("/C\"runMcp=/tmp/mcp conf.json;mcpPort=9874;StartFeaturePlayer;VAParams=")
+    );
     assert!(args.contains("/TESTMANAGER"));
     assert!(args.contains("/WA-"));
     let params_arg = args
         .lines()
         .find(|line| line.contains("VAParams="))
         .expect("VAParams argument");
-    let params_path = params_arg.split("VAParams=").nth(1).expect("VAParams path");
+    let params_path = params_arg
+        .split("VAParams=")
+        .nth(1)
+        .expect("VAParams path")
+        .trim_end_matches('"');
     let params = fs::read_to_string(params_path).expect("runtime params");
     let params_json: Value = serde_json::from_str(&params).expect("runtime params JSON");
     assert_eq!(params_json["existing"], true);

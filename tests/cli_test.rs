@@ -42,7 +42,7 @@ fn write_test_script(
         .map(|value| format!("sleep {value}"))
         .unwrap_or_default();
     let body = format!(
-        "printf '%s\\n' \"$*\" >> '{}'\npayload=\"\"\nout=\"\"\nprev=\"\"\nfor arg in \"$@\"; do\n  if [ \"$prev\" = \"/C\" ]; then payload=\"$arg\"; fi\n  if [ \"$prev\" = \"/Out\" ]; then out=\"$arg\"; fi\n  prev=\"$arg\"\ndone\ncfg=$(printf '%s' \"$payload\" | sed 's/^RunUnitTests=//; s/^\"//; s/\"$//')\ncp \"$cfg\" '{}'\nreport=$(awk -F '\"' '/reportPath/ {{print $4; exit}}' \"$cfg\")\nylog=$(awk -F '\"' '/\"file\"/ {{print $4; exit}}' \"$cfg\")\nmkdir -p \"$(dirname \"$report\")\" \"$(dirname \"$ylog\")\" \"$(dirname \"$out\")\"\ncat <<'XML' > \"$report\"\n{}\nXML\ncat <<'LOG' > \"$ylog\"\n{}\nLOG\nprintf 'platform /P secret uri http://user:pass@example\\n' > \"$out\"\n{}\nexit {}",
+        "printf '%s\\n' \"$*\" >> '{}'\npayload=\"\"\nout=\"\"\nprev=\"\"\nfor arg in \"$@\"; do\n  if [ \"$prev\" = \"/C\" ]; then payload=\"$arg\"; fi\n  case \"$arg\" in /C*) payload=\"${{arg#/C}}\" ;; esac\n  if [ \"$prev\" = \"/Out\" ]; then out=\"$arg\"; fi\n  prev=\"$arg\"\ndone\ncfg=$(printf '%s' \"$payload\" | sed 's/^\"//; s/\"$//; s/^RunUnitTests=//')\ncp \"$cfg\" '{}'\nreport=$(awk -F '\"' '/reportPath/ {{print $4; exit}}' \"$cfg\")\nylog=$(awk -F '\"' '/\"file\"/ {{print $4; exit}}' \"$cfg\")\nmkdir -p \"$(dirname \"$report\")\" \"$(dirname \"$ylog\")\" \"$(dirname \"$out\")\"\ncat <<'XML' > \"$report\"\n{}\nXML\ncat <<'LOG' > \"$ylog\"\n{}\nLOG\nprintf 'platform /P secret uri http://user:pass@example\\n' > \"$out\"\n{}\nexit {}",
         calls_log.display(),
         captured_config.display(),
         report_xml,
@@ -122,7 +122,7 @@ fn write_va_test_script(
     exit_code: i32,
 ) {
     let body = format!(
-        "printf '%s\\n' \"$*\" >> '{}'\npayload=\"\"\nout=\"\"\nexecute=\"\"\nprev=\"\"\nfor arg in \"$@\"; do\n  if [ \"$prev\" = \"/C\" ]; then payload=\"$arg\"; fi\n  if [ \"$prev\" = \"/Out\" ]; then out=\"$arg\"; fi\n  if [ \"$prev\" = \"/Execute\" ]; then execute=\"$arg\"; fi\n  prev=\"$arg\"\ndone\ncfg=$(printf '%s' \"$payload\" | sed 's/^StartFeaturePlayer;VAParams=//; s/^\"//; s/\"$//')\ncp \"$cfg\" '{}'\nreport_dir=$(python3 - <<'PY' \"$cfg\"\nimport json, sys\nwith open(sys.argv[1], 'r', encoding='utf-8') as fh:\n    data = json.load(fh)\nprint(data['junitpath'])\nPY\n)\nmkdir -p \"$report_dir\" \"$(dirname \"$out\")\"\ncat <<'XML' > \"$report_dir/result.xml\"\n{}\nXML\nprintf 'va execute=%s\\n' \"$execute\" > \"$out\"\nexit {}",
+        "printf '%s\\n' \"$*\" >> '{}'\npayload=\"\"\nout=\"\"\nexecute=\"\"\nprev=\"\"\nfor arg in \"$@\"; do\n  if [ \"$prev\" = \"/C\" ]; then payload=\"$arg\"; fi\n  case \"$arg\" in /C*) payload=\"${{arg#/C}}\" ;; esac\n  if [ \"$prev\" = \"/Out\" ]; then out=\"$arg\"; fi\n  if [ \"$prev\" = \"/Execute\" ]; then execute=\"$arg\"; fi\n  prev=\"$arg\"\ndone\ncfg=$(printf '%s' \"$payload\" | sed 's/^\"//; s/\"$//; s/^StartFeaturePlayer;VAParams=//')\ncp \"$cfg\" '{}'\nreport_dir=$(python3 - <<'PY' \"$cfg\"\nimport json, sys\nwith open(sys.argv[1], 'r', encoding='utf-8') as fh:\n    data = json.load(fh)\nprint(data['junitpath'])\nPY\n)\nmkdir -p \"$report_dir\" \"$(dirname \"$out\")\"\ncat <<'XML' > \"$report_dir/result.xml\"\n{}\nXML\nprintf 'va execute=%s\\n' \"$execute\" > \"$out\"\nexit {}",
         calls_log.display(),
         captured_params.display(),
         report_xml,
@@ -239,9 +239,17 @@ fn setup_va_project(
     report_xml: &str,
     additional_launch_keys: &[&str],
 ) -> (tempfile::TempDir, PathBuf, PathBuf, PathBuf, PathBuf) {
+    setup_va_project_with_work_name(report_xml, additional_launch_keys, "work")
+}
+
+fn setup_va_project_with_work_name(
+    report_xml: &str,
+    additional_launch_keys: &[&str],
+    work_dir_name: &str,
+) -> (tempfile::TempDir, PathBuf, PathBuf, PathBuf, PathBuf) {
     let dir = temp_workspace();
     let base_path = dir.path().join("project");
-    let work_path = dir.path().join("work");
+    let work_path = dir.path().join(work_dir_name);
     let install_dir = dir.path().join("platform");
     let config_path = dir.path().join("v8project.yaml");
     let build_calls = dir.path().join("build.calls.log");
@@ -500,7 +508,7 @@ fn test_command_streams_enterprise_stage_before_runner_finishes() {
     write_script(
         &dir.path().join("platform").join("bin").join("1cv8c"),
         &format!(
-            "printf '%s\\n' \"$*\" >> '{}'\npayload=\"\"\nout=\"\"\nprev=\"\"\nfor arg in \"$@\"; do\n  if [ \"$prev\" = \"/C\" ]; then payload=\"$arg\"; fi\n  if [ \"$prev\" = \"/Out\" ]; then out=\"$arg\"; fi\n  prev=\"$arg\"\ndone\ncfg=$(printf '%s' \"$payload\" | sed 's/^RunUnitTests=//; s/^\"//; s/\"$//')\ncp \"$cfg\" '{}'\ntouch '{}'\nwhile [ ! -f '{}' ]; do sleep 0.05; done\nreport=$(awk -F '\"' '/reportPath/ {{print $4; exit}}' \"$cfg\")\nylog=$(awk -F '\"' '/\"file\"/ {{print $4; exit}}' \"$cfg\")\nmkdir -p \"$(dirname \"$report\")\" \"$(dirname \"$ylog\")\" \"$(dirname \"$out\")\"\ncat <<'XML' > \"$report\"\n{}\nXML\ncat <<'LOG' > \"$ylog\"\n12:00:00.000 [INF] ok\nLOG\nprintf 'platform ok\\n' > \"$out\"\nexit 0",
+            "printf '%s\\n' \"$*\" >> '{}'\npayload=\"\"\nout=\"\"\nprev=\"\"\nfor arg in \"$@\"; do\n  if [ \"$prev\" = \"/C\" ]; then payload=\"$arg\"; fi\n  case \"$arg\" in /C*) payload=\"${{arg#/C}}\" ;; esac\n  if [ \"$prev\" = \"/Out\" ]; then out=\"$arg\"; fi\n  prev=\"$arg\"\ndone\ncfg=$(printf '%s' \"$payload\" | sed 's/^\"//; s/\"$//; s/^RunUnitTests=//')\ncp \"$cfg\" '{}'\ntouch '{}'\nwhile [ ! -f '{}' ]; do sleep 0.05; done\nreport=$(awk -F '\"' '/reportPath/ {{print $4; exit}}' \"$cfg\")\nylog=$(awk -F '\"' '/\"file\"/ {{print $4; exit}}' \"$cfg\")\nmkdir -p \"$(dirname \"$report\")\" \"$(dirname \"$ylog\")\" \"$(dirname \"$out\")\"\ncat <<'XML' > \"$report\"\n{}\nXML\ncat <<'LOG' > \"$ylog\"\n12:00:00.000 [INF] ok\nLOG\nprintf 'platform ok\\n' > \"$out\"\nexit 0",
             test_calls.display(),
             captured_config.display(),
             runner_started.display(),
@@ -631,7 +639,7 @@ fn test_accepts_explicit_client_mode_for_vanessa_and_yaxunit() {
     write_script(
         &dir.path().join("platform").join("bin").join("1cv8"),
         &format!(
-            "printf '%s\\n' \"$*\" >> '{}'\npayload=\"\"\nout=\"\"\nprev=\"\"\nfor arg in \"$@\"; do\n  if [ \"$prev\" = \"/C\" ]; then payload=\"$arg\"; fi\n  if [ \"$prev\" = \"/Out\" ]; then out=\"$arg\"; fi\n  prev=\"$arg\"\ndone\nif printf '%s' \"$payload\" | grep -F -q -- 'RunUnitTests='; then\n  cfg=$(printf '%s' \"$payload\" | sed 's/^RunUnitTests=//; s/^\"//; s/\"$//')\n  report=$(awk -F '\"' '/reportPath/ {{print $4; exit}}' \"$cfg\")\n  ylog=$(awk -F '\"' '/\"file\"/ {{print $4; exit}}' \"$cfg\")\n  mkdir -p \"$(dirname \"$report\")\" \"$(dirname \"$ylog\")\"\n  cat <<'XML' > \"$report\"\n{}\nXML\n  cat <<'LOG' > \"$ylog\"\n12:00:00.000 [INF] ok\nLOG\n  if [ -n \"$out\" ]; then mkdir -p \"$(dirname \"$out\")\" && : > \"$out\"; fi\n  exit 0\nfi\nif [ -n \"$out\" ]; then printf 'build /P secret\\n' > \"$out\"; fi\nexit 0",
+            "printf '%s\\n' \"$*\" >> '{}'\npayload=\"\"\nout=\"\"\nprev=\"\"\nfor arg in \"$@\"; do\n  if [ \"$prev\" = \"/C\" ]; then payload=\"$arg\"; fi\n  case \"$arg\" in /C*) payload=\"${{arg#/C}}\" ;; esac\n  if [ \"$prev\" = \"/Out\" ]; then out=\"$arg\"; fi\n  prev=\"$arg\"\ndone\nif printf '%s' \"$payload\" | grep -F -q -- 'RunUnitTests='; then\n  cfg=$(printf '%s' \"$payload\" | sed 's/^\"//; s/\"$//; s/^RunUnitTests=//')\n  report=$(awk -F '\"' '/reportPath/ {{print $4; exit}}' \"$cfg\")\n  ylog=$(awk -F '\"' '/\"file\"/ {{print $4; exit}}' \"$cfg\")\n  mkdir -p \"$(dirname \"$report\")\" \"$(dirname \"$ylog\")\"\n  cat <<'XML' > \"$report\"\n{}\nXML\n  cat <<'LOG' > \"$ylog\"\n12:00:00.000 [INF] ok\nLOG\n  if [ -n \"$out\" ]; then mkdir -p \"$(dirname \"$out\")\" && : > \"$out\"; fi\n  exit 0\nfi\nif [ -n \"$out\" ]; then printf 'build /P secret\\n' > \"$out\"; fi\nexit 0",
             test_calls.display(),
             JUNIT_SMOKE_REPORT_FIXTURE
         ),
@@ -683,6 +691,30 @@ fn test_rejects_c_and_execute_on_test_surface() {
     assert!(!output.status.success());
     assert_ne!(output.status.code(), Some(0));
     assert!(!test_calls.exists());
+}
+
+#[test]
+fn test_rejects_reserved_raw_launch_payloads() {
+    let (_dir, config_path, _build_calls, test_calls, _captured_config) =
+        setup_project("work", JUNIT_SMOKE_REPORT_FIXTURE, "", 0, false, 5, None);
+
+    let output = v8_runner_command()
+        .args([
+            "--config",
+            &config_path.display().to_string(),
+            "test",
+            "--raw-key",
+            "/C\"RunOther\"",
+            "yaxunit",
+            "all",
+        ])
+        .output()
+        .expect("run");
+
+    assert!(!output.status.success());
+    assert_ne!(output.status.code(), Some(0));
+    assert!(!test_calls.exists());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("does not support raw /C"));
 }
 
 #[test]
@@ -741,6 +773,22 @@ fn test_va_builds_vanessa_command_and_overlay() {
     let payload: Value = serde_json::from_slice(&output.stdout).expect("json");
     assert_eq!(payload["ok"], true);
     assert_eq!(payload["data"]["report"]["summary"]["total"], 1);
+}
+
+#[test]
+fn test_va_rejects_semicolon_in_generated_params_path() {
+    let (_dir, config_path, _build_calls, test_calls, _captured_params) =
+        setup_va_project_with_work_name(JUNIT_SMOKE_REPORT_FIXTURE, &[], "bad;work");
+
+    let output = v8_runner_command()
+        .args(["--config", &config_path.display().to_string(), "test", "va"])
+        .output()
+        .expect("run");
+
+    assert!(!output.status.success());
+    assert_ne!(output.status.code(), Some(0));
+    assert!(!test_calls.exists());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("must not contain ';'"));
 }
 
 #[test]

@@ -198,6 +198,13 @@ fn prepare_vanessa_run(
         .map_err(|error| AppError::Runtime(format!("failed to create JUnit directory: {error}")))?;
 
     let runtime_params_path = artifacts.run_dir.join("va-params.json");
+    let runtime_params_payload_path =
+        crate::platform::enterprise::normalize_launch_payload_path(&runtime_params_path);
+    if runtime_params_payload_path.contains(';') {
+        return Err(AppError::Validation(
+            "generated Vanessa params path for test va must not contain ';' because the /C payload is semicolon-delimited".to_owned(),
+        ));
+    }
     let base = fs::read_to_string(params_path).map_err(|error| {
         AppError::Runtime(format!("failed to read Vanessa params template: {error}"))
     })?;

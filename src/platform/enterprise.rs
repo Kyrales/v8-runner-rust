@@ -157,8 +157,7 @@ pub fn build_launch_args(
         args.push(execute.clone());
     }
     if let Some(c) = &launch.c {
-        args.push("/C".to_owned());
-        args.push(c.clone());
+        args.push(quoted_c_arg(c));
     }
 
     let mut extra_args = Vec::new();
@@ -181,6 +180,10 @@ pub fn normalize_launch_payload_path(path: &Path) -> String {
 
 fn effective_out_path(launch: &LaunchOptions) -> Option<&str> {
     launch.internal_out.as_deref().or(launch.out.as_deref())
+}
+
+fn quoted_c_arg(payload: &str) -> String {
+    format!("/C\"{payload}\"")
 }
 
 fn filtered_raw_launch_args(args: &[String]) -> Vec<String> {
@@ -258,10 +261,10 @@ mod tests {
         assert_eq!(args[0], "ENTERPRISE");
         assert_eq!(args[1], "/DisableStartupDialogs");
         assert!(args.iter().any(|arg| arg == "/TESTMANAGER"));
-        assert!(args.iter().any(|arg| arg == "/C"));
         assert!(args
             .iter()
-            .any(|arg| arg == "RunUnitTests=/tmp/path with space/тест config.json"));
+            .any(|arg| arg == "/C\"RunUnitTests=/tmp/path with space/тест config.json\""));
+        assert!(!args.iter().any(|arg| arg == "/C"));
         assert!(args.iter().any(|arg| arg == "/Out"));
     }
 
@@ -285,10 +288,10 @@ mod tests {
             .iter()
             .any(|arg| arg == "/tmp/va/vanessa automation.epf"));
         assert!(args.iter().any(|arg| arg == "/TESTMANAGER"));
-        assert!(args.iter().any(|arg| arg == "/C"));
         assert!(args
             .iter()
-            .any(|arg| arg == "StartFeaturePlayer;VAParams=/tmp/va/va-params.json"));
+            .any(|arg| arg == "/C\"StartFeaturePlayer;VAParams=/tmp/va/va-params.json\""));
+        assert!(!args.iter().any(|arg| arg == "/C"));
     }
 
     #[test]

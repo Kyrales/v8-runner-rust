@@ -882,6 +882,16 @@ fn validate_test_launch_options(args: &LaunchOptionsArgs) -> Result<(), UseCaseE
             "test accepts only --use-privileged-mode and raw launch keys; /C, /Execute, and /Out are managed by the runner",
         ));
     }
+    if args
+        .raw_keys
+        .iter()
+        .any(|raw| is_reserved_raw_launch_key(raw))
+    {
+        return Err(UseCaseError::new(
+            UseCaseErrorKind::Validation,
+            "test manages /C, /Execute, and /Out internally and does not support raw /C, /Execute, or /Out keys",
+        ));
+    }
     Ok(())
 }
 
@@ -1150,7 +1160,7 @@ fn map_mcp_launch_options(args: &LaunchOptionsArgs) -> Result<LaunchOptions, Use
     if args
         .raw_keys
         .iter()
-        .any(|raw| is_reserved_mcp_raw_launch_key(raw))
+        .any(|raw| is_reserved_raw_launch_key(raw))
     {
         return Err(UseCaseError::new(
             UseCaseErrorKind::Validation,
@@ -1216,7 +1226,7 @@ fn map_mcp_client_mode(mode: Option<&str>) -> Result<ClientMcpMode, UseCaseError
     })
 }
 
-fn is_reserved_mcp_raw_launch_key(raw: &str) -> bool {
+fn is_reserved_raw_launch_key(raw: &str) -> bool {
     let normalized = raw
         .trim_start()
         .trim_start_matches(['/', '-'])
@@ -1227,6 +1237,9 @@ fn is_reserved_mcp_raw_launch_key(raw: &str) -> bool {
         || normalized == "execute"
         || normalized.starts_with("execute\"")
         || normalized.starts_with("execute=")
+        || normalized == "out"
+        || normalized.starts_with("out\"")
+        || normalized.starts_with("out=")
 }
 
 #[derive(Debug, Serialize)]
