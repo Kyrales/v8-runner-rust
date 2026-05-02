@@ -6,7 +6,6 @@ This file tracks open implementation work only.
 
 - Open tasks as of `2026-05-02`:
   - `T21`: implement local config overlay from [ADR-0021](decisions/0021-lokalnyy-overlay-config.md).
-  - `T22`: implement universal extension preparation and `tools.client_mcp.extension` from [ADR-0022](decisions/0022-universalnyy-mehanizm-podgotovki-rasshireniy-i-client-mcp-extension.md).
 
 ## Open Tasks
 
@@ -26,25 +25,6 @@ Acceptance:
 - `cargo test --locked config` covers overlay merge, forbidden local keys and `basePath` default.
 - `docs/CONFIGURATION.md`, examples and architecture invariants are synchronized with ADR-0021.
 
-### T22: Implement universal extension preparation and client MCP tool extension
-
-Status: planned
-
-Scope:
-
-- Add `tools.client_mcp.extension` with mutually exclusive `source` and `.cfe` `artifact` inputs.
-- Keep `client_mcp` extension out of project `source-set`.
-- Introduce a shared internal extension preparation mechanism instead of a client-MCP-only loader.
-- Make `init` add EDT source tool extension projects to the EDT workspace.
-- Make `build` prepare/load configured tool extensions after the project source-set build.
-- Keep `launch mcp` / `launch mcp va` from installing or updating the extension; emit an actionable `build` hint when needed.
-
-Acceptance:
-
-- Targeted tests cover source/artifact validation, `.cfe` loading on `build`, EDT workspace `init` behavior and no-install launch behavior.
-- Existing project extension source-set behavior stays covered and does not regress.
-- `docs/CONFIGURATION.md`, `docs/CAPABILITIES.md`, examples and architecture invariants are synchronized with ADR-0022.
-
 ## Rules
 
 - Keep this file short and active-only.
@@ -60,3 +40,5 @@ Acceptance:
   closed task ledger moved out of the active file.
 - [spec/archive/MCP_IMPLEMENTATION_PLAN_2026-03-21.md](archive/MCP_IMPLEMENTATION_PLAN_2026-03-21.md):
   closed MCP rollout history.
+- [spec/archive/completed-tasks-t22.md](archive/completed-tasks-t22.md):
+  closed universal tool extension preparation task.

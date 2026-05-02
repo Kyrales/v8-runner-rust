@@ -92,6 +92,11 @@ build:
 tools:
   client_mcp:
     port: 9874
+    extension:
+      name: client_mcp
+      source:
+        path: /path/to/onec-client-mcp/exts/client-mcp
+        format: EDT
   va:
     epf_path: /path/to/vanessa.epf
   platform:
@@ -338,9 +343,22 @@ runtime identity и не добавляет отдельное поле конф
 Поддержанные поля:
 
 - `port`, опциональный порт клиентского MCP-сервера onec-client-mcp-devkit.
+- `extension`, опциональное tool extension для клиентского MCP-сервера.
 
 `launch mcp` передаёт это значение как `mcpPort` внутри `/C"runMcp..."`
 если CLI не указал `--mcp-port`.
+
+`extension` поддерживает:
+
+- `name`, обязательное безопасное имя расширения в ИБ;
+- ровно один источник:
+  - `source.path` и опциональный `source.format` (`DESIGNER` или `EDT`, по умолчанию global
+    `format`);
+  - `artifact.path` на существующий `.cfe` файл.
+
+`tools.client_mcp.extension` не добавляется в `source-set` и не выбирается через `--source-set`.
+`init` импортирует EDT `source` в workspace, `build` подготавливает расширение после project
+source-set build, а `launch mcp` и `launch mcp va` расширение не устанавливают и не обновляют.
 
 ### `tools.va`
 

@@ -87,6 +87,8 @@ v8-runner init
 - Для benign `already exists` при `IBCMD` возвращает non-fatal outcome.
 - Для `format=EDT` использует `workPath/edt-workspace` и импортирует `CONFIGURATION`, затем
   `EXTENSION`.
+- Если настроен `tools.client_mcp.extension.source.format=EDT`, импортирует этот tool extension
+  project в EDT workspace, не добавляя его в project `source-set`.
 
 ### `extensions`
 
@@ -105,11 +107,17 @@ v8-runner build [--source-set <NAME>] [--full-rebuild]
 ```
 
 - Без `--source-set` обрабатывает все configured `source-set` в canonical order.
-- С `--source-set` анализирует и строит только указанный `source-set`; неизвестное имя
-  отклоняется как validation error.
+- С `--source-set` project stage анализирует и строит только указанный `source-set`; неизвестное
+  имя отклоняется как validation error.
 - Для `DESIGNER` выбирает incremental, partial или full path по изменённым файлам выбранного scope.
 - Для `EDT` сначала анализирует и экспортирует выбранные EDT `source-set`, затем грузит generated
   Designer files выбранным backend.
+- После успешного project stage, включая scoped `--source-set`, подготавливает
+  `tools.client_mcp.extension`, если оно настроено: `source` загружается как extension из
+  исходников, `.cfe` `artifact` загружается как extension с именем
+  `tools.client_mcp.extension.name`.
+- `tools.client_mcp.extension` не является project `source-set`; `--source-set` выбирает только
+  project source-set.
 - Не является атомарной multi-source-set операцией: ранние успешные шаги не откатываются, если
   поздний шаг падает.
 
@@ -235,6 +243,8 @@ v8-runner launch mcp [va] [--mode <thin|thick|ordinary>] [FLAGS]
 - Для `mcp` доступны typed flags `--mcp-config <FILE>` и `--mcp-port <PORT>`;
   итоговый payload: `/C"runMcp[=<FILE>][;mcpPort=<PORT>]"`.
 - Если `--mcp-port` не указан, используется `tools.client_mcp.port` из `v8project.yaml`.
+- Если настроено `tools.client_mcp.extension`, `launch mcp` не устанавливает и не обновляет его;
+  подготовка выполняется командой `v8-runner build`.
 - `--mcp-config` не должен содержать `;`, потому что `/C` payload разделяется точкой с запятой.
 - `launch mcp` не принимает `--c` и `--execute`, потому что `/C` управляется командой.
 - `launch mcp` принимает общие launch flags `--use-privileged-mode`, `--output` и `--raw-key`, но

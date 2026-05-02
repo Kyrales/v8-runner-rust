@@ -19,6 +19,7 @@ use crate::use_cases::request::{
     LaunchRequest as LaunchArgs, LaunchTargetRequest,
 };
 use crate::use_cases::result::{UseCaseFailure, UseCaseResult};
+use crate::use_cases::tool_extension;
 use tracing::debug;
 
 const LAUNCH_STARTUP_PROBE: Duration = Duration::from_millis(250);
@@ -97,14 +98,32 @@ pub fn execute(
         mode,
         pid: Some(spawned.pid),
         binary: spawned.binary.clone(),
-        message: Some(format!(
-            "Launched {} via {} (pid {})",
-            mode_label(args.target),
-            spawned.binary.display(),
-            spawned.pid
-        )),
+        message: Some(launch_message(config, args, &spawned.binary, spawned.pid)),
     };
     Ok(result)
+}
+
+fn launch_message(config: &AppConfig, args: &LaunchArgs, binary: &Path, pid: u32) -> String {
+    let mut message = format!(
+        "Launched {} via {} (pid {})",
+        mode_label(args.target),
+        binary.display(),
+        pid
+    );
+    if is_client_mcp_launch(args) {
+        if let Some(hint) = tool_extension::client_mcp_build_hint(config) {
+            message.push_str("; ");
+            message.push_str(hint);
+        }
+    }
+    message
+}
+
+fn is_client_mcp_launch(args: &LaunchArgs) -> bool {
+    matches!(
+        args.target,
+        LaunchTargetRequest::Enterprise(EnterpriseLaunchTarget::ClientMcp { .. })
+    )
 }
 
 fn effective_enterprise_launch_keys(
@@ -218,7 +237,8 @@ mod tests {
     use super::execute;
     use crate::config::model::{
         AppConfig, BuildConfig, BuilderBackend, EnterpriseToolConfig, PlatformToolConfig,
-        SourceFormat, SourceSetConfig, SourceSetPurpose, TestsConfig, ToolsConfig,
+        SourceFormat, SourceSetConfig, SourceSetPurpose, TestsConfig, ToolExtensionArtifactConfig,
+        ToolExtensionConfig, ToolExtensionInput, ToolsConfig,
     };
     use crate::use_cases::context::{CommandName, ExecutionContext};
     use crate::use_cases::request::{
@@ -366,6 +386,50 @@ mod tests {
         assert!(args.contains("ENTERPRISE"));
         assert!(args.contains("/RunModeOrdinaryApplication"));
         assert!(args.contains("/DisableStartupDialogs"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn client_mcp_launch_does_not_prepare_configured_tool_extension() {
+        let dir = tempdir().expect("tempdir");
+        let args_log = dir.path().join("mcp.args.log");
+        let platform_dir = dir.path().join("platform");
+        write_script(
+            &platform_dir.join("bin").join("1cv8c"),
+            &format!("printf '%s\n' \"$@\" > '{}'\nsleep 1", args_log.display()),
+        );
+
+        let mut config = sample_config(dir.path(), dir.path(), &platform_dir);
+        config.tools.client_mcp.port = Some(9874);
+        config.tools.client_mcp.extension = Some(ToolExtensionConfig {
+            name: "client_mcp".to_owned(),
+            input: ToolExtensionInput::Artifact(ToolExtensionArtifactConfig {
+                path: dir.path().join("client_mcp.cfe"),
+            }),
+        });
+
+        let result = execute(
+            &ExecutionContext::cli(CommandName::Launch),
+            &config,
+            &LaunchRequest {
+                target: LaunchTargetRequest::client_mcp_with_mode(ClientMcpMode::Thin),
+                launch: Default::default(),
+                client_mcp: Some(ClientMcpOptionsRequest::default()),
+            },
+        )
+        .expect("launch succeeds");
+
+        assert!(result.ok);
+        assert!(result
+            .message
+            .as_deref()
+            .expect("message")
+            .contains("v8-runner build"));
+        let args = fs::read_to_string(args_log).expect("args log");
+        assert!(args.contains("ENTERPRISE"));
+        assert!(args.contains("/C\"runMcp;mcpPort=9874\""));
+        assert!(!args.contains("/LoadCfg"));
+        assert!(!args.contains("-Extension"));
     }
 
     #[cfg(unix)]

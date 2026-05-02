@@ -2,7 +2,9 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use serde::{Deserialize, Serialize};
+use serde::de::Error as _;
+use serde::ser::SerializeStruct;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::domain::execution::ExecutionTimeouts;
 use crate::platform::connection::V8Connection;
@@ -286,6 +288,134 @@ impl Default for McpConfig {
 pub struct ClientMcpToolConfig {
     /// Default port passed to onec-client-mcp-devkit via `/C"...;mcpPort=<PORT>"`.
     pub port: Option<u16>,
+
+    /// Optional tool extension prepared by `build` for client MCP launches.
+    pub extension: Option<ToolExtensionConfig>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ToolExtensionConfig {
+    /// Extension name in the target infobase.
+    pub name: String,
+
+    /// Mutually exclusive extension input.
+    pub input: ToolExtensionInput,
+}
+
+impl ToolExtensionConfig {
+    pub fn source(&self) -> Option<&ToolExtensionSourceConfig> {
+        match &self.input {
+            ToolExtensionInput::Source(source) => Some(source),
+            ToolExtensionInput::Artifact(_) => None,
+        }
+    }
+
+    pub fn source_mut(&mut self) -> Option<&mut ToolExtensionSourceConfig> {
+        match &mut self.input {
+            ToolExtensionInput::Source(source) => Some(source),
+            ToolExtensionInput::Artifact(_) => None,
+        }
+    }
+
+    pub fn artifact_mut(&mut self) -> Option<&mut ToolExtensionArtifactConfig> {
+        match &mut self.input {
+            ToolExtensionInput::Source(_) => None,
+            ToolExtensionInput::Artifact(artifact) => Some(artifact),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for ToolExtensionConfig {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize, Default)]
+        #[serde(default, rename_all = "snake_case")]
+        struct RawToolExtensionConfig {
+            name: String,
+            source: Option<ToolExtensionSourceConfig>,
+            artifact: Option<ToolExtensionArtifactConfig>,
+        }
+
+        let raw = RawToolExtensionConfig::deserialize(deserializer)?;
+        let input = match (raw.source, raw.artifact) {
+            (Some(source), None) => ToolExtensionInput::Source(source),
+            (None, Some(artifact)) => ToolExtensionInput::Artifact(artifact),
+            (Some(_), Some(_)) => {
+                return Err(D::Error::custom(
+                    "tools.client_mcp.extension must specify exactly one of source or artifact",
+                ))
+            }
+            (None, None) => {
+                return Err(D::Error::custom(
+                    "tools.client_mcp.extension must specify exactly one of source or artifact",
+                ))
+            }
+        };
+
+        Ok(Self {
+            name: raw.name,
+            input,
+        })
+    }
+}
+
+impl Serialize for ToolExtensionConfig {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("ToolExtensionConfig", 2)?;
+        state.serialize_field("name", &self.name)?;
+        match &self.input {
+            ToolExtensionInput::Source(source) => state.serialize_field("source", source)?,
+            ToolExtensionInput::Artifact(artifact) => {
+                state.serialize_field("artifact", artifact)?
+            }
+        }
+        state.end()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum ToolExtensionInput {
+    Source(ToolExtensionSourceConfig),
+    Artifact(ToolExtensionArtifactConfig),
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default, rename_all = "snake_case")]
+pub struct ToolExtensionSourceConfig {
+    /// Path to extension sources.
+    pub path: PathBuf,
+
+    /// Optional source format. When omitted, the project-level `format` is used.
+    pub format: Option<SourceFormat>,
+}
+
+impl Default for ToolExtensionSourceConfig {
+    fn default() -> Self {
+        Self {
+            path: PathBuf::new(),
+            format: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default, rename_all = "snake_case")]
+pub struct ToolExtensionArtifactConfig {
+    /// Path to a `.cfe` artifact.
+    pub path: PathBuf,
+}
+
+impl Default for ToolExtensionArtifactConfig {
+    fn default() -> Self {
+        Self {
+            path: PathBuf::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]

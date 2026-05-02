@@ -42,6 +42,8 @@ pub mod run_tests;
 pub(crate) mod source_inventory;
 /// Shared staged publication mechanics for full-replacement use-case outputs.
 mod staged_publication;
+/// Shared internal preparation for tool extensions.
+pub(crate) mod tool_extension;
 /// Shared transport-neutral adapter helpers used by CLI and MCP boundaries.
 pub mod transport;
 /// Shared Vanessa Automation launch and runtime params helpers.

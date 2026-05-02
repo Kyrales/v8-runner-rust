@@ -14,6 +14,7 @@ Inspect `v8project.yaml` before diagnosing build, syntax, dump, test, and launch
 - `tools.edt_cli.path`, `version`, and `interactive-mode`: EDT CLI discovery and execution mode.
 - `tests.yaxunit` and `tests.va`: test runner configuration.
 - `tools.client_mcp`, `tools.va`, and `tools.enterprise`: launch and client-side MCP integration hints.
+- `tools.client_mcp.extension`: optional tool extension prepared by `build`; it is not a project `source-set`.
 
 ## Format And Backend Rules
 
@@ -27,6 +28,7 @@ Inspect `v8project.yaml` before diagnosing build, syntax, dump, test, and launch
 - `dump --mode partial` with IBCMD degrades to incremental dump and must be called out in user-facing summaries.
 - `convert` is CLI-only, repo-aware, uses configured `source-set`, does not use `builder`, and does not require an infobase.
 - `load` supports `.cf` and `.cfe` only for `format=DESIGNER`, `builder=DESIGNER`.
+- `tools.client_mcp.extension.source` is prepared during `build`; `.artifact.path` must point to `.cfe` and currently requires `builder=DESIGNER`.
 - `make` / `artifacts` require `builder=DESIGNER` and publish `.cf`, `.cfe`, `.epf`, or `.erf` depending on target/source-set.
 
 ## Source-Set Notes

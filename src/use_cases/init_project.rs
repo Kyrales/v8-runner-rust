@@ -24,6 +24,7 @@ use crate::use_cases::interruption;
 use crate::use_cases::progress::log_live_stage;
 use crate::use_cases::request::InitRequest;
 use crate::use_cases::result::{UseCaseError, UseCaseFailure, UseCaseResult};
+use crate::use_cases::tool_extension;
 
 pub fn execute(
     context: &ExecutionContext,
@@ -295,7 +296,8 @@ fn ensure_edt_workspace(
     utilities: &mut PlatformUtilities,
 ) -> StepOutcome {
     let started = Instant::now();
-    if config.format != SourceFormat::Edt {
+    let tool_extension_path = tool_extension::client_mcp_edt_source_path(config);
+    if config.format != SourceFormat::Edt && tool_extension_path.is_none() {
         return StepOutcome::skipped(
             "edt_workspace",
             "import",
@@ -306,6 +308,12 @@ fn ensure_edt_workspace(
 
     let workspace = config.work_path.join("edt-workspace");
     let marker = edt_workspace_marker_path(&workspace);
+    let project_source_import = if config.format == SourceFormat::Edt && !marker.exists() {
+        ProjectSourceImport::Include
+    } else {
+        ProjectSourceImport::Skip
+    };
+    let projects = edt_import_projects(config, project_source_import, tool_extension_path);
     if workspace.exists() && !workspace.is_dir() {
         return StepOutcome::failed(
             "edt_workspace",
@@ -318,12 +326,14 @@ fn ensure_edt_workspace(
         );
     }
     if workspace.exists() && marker.exists() {
-        return StepOutcome::skipped(
-            "edt_workspace",
-            "import",
-            started,
-            format!("workspace already initialized: {}", workspace.display()),
-        );
+        if projects.is_empty() {
+            return StepOutcome::skipped(
+                "edt_workspace",
+                "import",
+                started,
+                format!("workspace already initialized: {}", workspace.display()),
+            );
+        }
     }
 
     if let Err(error) = std::fs::create_dir_all(&workspace) {
@@ -397,7 +407,7 @@ fn ensure_edt_workspace(
         )
     };
     debug!("[EDT] Инициализация workspace: {}", workspace.display());
-    for source_set in ordered_source_sets(config) {
+    for project in projects {
         if let Some(outcome) = interruption_step_outcome(
             context,
             "edt_workspace",
@@ -407,13 +417,12 @@ fn ensure_edt_workspace(
         ) {
             return outcome;
         }
-        let source_path = resolve_source_set_path(config, source_set);
-        debug!("[EDT] Импорт проекта: {}", source_set.name);
+        debug!("[EDT] Импорт проекта: {}", project.name);
         log_live_stage("init: edt import", "[EDT] importing source-set project");
-        match dsl.import_project(&source_path) {
+        match dsl.import_project(&project.path) {
             Ok(result) => {
                 if let Err(error) =
-                    ensure_platform_success("import EDT project", &source_set.name, &result)
+                    ensure_platform_success("import EDT project", &project.name, &result)
                 {
                     return StepOutcome::failed("edt_workspace", "import", started, error);
                 }
@@ -602,6 +611,43 @@ fn ordered_source_sets(config: &AppConfig) -> Vec<&SourceSetConfig> {
     configuration
 }
 
+#[derive(Debug)]
+struct EdtImportProject {
+    name: String,
+    path: PathBuf,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProjectSourceImport {
+    Include,
+    Skip,
+}
+
+fn edt_import_projects(
+    config: &AppConfig,
+    project_source_import: ProjectSourceImport,
+    tool_extension_path: Option<PathBuf>,
+) -> Vec<EdtImportProject> {
+    let mut projects = Vec::new();
+    if project_source_import == ProjectSourceImport::Include {
+        projects.extend(ordered_source_sets(config).into_iter().map(|source_set| {
+            EdtImportProject {
+                name: source_set.name.clone(),
+                path: resolve_source_set_path(config, source_set),
+            }
+        }));
+    }
+
+    if let Some(path) = tool_extension_path {
+        projects.push(EdtImportProject {
+            name: "tool:client_mcp".to_owned(),
+            path,
+        });
+    }
+
+    projects
+}
+
 fn ensure_platform_success(
     action: &str,
     target: &str,
@@ -657,7 +703,8 @@ mod tests {
     };
     use crate::config::model::{
         AppConfig, BuildConfig, BuilderBackend, SourceFormat, SourceSetConfig, SourceSetPurpose,
-        TestsConfig, ToolsConfig,
+        TestsConfig, ToolExtensionConfig, ToolExtensionInput, ToolExtensionSourceConfig,
+        ToolsConfig,
     };
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -862,6 +909,166 @@ mod tests {
             2
         );
         assert!(!edt_calls_text.contains("START"));
+        assert!(edt_workspace_marker_path(&work.join("edt-workspace")).exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn init_imports_edt_client_mcp_tool_extension_source_project() {
+        let dir = tempdir().expect("tempdir");
+        let base = dir.path().join("base");
+        let work = dir.path().join("work");
+        let main_dir = base.join("main");
+        let tool_dir = base.join("tool-client-mcp");
+        let edt_script = dir.path().join("edt").join("1cedtcli");
+        let edt_calls = dir.path().join("edt-calls.log");
+        fs::create_dir_all(&main_dir).expect("main dir");
+        fs::create_dir_all(&tool_dir).expect("tool dir");
+        write_one_shot_edt_script(&edt_script, &edt_calls);
+
+        let mut config = sample_config();
+        config.base_path = base;
+        config.work_path = work.clone();
+        config.infobase.connection = "Srvr=server;Ref=demo".to_owned();
+        config.source_sets = vec![SourceSetConfig {
+            name: "main".to_owned(),
+            purpose: SourceSetPurpose::Configuration,
+            path: PathBuf::from("main"),
+        }];
+        config.tools.edt_cli.path = Some(edt_script);
+        config.tools.edt_cli.interactive_mode = false;
+        config.tools.client_mcp.extension = Some(ToolExtensionConfig {
+            name: "client_mcp".to_owned(),
+            input: ToolExtensionInput::Source(ToolExtensionSourceConfig {
+                path: tool_dir.clone(),
+                format: Some(SourceFormat::Edt),
+            }),
+        });
+
+        let result = super::run_init(
+            &crate::use_cases::context::ExecutionContext::cli(
+                crate::use_cases::context::CommandName::Init,
+            ),
+            &config,
+        )
+        .expect("init");
+
+        let edt_calls_text = fs::read_to_string(&edt_calls).expect("edt calls");
+        assert!(result.ok);
+        assert_eq!(
+            edt_calls_text.matches("-command import --project").count(),
+            2
+        );
+        assert!(edt_calls_text.contains(main_dir.display().to_string().as_str()));
+        assert!(edt_calls_text.contains(tool_dir.display().to_string().as_str()));
+        assert!(edt_workspace_marker_path(&work.join("edt-workspace")).exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn init_imports_edt_client_mcp_tool_extension_for_designer_project() {
+        let dir = tempdir().expect("tempdir");
+        let base = dir.path().join("base");
+        let work = dir.path().join("work");
+        let main_dir = base.join("main");
+        let tool_dir = base.join("tool-client-mcp");
+        let edt_script = dir.path().join("edt").join("1cedtcli");
+        let edt_calls = dir.path().join("edt-calls.log");
+        fs::create_dir_all(&main_dir).expect("main dir");
+        fs::create_dir_all(&tool_dir).expect("tool dir");
+        write_one_shot_edt_script(&edt_script, &edt_calls);
+
+        let mut config = sample_config();
+        config.base_path = base;
+        config.work_path = work.clone();
+        config.format = SourceFormat::Designer;
+        config.infobase.connection = "Srvr=server;Ref=demo".to_owned();
+        config.source_sets = vec![SourceSetConfig {
+            name: "main".to_owned(),
+            purpose: SourceSetPurpose::Configuration,
+            path: PathBuf::from("main"),
+        }];
+        config.tools.edt_cli.path = Some(edt_script);
+        config.tools.edt_cli.interactive_mode = false;
+        config.tools.client_mcp.extension = Some(ToolExtensionConfig {
+            name: "client_mcp".to_owned(),
+            input: ToolExtensionInput::Source(ToolExtensionSourceConfig {
+                path: tool_dir.clone(),
+                format: Some(SourceFormat::Edt),
+            }),
+        });
+
+        let result = super::run_init(
+            &crate::use_cases::context::ExecutionContext::cli(
+                crate::use_cases::context::CommandName::Init,
+            ),
+            &config,
+        )
+        .expect("init");
+
+        let edt_calls_text = fs::read_to_string(&edt_calls).expect("edt calls");
+        assert!(result.ok);
+        assert_eq!(
+            edt_calls_text.matches("-command import --project").count(),
+            1
+        );
+        assert!(!edt_calls_text.contains(main_dir.display().to_string().as_str()));
+        assert!(edt_calls_text.contains(tool_dir.display().to_string().as_str()));
+        assert!(edt_workspace_marker_path(&work.join("edt-workspace")).exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn init_imports_edt_client_mcp_tool_extension_into_existing_workspace() {
+        let dir = tempdir().expect("tempdir");
+        let base = dir.path().join("base");
+        let work = dir.path().join("work");
+        let main_dir = base.join("main");
+        let tool_dir = base.join("tool-client-mcp");
+        let edt_script = dir.path().join("edt").join("1cedtcli");
+        let edt_calls = dir.path().join("edt-calls.log");
+        fs::create_dir_all(&main_dir).expect("main dir");
+        fs::create_dir_all(&tool_dir).expect("tool dir");
+        let workspace = work.join("edt-workspace");
+        fs::create_dir_all(&workspace).expect("workspace");
+        fs::write(edt_workspace_marker_path(&workspace), "initialized\n").expect("marker");
+        write_one_shot_edt_script(&edt_script, &edt_calls);
+
+        let mut config = sample_config();
+        config.base_path = base;
+        config.work_path = work.clone();
+        config.infobase.connection = "Srvr=server;Ref=demo".to_owned();
+        config.source_sets = vec![SourceSetConfig {
+            name: "main".to_owned(),
+            purpose: SourceSetPurpose::Configuration,
+            path: PathBuf::from("main"),
+        }];
+        config.tools.edt_cli.path = Some(edt_script);
+        config.tools.edt_cli.interactive_mode = false;
+        config.tools.client_mcp.extension = Some(ToolExtensionConfig {
+            name: "client_mcp".to_owned(),
+            input: ToolExtensionInput::Source(ToolExtensionSourceConfig {
+                path: tool_dir.clone(),
+                format: Some(SourceFormat::Edt),
+            }),
+        });
+
+        let result = super::run_init(
+            &crate::use_cases::context::ExecutionContext::cli(
+                crate::use_cases::context::CommandName::Init,
+            ),
+            &config,
+        )
+        .expect("init");
+
+        let edt_calls_text = fs::read_to_string(&edt_calls).expect("edt calls");
+        assert!(result.ok);
+        assert_eq!(
+            edt_calls_text.matches("-command import --project").count(),
+            1
+        );
+        assert!(!edt_calls_text.contains(main_dir.display().to_string().as_str()));
+        assert!(edt_calls_text.contains(tool_dir.display().to_string().as_str()));
         assert!(edt_workspace_marker_path(&work.join("edt-workspace")).exists());
     }
 

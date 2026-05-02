@@ -5,7 +5,7 @@ use thiserror::Error;
 
 use crate::config::model::{
     AppConfig, BuilderBackend, SourceFormat, SourceSetConfig, SourceSetPurpose,
-    VanessaProfileConfig,
+    ToolExtensionConfig, ToolExtensionInput, ToolExtensionSourceConfig, VanessaProfileConfig,
 };
 use crate::platform::locator::PlatformVersionRequirement;
 use crate::support::edt_project::{self, EdtProjectKind};
@@ -40,6 +40,9 @@ pub enum ConfigValidationError {
 
     #[error("source-set name contains unsafe path or filename characters: {0}")]
     InvalidSourceSetName(String),
+
+    #[error("tools.client_mcp.extension.name must not duplicate project source-set name: {0}")]
+    ToolExtensionNameDuplicatesSourceSet(String),
 
     #[error("tests.va.profile name contains unsafe path or filename characters: {0}")]
     InvalidVanessaProfileName(String),
@@ -160,6 +163,21 @@ pub enum ConfigValidationError {
     #[error("tools.client_mcp.port must be greater than or equal to 1")]
     InvalidMcpClientPort,
 
+    #[error("tools.client_mcp.extension.name must be a safe non-empty extension name: {0}")]
+    InvalidToolExtensionName(String),
+
+    #[error("tools.client_mcp.extension.source.path does not exist or is not a directory: {0}")]
+    ToolExtensionSourcePathInvalid(String),
+
+    #[error("tools.client_mcp.extension.source has invalid layout: {0}")]
+    ToolExtensionSourceLayoutInvalid(String),
+
+    #[error("tools.client_mcp.extension.artifact.path must point to an existing .cfe file: {0}")]
+    ToolExtensionArtifactPathInvalid(String),
+
+    #[error("tools.client_mcp.extension.artifact is supported only with builder=DESIGNER")]
+    ToolExtensionArtifactRequiresDesigner,
+
     #[error("tools.edt_cli.startup_timeout_ms must be greater than or equal to 1")]
     InvalidEdtCliStartupTimeoutMs,
 
@@ -179,6 +197,7 @@ pub fn validate(config: &AppConfig) -> Result<(), ConfigValidationError> {
     validate_execution_timeout(config)?;
     validate_test_config(config)?;
     validate_mcp_config(config)?;
+    validate_client_mcp_tool_extension(config)?;
     validate_edt_cli_config(config)?;
     Ok(())
 }
@@ -808,12 +827,139 @@ fn validate_edt_cli_config(config: &AppConfig) -> Result<(), ConfigValidationErr
     Ok(())
 }
 
+fn validate_client_mcp_tool_extension(config: &AppConfig) -> Result<(), ConfigValidationError> {
+    let Some(extension) = config.tools.client_mcp.extension.as_ref() else {
+        return Ok(());
+    };
+
+    validate_tool_extension_name(&extension.name)?;
+    if config
+        .source_sets
+        .iter()
+        .any(|source_set| source_set.name == extension.name)
+    {
+        return Err(ConfigValidationError::ToolExtensionNameDuplicatesSourceSet(
+            extension.name.clone(),
+        ));
+    }
+    match &extension.input {
+        ToolExtensionInput::Source(source) => {
+            validate_tool_extension_source(config, extension, source)
+        }
+        ToolExtensionInput::Artifact(artifact) => {
+            if config.builder != BuilderBackend::Designer {
+                return Err(ConfigValidationError::ToolExtensionArtifactRequiresDesigner);
+            }
+            let has_cfe_extension = artifact
+                .path
+                .extension()
+                .and_then(|value| value.to_str())
+                .is_some_and(|value| value.eq_ignore_ascii_case("cfe"));
+            if !has_cfe_extension || !artifact.path.is_file() {
+                return Err(ConfigValidationError::ToolExtensionArtifactPathInvalid(
+                    artifact.path.display().to_string(),
+                ));
+            }
+            Ok(())
+        }
+    }
+}
+
+fn validate_tool_extension_name(name: &str) -> Result<(), ConfigValidationError> {
+    if !is_safe_path_segment(name) {
+        return Err(ConfigValidationError::InvalidToolExtensionName(
+            name.to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_tool_extension_source(
+    config: &AppConfig,
+    extension: &ToolExtensionConfig,
+    source: &ToolExtensionSourceConfig,
+) -> Result<(), ConfigValidationError> {
+    if !source.path.is_dir() {
+        return Err(ConfigValidationError::ToolExtensionSourcePathInvalid(
+            source.path.display().to_string(),
+        ));
+    }
+
+    match source.format.unwrap_or(config.format) {
+        SourceFormat::Designer => {
+            let marker = source.path.join("Configuration.xml");
+            if !marker.is_file() {
+                return Err(ConfigValidationError::ToolExtensionSourceLayoutInvalid(
+                    format!(
+                        "Designer extension source must contain 'Configuration.xml': {}",
+                        source.path.display()
+                    ),
+                ));
+            }
+            let descriptor = std::fs::read_to_string(&marker).map_err(|error| {
+                ConfigValidationError::ToolExtensionSourceLayoutInvalid(format!(
+                    "failed to read '{}': {error}",
+                    marker.display()
+                ))
+            })?;
+            match source_descriptor::classify_source_descriptor(&descriptor) {
+                Ok(Some(SourceDescriptorPurpose::Extension)) => Ok(()),
+                Ok(other) => Err(ConfigValidationError::ToolExtensionSourceLayoutInvalid(
+                    format!(
+                        "Designer extension source descriptor must describe an extension, got {other:?}: {}",
+                        marker.display()
+                    ),
+                )),
+                Err(error) => Err(ConfigValidationError::ToolExtensionSourceLayoutInvalid(
+                    format!("failed to parse '{}': {error:?}", marker.display()),
+                )),
+            }
+        }
+        SourceFormat::Edt => {
+            validate_tool_extension_edt_runtime_path(config, extension, source)?;
+            let source_set = SourceSetConfig {
+                name: extension.name.clone(),
+                purpose: SourceSetPurpose::Extension,
+                path: source.path.clone(),
+            };
+            validate_ordinary_edt_source_set_layout(&source_set, &source.path).map_err(|error| {
+                ConfigValidationError::ToolExtensionSourceLayoutInvalid(error.to_string())
+            })
+        }
+    }
+}
+
+fn validate_tool_extension_edt_runtime_path(
+    config: &AppConfig,
+    extension: &ToolExtensionConfig,
+    source: &ToolExtensionSourceConfig,
+) -> Result<(), ConfigValidationError> {
+    let source_path = std::fs::canonicalize(&source.path).unwrap_or_else(|_| source.path.clone());
+    let work_path =
+        std::fs::canonicalize(&config.work_path).unwrap_or_else(|_| config.work_path.clone());
+    let generated_path = work_path
+        .join("designer")
+        .join("tool-extensions")
+        .join(&extension.name);
+    if paths_overlap(&source_path, &generated_path) {
+        return Err(ConfigValidationError::ToolExtensionSourceLayoutInvalid(
+            format!(
+                "EDT tool extension source overlaps generated export target: source={}, target={}",
+                source_path.display(),
+                generated_path.display()
+            ),
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{validate, ConfigValidationError};
     use crate::config::model::{
         AppConfig, BuildConfig, BuilderBackend, PlatformToolConfig, SourceFormat, SourceSetConfig,
-        SourceSetPurpose, TestsConfig, ToolsConfig, VanessaProfileConfig,
+        SourceSetPurpose, TestsConfig, ToolExtensionArtifactConfig, ToolExtensionConfig,
+        ToolExtensionInput, ToolExtensionSourceConfig, ToolsConfig, VanessaProfileConfig,
     };
     use std::path::{Path, PathBuf};
     use tempfile::tempdir;
@@ -2237,6 +2383,211 @@ mod tests {
         config.tools.client_mcp.port = Some(0);
         let err = validate(&config).expect_err("expected invalid MCP client port");
         assert!(matches!(err, ConfigValidationError::InvalidMcpClientPort));
+    }
+
+    #[test]
+    fn validates_client_mcp_extension_source_and_artifact_contract() {
+        let base = tempdir().expect("base");
+        let work = tempdir().expect("work");
+        let source_dir = base.path().join("src");
+        let tool_source = base.path().join("tools").join("client-mcp");
+        let artifact = base.path().join("tools").join("client-mcp.cfe");
+        std::fs::create_dir_all(&source_dir).expect("source dir");
+        std::fs::create_dir_all(&tool_source).expect("tool source dir");
+        std::fs::write(
+            tool_source.join("Configuration.xml"),
+            "<Configuration><ConfigurationExtensionPurpose>Extension</ConfigurationExtensionPurpose></Configuration>",
+        )
+        .expect("tool source marker");
+        std::fs::write(&artifact, "cfe").expect("artifact");
+
+        let mut config = single_source_set_config(
+            base.path(),
+            work.path(),
+            SourceFormat::Designer,
+            BuilderBackend::Designer,
+            SourceSetPurpose::Configuration,
+            "main",
+            &source_dir,
+        );
+        config.tools.client_mcp.extension = Some(ToolExtensionConfig {
+            name: "client_mcp".to_owned(),
+            input: ToolExtensionInput::Source(ToolExtensionSourceConfig {
+                path: tool_source.clone(),
+                format: None,
+            }),
+        });
+        validate(&config).expect("designer source extension should be valid");
+
+        config.tools.client_mcp.extension = Some(ToolExtensionConfig {
+            name: "client_mcp".to_owned(),
+            input: ToolExtensionInput::Artifact(ToolExtensionArtifactConfig {
+                path: artifact.clone(),
+            }),
+        });
+        validate(&config).expect("cfe artifact extension should be valid");
+    }
+
+    #[test]
+    fn rejects_invalid_client_mcp_extension_inputs() {
+        let base = tempdir().expect("base");
+        let work = tempdir().expect("work");
+        let source_dir = base.path().join("src");
+        let tool_source = base.path().join("tools").join("client-mcp");
+        let artifact = base.path().join("tools").join("client-mcp.cf");
+        std::fs::create_dir_all(&source_dir).expect("source dir");
+        std::fs::create_dir_all(&tool_source).expect("tool source dir");
+        std::fs::write(
+            tool_source.join("Configuration.xml"),
+            "<Configuration><ConfigurationExtensionPurpose>Extension</ConfigurationExtensionPurpose></Configuration>",
+        )
+        .expect("tool source marker");
+        std::fs::write(&artifact, "cf").expect("artifact");
+
+        let mut config = single_source_set_config(
+            base.path(),
+            work.path(),
+            SourceFormat::Designer,
+            BuilderBackend::Designer,
+            SourceSetPurpose::Configuration,
+            "main",
+            &source_dir,
+        );
+        config.tools.client_mcp.extension = Some(ToolExtensionConfig {
+            name: "bad/name".to_owned(),
+            input: ToolExtensionInput::Source(ToolExtensionSourceConfig {
+                path: tool_source.clone(),
+                format: None,
+            }),
+        });
+        let err = validate(&config).expect_err("unsafe name should fail");
+        assert!(matches!(
+            err,
+            ConfigValidationError::InvalidToolExtensionName(name) if name == "bad/name"
+        ));
+        config.tools.client_mcp.extension = Some(ToolExtensionConfig {
+            name: "client_mcp".to_owned(),
+            input: ToolExtensionInput::Artifact(ToolExtensionArtifactConfig { path: artifact }),
+        });
+        let err = validate(&config).expect_err("non-cfe artifact should fail");
+        assert!(matches!(
+            err,
+            ConfigValidationError::ToolExtensionArtifactPathInvalid(_)
+        ));
+    }
+
+    #[test]
+    fn rejects_client_mcp_designer_source_without_extension_descriptor() {
+        let base = tempdir().expect("base");
+        let work = tempdir().expect("work");
+        let source_dir = base.path().join("src");
+        let tool_source = base.path().join("tools").join("client-mcp");
+        std::fs::create_dir_all(&source_dir).expect("source dir");
+        std::fs::create_dir_all(&tool_source).expect("tool source dir");
+        std::fs::write(tool_source.join("Configuration.xml"), "<Configuration />")
+            .expect("tool source marker");
+
+        let mut config = single_source_set_config(
+            base.path(),
+            work.path(),
+            SourceFormat::Designer,
+            BuilderBackend::Designer,
+            SourceSetPurpose::Configuration,
+            "main",
+            &source_dir,
+        );
+        config.tools.client_mcp.extension = Some(ToolExtensionConfig {
+            name: "client_mcp".to_owned(),
+            input: ToolExtensionInput::Source(ToolExtensionSourceConfig {
+                path: tool_source,
+                format: Some(SourceFormat::Designer),
+            }),
+        });
+
+        let err = validate(&config).expect_err("configuration descriptor should fail");
+        assert!(matches!(
+            err,
+            ConfigValidationError::ToolExtensionSourceLayoutInvalid(details)
+                if details.contains("must describe an extension")
+        ));
+    }
+
+    #[test]
+    fn rejects_client_mcp_edt_source_overlapping_generated_export_target() {
+        let base = tempdir().expect("base");
+        let work = tempdir().expect("work");
+        let source_dir = base.path().join("src");
+        let tool_source = work
+            .path()
+            .join("designer")
+            .join("tool-extensions")
+            .join("client_mcp");
+        write_native_edt_project(
+            &source_dir,
+            "main",
+            crate::support::edt_project::V8_CONFIGURATION_NATURE,
+            None,
+        );
+        write_native_edt_project(
+            &tool_source,
+            "client_mcp",
+            crate::support::edt_project::V8_EXTENSION_NATURE,
+            Some("main"),
+        );
+
+        let mut config = single_source_set_config(
+            base.path(),
+            work.path(),
+            SourceFormat::Edt,
+            BuilderBackend::Ibcmd,
+            SourceSetPurpose::Configuration,
+            "main",
+            &source_dir,
+        );
+        config.tools.client_mcp.extension = Some(ToolExtensionConfig {
+            name: "client_mcp".to_owned(),
+            input: ToolExtensionInput::Source(ToolExtensionSourceConfig {
+                path: tool_source,
+                format: Some(SourceFormat::Edt),
+            }),
+        });
+
+        let err = validate(&config).expect_err("overlapping export target should fail");
+        assert!(matches!(
+            err,
+            ConfigValidationError::ToolExtensionSourceLayoutInvalid(details)
+                if details.contains("overlaps generated export target")
+        ));
+    }
+
+    #[test]
+    fn rejects_client_mcp_cfe_artifact_with_ibcmd_builder() {
+        let base = tempdir().expect("base");
+        let work = tempdir().expect("work");
+        let source_dir = base.path().join("src");
+        let artifact = base.path().join("client-mcp.cfe");
+        std::fs::create_dir_all(&source_dir).expect("source dir");
+        std::fs::write(&artifact, "cfe").expect("artifact");
+
+        let mut config = single_source_set_config(
+            base.path(),
+            work.path(),
+            SourceFormat::Designer,
+            BuilderBackend::Ibcmd,
+            SourceSetPurpose::Configuration,
+            "main",
+            &source_dir,
+        );
+        config.tools.client_mcp.extension = Some(ToolExtensionConfig {
+            name: "client_mcp".to_owned(),
+            input: ToolExtensionInput::Artifact(ToolExtensionArtifactConfig { path: artifact }),
+        });
+
+        let err = validate(&config).expect_err("ibcmd artifact should fail");
+        assert!(matches!(
+            err,
+            ConfigValidationError::ToolExtensionArtifactRequiresDesigner
+        ));
     }
 
     #[test]

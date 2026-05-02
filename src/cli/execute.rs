@@ -2232,7 +2232,7 @@ mod tests {
     use crate::cli::args::{
         ArtifactsArgs, BuildArgs, Command, DesignerConfigSyntaxArgs, DesignerModulesSyntaxArgs,
         DumpArgs, ExtensionsArgs, LaunchArgs, LaunchOptionsArgs, LoadArgs, SyntaxArgs,
-        SyntaxTarget, TestArgs, TestRunner, TestScope, TestYaxunitArgs,
+        SyntaxTarget, TestArgs, TestRunner, TestScope, TestVaArgs, TestYaxunitArgs,
     };
     use crate::cli::output::pre_dispatch_error_envelope;
     use crate::config::model::{

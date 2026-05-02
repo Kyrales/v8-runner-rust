@@ -42,6 +42,8 @@ v8-runner build --full-rebuild
 
 `build` is a common workflow. For EDT projects it may export EDT sources to Designer files before applying them through the configured backend. For Designer projects it applies Designer sources directly through the configured backend.
 
+If `tools.client_mcp.extension` is configured, `build` also prepares that tool extension after the project source-set stage, including scoped `--source-set` builds. Do not add it as a project `source-set` or select it with `--source-set`.
+
 ## Syntax
 
 Choose syntax checks from config capabilities, not from assumptions about the repository name.
@@ -126,5 +128,7 @@ v8-runner launch mcp --mcp-config <FILE>
 For ordinary direct launches, typed launch flags include `--c`, `--execute`, `--use-privileged-mode`, `--output`, and repeatable `--raw-key`.
 
 For `launch mcp`, use `--mcp-config` and `--mcp-port`; do not pass `/C` through `--c`.
+
+`launch mcp` and `launch mcp va` do not install or update `tools.client_mcp.extension`; run `v8-runner build` first when that extension may be missing or stale.
 
 For `launch mcp va`, read `testing.md`; it is part of the Vanessa Automation debugging and scenario-authoring workflow.

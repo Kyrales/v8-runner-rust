@@ -217,8 +217,14 @@ fn apply_workspace_root_overlay(object: &mut Map<String, Value>, base_path: &Pat
 fn apply_test_overlay(object: &mut Map<String, Value>, artifacts: VanessaTestArtifacts<'_>) {
     object.insert("ВыполнитьСценарии".to_owned(), Value::Bool(true));
     object.insert("ЗавершитьРаботуСистемы".to_owned(), Value::Bool(true));
-    object.insert("ЗакрытьTestClientПослеЗапускаСценариев".to_owned(), Value::Bool(true));
-    object.insert("ЗакрыватьКлиентТестированияПринудительно".to_owned(), Value::Bool(true));
+    object.insert(
+        "ЗакрытьTestClientПослеЗапускаСценариев".to_owned(),
+        Value::Bool(true),
+    );
+    object.insert(
+        "ЗакрыватьКлиентТестированияПринудительно".to_owned(),
+        Value::Bool(true),
+    );
     object.insert("ДелатьОтчетВФорматеjUnit".to_owned(), Value::Bool(true));
     object.insert(
         "КаталогВыгрузкиJUnit".to_owned(),

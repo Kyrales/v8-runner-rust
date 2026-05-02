@@ -54,6 +54,14 @@ fn normalize_config_paths(config: &mut AppConfig, config_dir: &Path) {
     if let Some(path) = config.tools.va.epf_path.as_mut() {
         *path = normalize_optional_path(path, config_dir);
     }
+    if let Some(extension) = config.tools.client_mcp.extension.as_mut() {
+        if let Some(source) = extension.source_mut() {
+            source.path = normalize_optional_path(&source.path, config_dir);
+        }
+        if let Some(artifact) = extension.artifact_mut() {
+            artifact.path = normalize_optional_path(&artifact.path, config_dir);
+        }
+    }
     let va = &mut config.tests.va;
     if let Some(path) = va.params_path.as_mut() {
         *path = normalize_optional_path(path, config_dir);
@@ -620,12 +628,19 @@ mod tests {
         let base = dir.path().join("base");
         let work = dir.path().join("work");
         let src = base.join("src");
+        let extension_src = dir.path().join("exts").join("client-mcp");
         std::fs::create_dir_all(&src).expect("src dir");
+        std::fs::create_dir_all(&extension_src).expect("extension dir");
+        std::fs::write(
+            extension_src.join("Configuration.xml"),
+            "<Configuration><ConfigurationExtensionPurpose>Extension</ConfigurationExtensionPurpose></Configuration>",
+        )
+        .expect("extension marker");
         let config_path = dir.path().join("v8project.yaml");
         std::fs::write(
             &config_path,
             format!(
-                "basePath: {}\nworkPath: {}\nformat: DESIGNER\nbuilder: DESIGNER\ninfobase:\n  connection: \"File=/tmp/ib\"\nmcp:\n  http:\n    bind_address: 127.0.0.1:4000\n    path: /custom-mcp\n    stateful_sessions: false\n    max_sessions: 12\n    idle_ttl_secs: 45\n  execution:\n    max_concurrent_calls: 3\n    shutdown_grace_period_secs: 9\ntools:\n  client_mcp:\n    port: 9874\n  enterprise:\n    additional-launch-keys:\n      - /TESTMANAGER\n  edt_cli:\n    interactive-mode: true\n    startup_timeout_ms: 1234\n    command_timeout_ms: 5678\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+                "basePath: {}\nworkPath: {}\nformat: DESIGNER\nbuilder: DESIGNER\ninfobase:\n  connection: \"File=/tmp/ib\"\nmcp:\n  http:\n    bind_address: 127.0.0.1:4000\n    path: /custom-mcp\n    stateful_sessions: false\n    max_sessions: 12\n    idle_ttl_secs: 45\n  execution:\n    max_concurrent_calls: 3\n    shutdown_grace_period_secs: 9\ntools:\n  client_mcp:\n    port: 9874\n    extension:\n      name: client_mcp\n      source:\n        path: exts/client-mcp\n        format: DESIGNER\n  enterprise:\n    additional-launch-keys:\n      - /TESTMANAGER\n  edt_cli:\n    interactive-mode: true\n    startup_timeout_ms: 1234\n    command_timeout_ms: 5678\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
                 base.display(),
                 work.display()
             ),
@@ -649,6 +664,53 @@ mod tests {
         assert!(config.tools.edt_cli.interactive_mode);
         assert_eq!(config.tools.edt_cli.startup_timeout_ms, 1234);
         assert_eq!(config.tools.edt_cli.command_timeout_ms, 5678);
+        let extension = config
+            .tools
+            .client_mcp
+            .extension
+            .expect("client mcp extension");
+        assert_eq!(extension.name, "client_mcp");
+        assert_eq!(
+            extension.source().expect("source").path,
+            dir.path().join("exts").join("client-mcp")
+        );
+    }
+
+    #[test]
+    fn load_config_rejects_client_mcp_extension_with_multiple_or_missing_inputs() {
+        for (case, extension_body) in [
+            (
+                "both",
+                "      name: client_mcp\n      source:\n        path: ext\n      artifact:\n        path: ext.cfe\n",
+            ),
+            ("neither", "      name: client_mcp\n"),
+        ] {
+            let dir = tempdir().expect("tempdir");
+            let base = dir.path().join("base");
+            let work = dir.path().join("work");
+            let src = base.join("src");
+            std::fs::create_dir_all(&src).expect("src dir");
+            let config_path = dir.path().join(format!("{case}.yaml"));
+            std::fs::write(
+                &config_path,
+                format!(
+                    "basePath: {}\nworkPath: {}\nformat: DESIGNER\nbuilder: DESIGNER\ninfobase:\n  connection: \"File=/tmp/ib\"\ntools:\n  client_mcp:\n    extension:\n{extension_body}source-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+                    base.display(),
+                    work.display()
+                ),
+            )
+            .expect("write config");
+
+            let error = load_config(config_path.to_str(), None)
+                .expect_err("invalid extension input should fail");
+
+            assert!(
+                error
+                    .to_string()
+                    .contains("must specify exactly one of source or artifact"),
+                "{error}"
+            );
+        }
     }
 
     #[test]

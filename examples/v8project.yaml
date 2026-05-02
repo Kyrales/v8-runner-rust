@@ -62,6 +62,17 @@ tools:
       - /TESTMANAGER
   client_mcp:
     port: 9874
+    # Tool extension is prepared by `v8-runner build`, not by `launch mcp`.
+    # extension:
+    #   name: client_mcp
+    #   source:
+    #     path: /path/to/onec-client-mcp/exts/client-mcp
+    #     format: EDT
+    # Or use an artifact:
+    # extension:
+    #   name: client_mcp
+    #   artifact:
+    #     path: /path/to/client_mcp.cfe
   va:
     epf_path: /path/to/vanessa.epf
 

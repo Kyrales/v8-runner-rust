@@ -25,6 +25,7 @@ use crate::use_cases::external_artifacts::{
 use crate::use_cases::request::BuildRequest as BuildArgs;
 use crate::use_cases::result::{UseCaseFailure, UseCaseResult};
 use crate::use_cases::source_inventory::SourceSetInventory;
+use crate::use_cases::tool_extension;
 use tracing::debug;
 
 mod coordinator;
@@ -121,7 +122,10 @@ fn run_build_designer(
     config: &AppConfig,
     args: &BuildArgs,
 ) -> Result<BuildResult, BuildExecutionFailure> {
-    coordinator::run_build_designer(context, config, args)
+    let started = Instant::now();
+    let mut result = coordinator::run_build_designer(context, config, args)?;
+    append_client_mcp_extension_step(context, config, started, &mut result)?;
+    Ok(result)
 }
 
 fn run_build_ibcmd(
@@ -129,7 +133,10 @@ fn run_build_ibcmd(
     config: &AppConfig,
     args: &BuildArgs,
 ) -> Result<BuildResult, BuildExecutionFailure> {
-    coordinator::run_build_ibcmd(context, config, args)
+    let started = Instant::now();
+    let mut result = coordinator::run_build_ibcmd(context, config, args)?;
+    append_client_mcp_extension_step(context, config, started, &mut result)?;
+    Ok(result)
 }
 
 fn validate_designer_supported_matrix(config: &AppConfig) -> Option<AppError> {
@@ -165,7 +172,35 @@ fn run_build_edt(
     config: &AppConfig,
     args: &BuildArgs,
 ) -> Result<BuildResult, BuildExecutionFailure> {
-    coordinator::run_build_edt(context, config, args)
+    let started = Instant::now();
+    let mut result = coordinator::run_build_edt(context, config, args)?;
+    append_client_mcp_extension_step(context, config, started, &mut result)?;
+    Ok(result)
+}
+
+fn append_client_mcp_extension_step(
+    context: &ExecutionContext,
+    config: &AppConfig,
+    started: Instant,
+    result: &mut BuildResult,
+) -> Result<(), BuildExecutionFailure> {
+    match tool_extension::prepare_client_mcp_extension(context, config) {
+        Ok(Some(step)) => {
+            result.steps.push(step);
+            result.duration_ms = started.elapsed().as_millis() as u64;
+            Ok(())
+        }
+        Ok(None) => Ok(()),
+        Err(failure) => {
+            result.ok = false;
+            result.steps.push(failure.step);
+            result.duration_ms = started.elapsed().as_millis() as u64;
+            Err(BuildExecutionFailure::with_payload(
+                failure.error,
+                result.clone(),
+            ))
+        }
+    }
 }
 
 fn selected_ordered_source_sets<'a>(
@@ -622,7 +657,8 @@ mod tests {
     use crate::change_detection::source_sets::SourceSetsService;
     use crate::config::model::{
         AppConfig, BuildConfig, BuilderBackend, PlatformToolConfig, SourceFormat, SourceSetConfig,
-        SourceSetPurpose, TestsConfig, ToolsConfig,
+        SourceSetPurpose, TestsConfig, ToolExtensionArtifactConfig, ToolExtensionConfig,
+        ToolExtensionInput, ToolExtensionSourceConfig, ToolsConfig,
     };
     use crate::domain::build::BuildMode;
     use crate::use_cases::context::{CommandName, ExecutionContext};
@@ -1216,6 +1252,113 @@ mod tests {
         let calls_text = fs::read_to_string(&calls).expect("calls");
         assert!(calls_text.contains("config import"));
         assert!(calls_text.contains("config apply"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn build_prepares_client_mcp_cfe_tool_extension_after_project_sources() {
+        let dir = tempdir().expect("tempdir");
+        let base = dir.path().join("base");
+        let work = dir.path().join("work");
+        let platform = dir.path().join("platform").join("bin").join("1cv8");
+        let calls = dir.path().join("designer.calls.log");
+        let artifact = dir.path().join("client_mcp.cfe");
+        create_source_tree(&base);
+        fs::write(&artifact, "cfe").expect("artifact");
+        write_designer_script(&platform, &calls, None);
+        let mut config = build_config(
+            &base,
+            &work,
+            &dir.path().join("platform"),
+            20,
+            SourceFormat::Designer,
+            BuilderBackend::Designer,
+        );
+        config.source_sets = vec![SourceSetConfig {
+            name: "main".to_owned(),
+            purpose: SourceSetPurpose::Configuration,
+            path: PathBuf::from("main"),
+        }];
+        config.tools.client_mcp.extension = Some(ToolExtensionConfig {
+            name: "client_mcp".to_owned(),
+            input: ToolExtensionInput::Artifact(ToolExtensionArtifactConfig {
+                path: artifact.clone(),
+            }),
+        });
+
+        let result = run_build(&config, &build_args(true)).expect("build");
+
+        assert!(result.ok);
+        assert!(result.steps.iter().any(|step| {
+            step.source_set == "tool:client_mcp" && matches!(step.mode, BuildMode::Full) && step.ok
+        }));
+        let calls_text = fs::read_to_string(&calls).expect("calls");
+        let project_load = calls_text
+            .find("/LoadConfigFromFiles")
+            .expect("project source load");
+        let tool_load = calls_text.find("/LoadCfg").expect("tool artifact load");
+        assert!(project_load < tool_load);
+        assert!(calls_text.contains(&artifact.display().to_string()));
+        assert!(calls_text.contains("-Extension client_mcp"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn build_exports_edt_client_mcp_source_before_loading_tool_extension() {
+        let dir = tempdir().expect("tempdir");
+        let base = dir.path().join("base");
+        let work = dir.path().join("work");
+        let platform = dir.path().join("platform").join("bin").join("1cv8");
+        let edt = dir.path().join("edt").join("1cedtcli");
+        let designer_calls = dir.path().join("designer.calls.log");
+        let edt_calls = dir.path().join("edt.calls.log");
+        let tool_source = base.join("tool-client-mcp");
+        create_source_tree(&base);
+        fs::create_dir_all(tool_source.join("DT-INF")).expect("tool dt-inf");
+        fs::create_dir_all(tool_source.join("src").join("Configuration")).expect("tool src");
+        fs::write(
+            tool_source.join(".project"),
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<projectDescription>\n  <name>client-mcp-project</name>\n  <natures>\n    <nature>com._1c.g5.v8.dt.core.V8ExtensionNature</nature>\n  </natures>\n</projectDescription>\n",
+        )
+        .expect("tool project");
+        fs::write(
+            tool_source.join("DT-INF").join("PROJECT.PMF"),
+            "Base-Project: main\nManifest-Version: 1.0\nRuntime-Version: 8.3.27\n",
+        )
+        .expect("tool manifest");
+        fs::write(
+            tool_source
+                .join("src")
+                .join("Configuration")
+                .join("Configuration.mdo"),
+            "<Configuration />\n",
+        )
+        .expect("tool mdo");
+        write_designer_script(&platform, &designer_calls, None);
+        write_edt_script(&edt, &edt_calls, None);
+        let mut config = build_edt_config(&base, &work, &dir.path().join("platform"), &edt);
+        config.source_sets = vec![SourceSetConfig {
+            name: "main".to_owned(),
+            purpose: SourceSetPurpose::Configuration,
+            path: PathBuf::from("main"),
+        }];
+        config.tools.client_mcp.extension = Some(ToolExtensionConfig {
+            name: "client_mcp".to_owned(),
+            input: ToolExtensionInput::Source(ToolExtensionSourceConfig {
+                path: tool_source,
+                format: Some(SourceFormat::Edt),
+            }),
+        });
+
+        let result = run_build(&config, &build_args(true)).expect("build");
+
+        assert!(result.ok);
+        let edt_calls_text = fs::read_to_string(&edt_calls).expect("edt calls");
+        let designer_calls_text = fs::read_to_string(&designer_calls).expect("designer calls");
+        assert!(edt_calls_text.contains("--project-name client-mcp-project"));
+        assert!(edt_calls_text.contains("tool-extensions/client_mcp"));
+        assert!(designer_calls_text.contains("tool-extensions/client_mcp"));
+        assert!(designer_calls_text.contains("-Extension client_mcp"));
     }
 
     #[cfg(unix)]
@@ -2094,6 +2237,60 @@ mod tests {
         assert!(matches!(result.steps[0].mode, BuildMode::Partial { .. }));
         assert!(calls_text.contains("-Extension ext"));
         assert_eq!(storage_generation(&config, "ext"), 2);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn source_set_build_still_runs_configured_tool_extension_post_build_step() {
+        let dir = tempdir().expect("tempdir");
+        let base = dir.path().join("base");
+        let work = dir.path().join("work");
+        let script = dir.path().join("1cv8");
+        let calls = dir.path().join("calls.log");
+        let artifact = dir.path().join("client_mcp.cfe");
+        create_source_tree(&base);
+        fs::write(&artifact, "cfe").expect("artifact");
+        write_designer_script(&script, &calls, None);
+        let mut config = build_config(
+            &base,
+            &work,
+            &script,
+            20,
+            SourceFormat::Designer,
+            BuilderBackend::Designer,
+        );
+        config.tools.client_mcp.extension = Some(ToolExtensionConfig {
+            name: "client_mcp".to_owned(),
+            input: ToolExtensionInput::Artifact(ToolExtensionArtifactConfig {
+                path: artifact.clone(),
+            }),
+        });
+        prime_snapshots(&config);
+
+        fs::write(
+            base.join("ext").join("CommonModules").join("Module.bsl"),
+            "procedure Test()\n  // ext changed\nendprocedure",
+        )
+        .expect("modify ext");
+
+        let result = run_build(
+            &config,
+            &BuildArgs {
+                full_rebuild: false,
+                source_set: Some("ext".to_owned()),
+            },
+        )
+        .expect("build");
+        let calls_text = fs::read_to_string(&calls).expect("calls");
+
+        assert_eq!(result.steps.len(), 2);
+        assert_eq!(result.steps[0].source_set, "ext");
+        assert_eq!(result.steps[1].source_set, "tool:client_mcp");
+        assert!(matches!(result.steps[0].mode, BuildMode::Partial { .. }));
+        assert!(matches!(result.steps[1].mode, BuildMode::Full));
+        assert!(calls_text.contains("-Extension ext"));
+        assert!(calls_text.contains(&artifact.display().to_string()));
+        assert!(calls_text.contains("-Extension client_mcp"));
     }
 
     #[cfg(unix)]
