@@ -1,6 +1,6 @@
 [package]
 name = "v8-runner"
-version = "0.4.1"
+version = "0.4.2"
 edition = "2021"
 
 [[bin]]
@@ -34,6 +34,7 @@ tokio-util = "0.7"
 
 [dev-dependencies]
 assert_cmd = "2"
+jsonschema = "0.33"
 predicates = "3"
 insta = "1"
 quote = "1"

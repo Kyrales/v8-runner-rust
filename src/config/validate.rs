@@ -686,6 +686,10 @@ fn validate_test_config(config: &AppConfig) -> Result<(), ConfigValidationError>
         &config.tests.yaxunit.timeouts,
         ConfigValidationError::InvalidYaxunitTimeout,
     )?;
+    validate_timeout_block(
+        &config.tests.va.timeouts,
+        ConfigValidationError::InvalidVanessaTimeout,
+    )?;
 
     let va = &config.tests.va;
     if !va.is_configured() {
@@ -727,7 +731,6 @@ fn validate_test_config(config: &AppConfig) -> Result<(), ConfigValidationError>
         validate_vanessa_profile_name(key)?;
     }
     validate_vanessa_profile(profile_name, profile)?;
-    validate_timeout_block(&va.timeouts, ConfigValidationError::InvalidVanessaTimeout)?;
 
     Ok(())
 }

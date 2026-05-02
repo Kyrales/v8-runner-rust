@@ -2,6 +2,9 @@ use std::path::{Path, PathBuf};
 use thiserror::Error;
 
 use crate::config::model::AppConfig;
+use crate::config::schema::{
+    validate_local_overlay_schema_boundary, validate_main_config_schema_boundary,
+};
 use crate::config::validate::{validate, ConfigValidationError};
 use crate::support::path::normalize_windows_verbatim_path;
 
@@ -30,6 +33,12 @@ pub enum ConfigLoadError {
 
     #[error("local config overlay does not support top-level key '{0}'")]
     LocalOverlayUnsupportedKey(String),
+
+    #[error("local config overlay contains unsupported key or value: {0}")]
+    LocalOverlayUnsupportedShape(String),
+
+    #[error("config contains unsupported key or value: {0}")]
+    UnsupportedShape(String),
 }
 
 pub fn load_config(
@@ -51,11 +60,15 @@ pub fn load_config(
         let overlay = read_yaml_file(&local_path)?;
         reject_legacy_config_keys(&overlay)?;
         reject_local_overlay_keys(&overlay)?;
+        validate_local_overlay_schema_boundary(overlay.clone())
+            .map_err(|error| ConfigLoadError::LocalOverlayUnsupportedShape(error.to_string()))?;
         merge_yaml_values(&mut root, overlay);
     }
 
     default_base_path_to_config_dir(&mut root, config_dir)?;
     reject_legacy_config_keys(&root)?;
+    validate_main_config_schema_boundary(root.clone())
+        .map_err(|error| ConfigLoadError::UnsupportedShape(error.to_string()))?;
 
     let mut config: AppConfig = serde_yaml::from_value(root)?;
     normalize_config_paths(&mut config, config_dir);
@@ -585,7 +598,12 @@ mod tests {
         let error = load_config(config_path.to_str(), None)
             .expect_err("required field cannot be reset to null");
 
-        assert!(error.to_string().contains("failed to parse YAML config"));
+        assert!(
+            error
+                .to_string()
+                .contains("local config overlay contains unsupported key or value"),
+            "{error}"
+        );
     }
 
     #[test]
@@ -634,7 +652,12 @@ mod tests {
 
         let error = load_config(config_path.to_str(), None).expect_err("reject legacy purpose key");
 
-        assert!(error.to_string().contains("missing field `type`"));
+        assert!(
+            error
+                .to_string()
+                .contains("config contains unsupported key or value"),
+            "{error}"
+        );
     }
 
     #[test]

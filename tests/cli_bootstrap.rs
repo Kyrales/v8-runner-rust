@@ -107,6 +107,66 @@ fn default_config_path_applies_sibling_local_overlay() {
 }
 
 #[test]
+fn unsupported_main_config_shape_is_rejected_in_json_mode() {
+    let dir = temp_workspace();
+    let config_path = write_minimal_config(dir.path());
+    let mut config = fs::read_to_string(&config_path).expect("config");
+    config.push_str("tools:\n  platform:\n    typo: value\n");
+    fs::write(&config_path, config).expect("config");
+
+    let output = v8_runner_command()
+        .args([
+            "--config",
+            &config_path.display().to_string(),
+            "--json-message",
+            "build",
+        ])
+        .output()
+        .expect("run command");
+
+    assert!(!output.status.success());
+    assert_eq!(output.status.code(), Some(2));
+    let payload: Value = serde_json::from_slice(&output.stdout).expect("json");
+    assert_eq!(payload["command"], "build");
+    assert_eq!(payload["error"]["code"], "invalid_argument");
+    assert!(payload["data"]["message"]
+        .as_str()
+        .expect("message")
+        .contains("config contains unsupported key or value"));
+}
+
+#[test]
+fn unsupported_local_overlay_shape_is_rejected_in_json_mode() {
+    let dir = temp_workspace();
+    let config_path = write_minimal_config(dir.path());
+    fs::write(
+        dir.path().join("v8project.local.yaml"),
+        "tools:\n  platform:\n    typo: value\n",
+    )
+    .expect("local overlay");
+
+    let output = v8_runner_command()
+        .args([
+            "--config",
+            &config_path.display().to_string(),
+            "--json-message",
+            "build",
+        ])
+        .output()
+        .expect("run command");
+
+    assert!(!output.status.success());
+    assert_eq!(output.status.code(), Some(2));
+    let payload: Value = serde_json::from_slice(&output.stdout).expect("json");
+    assert_eq!(payload["command"], "build");
+    assert_eq!(payload["error"]["code"], "invalid_argument");
+    assert!(payload["data"]["message"]
+        .as_str()
+        .expect("message")
+        .contains("local config overlay contains unsupported key or value"));
+}
+
+#[test]
 fn action_logging_failure_in_json_mode_keeps_command_identity() {
     let dir = temp_workspace();
     let config_path = write_minimal_config(dir.path());

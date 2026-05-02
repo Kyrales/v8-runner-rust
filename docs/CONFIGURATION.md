@@ -9,6 +9,7 @@ nuances вынесены в [DEEP_DIVE.md](DEEP_DIVE.md).
 ## Навигация
 
 - [Как получить стартовый конфиг](#как-получить-стартовый-конфиг)
+- [YAML Schema и VS Code](#yaml-schema-и-vs-code)
 - [Именование ключей](#именование-ключей)
 - [Канонический пример](#канонический-пример)
 - [Локальный overlay](#локальный-overlay)
@@ -30,6 +31,8 @@ v8-runner config init
 Что делает `config init`:
 
 - создаёт `v8project.yaml` в текущем каталоге или по `--output <FILE>`;
+- добавляет modeline `yaml-language-server` со ссылкой на versioned schema для текущей версии
+  `v8-runner`;
 - заполняет `source-set` по найденным исходникам;
 - не перезаписывает существующий файл без `--force`;
 - не пишет synthetic `CONFIGURATION`: если конфигурационный `source-set` не найден,
@@ -51,6 +54,37 @@ v8-runner config init
 Если рядом с основным конфигом есть `v8project.local.yaml`, он применяется автоматически после
 `v8project.yaml` и до CLI overrides. Локальный файл предназначен для machine-local путей,
 credentials и runtime настроек; его следует держать вне Git.
+
+## YAML Schema и VS Code
+
+В репозитории публикуются две JSON Schema:
+
+- `docs/schemas/v8project.schema.json` для основного `v8project.yaml`;
+- `docs/schemas/v8project.local.schema.json` для локального overlay `v8project.local.yaml`.
+
+`v8-runner config init` пишет в начало `v8project.yaml` modeline:
+
+```yaml
+# yaml-language-server: $schema=https://raw.githubusercontent.com/alkoleft/v8-runner-rust/refs/tags/v0.4.2/docs/schemas/v8project.schema.json
+```
+
+VS Code использует эту строку через расширение `redhat.vscode-yaml`; отдельная настройка
+workspace для основного файла не нужна.
+
+Для `v8project.local.yaml` schema подключается вручную через настройки VS Code, потому что local
+overlay обычно не генерируется командой:
+
+```json
+{
+  "yaml.schemas": {
+    "https://raw.githubusercontent.com/alkoleft/v8-runner-rust/refs/tags/v0.4.2/docs/schemas/v8project.local.schema.json": "v8project.local.yaml"
+  }
+}
+```
+
+Schema version равна версии приложения из `Cargo.toml` и release tag: `v0.4.2` публикует schemas
+для `v8-runner 0.4.2`. Для воспроизводимого редактирования используйте raw URL с `refs/tags/vX.Y.Z`;
+веточные raw URLs допустимы только для разработки следующей версии.
 
 ## Именование ключей
 
@@ -541,5 +575,6 @@ EDT-вызове.
 Текущий статус:
 
 - не входит в supported config contract;
-- игнорируется как неизвестный YAML key;
+- подсвечивается JSON Schema как unsupported key;
+- runtime loader отклоняет unsupported keys на YAML boundary;
 - рабочий каталог EDT session сейчас фиксирован: `workPath/edt-workspace`.

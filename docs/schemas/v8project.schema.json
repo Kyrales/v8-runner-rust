@@ -1,0 +1,700 @@
+{
+  "$defs": {
+    "BuildSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "partialLoadThreshold": {
+          "format": "uint",
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "BuilderBackendSchema": {
+      "enum": [
+        "DESIGNER",
+        "IBCMD"
+      ],
+      "type": "string"
+    },
+    "ClientMcpToolSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "extension": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ToolExtensionSchema"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "port": {
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 1,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "EdtCliSchema": {
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "not": {
+            "required": [
+              "startup_timeout_ms",
+              "startup-timeout-ms"
+            ]
+          }
+        },
+        {
+          "not": {
+            "required": [
+              "command_timeout_ms",
+              "command-timeout-ms"
+            ]
+          }
+        }
+      ],
+      "properties": {
+        "auto-start": {
+          "type": "boolean"
+        },
+        "command-timeout-ms": {
+          "format": "uint64",
+          "minimum": 1,
+          "type": "integer"
+        },
+        "command_timeout_ms": {
+          "format": "uint64",
+          "minimum": 1,
+          "type": "integer"
+        },
+        "interactive-mode": {
+          "type": "boolean"
+        },
+        "path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "startup-timeout-ms": {
+          "format": "uint64",
+          "minimum": 1,
+          "type": "integer"
+        },
+        "startup_timeout_ms": {
+          "format": "uint64",
+          "minimum": 1,
+          "type": "integer"
+        },
+        "version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "EnterpriseToolSchema": {
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "not": {
+            "required": [
+              "additional-launch-keys",
+              "additional_launch_keys"
+            ]
+          }
+        },
+        {
+          "not": {
+            "required": [
+              "additional-launch-keys",
+              "additionalLaunchKeys"
+            ]
+          }
+        },
+        {
+          "not": {
+            "required": [
+              "additional_launch_keys",
+              "additionalLaunchKeys"
+            ]
+          }
+        }
+      ],
+      "properties": {
+        "additional-launch-keys": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "additionalLaunchKeys": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "additional_launch_keys": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "ExecutionTimeoutsSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "run_ms": {
+          "format": "uint64",
+          "minimum": 1,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "startup_ms": {
+          "format": "uint64",
+          "minimum": 1,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "total_ms": {
+          "format": "uint64",
+          "minimum": 1,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "InfobaseDbmsSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "password": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "server": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "user": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "InfobaseSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "connection": {
+          "type": "string"
+        },
+        "dbms": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/InfobaseDbmsSchema"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "password": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "user": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "connection"
+      ],
+      "type": "object"
+    },
+    "McpExecutionSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "max_concurrent_calls": {
+          "format": "uint",
+          "minimum": 1,
+          "type": "integer"
+        },
+        "shutdown_grace_period_secs": {
+          "format": "uint64",
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "McpHttpSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "bind_address": {
+          "type": "string"
+        },
+        "idle_ttl_secs": {
+          "format": "uint64",
+          "minimum": 1,
+          "type": "integer"
+        },
+        "max_sessions": {
+          "format": "uint",
+          "minimum": 1,
+          "type": "integer"
+        },
+        "path": {
+          "type": "string"
+        },
+        "stateful_sessions": {
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
+    "McpSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "execution": {
+          "$ref": "#/$defs/McpExecutionSchema"
+        },
+        "http": {
+          "$ref": "#/$defs/McpHttpSchema"
+        }
+      },
+      "type": "object"
+    },
+    "PlatformToolSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "SourceFormatSchema": {
+      "enum": [
+        "DESIGNER",
+        "EDT"
+      ],
+      "type": "string"
+    },
+    "SourceSetPurposeSchema": {
+      "enum": [
+        "CONFIGURATION",
+        "EXTENSION",
+        "EXTERNAL_DATA_PROCESSORS",
+        "EXTERNAL_REPORTS"
+      ],
+      "type": "string"
+    },
+    "SourceSetSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "type": {
+          "$ref": "#/$defs/SourceSetPurposeSchema"
+        }
+      },
+      "required": [
+        "name",
+        "type",
+        "path"
+      ],
+      "type": "object"
+    },
+    "TestsSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "execution_timeout_seconds": {
+          "format": "uint64",
+          "maximum": 86400,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "va": {
+          "$ref": "#/$defs/VanessaTestSchema"
+        },
+        "yaxunit": {
+          "$ref": "#/$defs/YaxunitTestSchema"
+        }
+      },
+      "type": "object"
+    },
+    "ToolExtensionArtifactSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "type": "object"
+    },
+    "ToolExtensionSchema": {
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "artifact": {
+              "type": "null"
+            },
+            "name": {
+              "type": "string"
+            },
+            "source": {
+              "$ref": "#/$defs/ToolExtensionSourceSchema"
+            }
+          },
+          "required": [
+            "name",
+            "source"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "artifact": {
+              "$ref": "#/$defs/ToolExtensionArtifactSchema"
+            },
+            "name": {
+              "type": "string"
+            },
+            "source": {
+              "type": "null"
+            }
+          },
+          "required": [
+            "name",
+            "artifact"
+          ],
+          "type": "object"
+        }
+      ],
+      "properties": {
+        "artifact": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ToolExtensionArtifactSchema"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "source": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ToolExtensionSourceSchema"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
+    "ToolExtensionSourceSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "format": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SourceFormatSchema"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "path": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "type": "object"
+    },
+    "ToolsSchema": {
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "not": {
+            "required": [
+              "edt_cli",
+              "edt-cli"
+            ]
+          }
+        }
+      ],
+      "properties": {
+        "client_mcp": {
+          "$ref": "#/$defs/ClientMcpToolSchema"
+        },
+        "edt-cli": {
+          "$ref": "#/$defs/EdtCliSchema"
+        },
+        "edt_cli": {
+          "$ref": "#/$defs/EdtCliSchema"
+        },
+        "enterprise": {
+          "$ref": "#/$defs/EnterpriseToolSchema"
+        },
+        "platform": {
+          "$ref": "#/$defs/PlatformToolSchema"
+        },
+        "va": {
+          "$ref": "#/$defs/VanessaToolSchema"
+        }
+      },
+      "type": "object"
+    },
+    "VanessaProfileSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "feature_path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "features_to_run": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "filter_tags": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "ignore_tags": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "scenario_filter": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "VanessaTestSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "fail_fast": {
+          "type": "boolean"
+        },
+        "params_path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "profile": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "profiles": {
+          "additionalProperties": {
+            "$ref": "#/$defs/VanessaProfileSchema"
+          },
+          "type": "object"
+        },
+        "timeouts": {
+          "$ref": "#/$defs/ExecutionTimeoutsSchema"
+        }
+      },
+      "type": "object"
+    },
+    "VanessaToolSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "epf_path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "YaxunitTestSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "timeouts": {
+          "$ref": "#/$defs/ExecutionTimeoutsSchema"
+        }
+      },
+      "type": "object"
+    }
+  },
+  "$id": "https://raw.githubusercontent.com/alkoleft/v8-runner-rust/refs/tags/v0.4.2/docs/schemas/v8project.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "not": {
+        "required": [
+          "execution_timeout",
+          "executionTimeout"
+        ]
+      }
+    },
+    {
+      "not": {
+        "required": [
+          "execution_timeout",
+          "execution_timeout_ms"
+        ]
+      }
+    },
+    {
+      "not": {
+        "required": [
+          "executionTimeout",
+          "execution_timeout_ms"
+        ]
+      }
+    }
+  ],
+  "properties": {
+    "basePath": {
+      "type": "string"
+    },
+    "build": {
+      "$ref": "#/$defs/BuildSchema"
+    },
+    "builder": {
+      "$ref": "#/$defs/BuilderBackendSchema"
+    },
+    "executionTimeout": {
+      "format": "uint64",
+      "maximum": 86400000,
+      "minimum": 1,
+      "type": "integer"
+    },
+    "execution_timeout": {
+      "format": "uint64",
+      "maximum": 86400000,
+      "minimum": 1,
+      "type": "integer"
+    },
+    "execution_timeout_ms": {
+      "format": "uint64",
+      "maximum": 86400000,
+      "minimum": 1,
+      "type": "integer"
+    },
+    "format": {
+      "$ref": "#/$defs/SourceFormatSchema"
+    },
+    "infobase": {
+      "$ref": "#/$defs/InfobaseSchema"
+    },
+    "mcp": {
+      "$ref": "#/$defs/McpSchema"
+    },
+    "source-set": {
+      "items": {
+        "$ref": "#/$defs/SourceSetSchema"
+      },
+      "type": "array"
+    },
+    "tests": {
+      "$ref": "#/$defs/TestsSchema"
+    },
+    "tools": {
+      "$ref": "#/$defs/ToolsSchema"
+    },
+    "workPath": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "workPath",
+    "infobase",
+    "source-set"
+  ],
+  "title": "MainConfigSchema",
+  "type": "object"
+}

@@ -22,6 +22,8 @@ Use the available `v8-runner` binary directly. If it is not on `PATH`, ask for t
 
 `v8project.yaml` is the default project config name. A sibling `v8project.local.yaml` is loaded automatically for machine-local paths, credentials, tools, tests, and MCP settings. Do not pass `--config v8project.yaml` unless the user explicitly wants a non-default command shape or the active config path differs from the default; never pass `v8project.local.yaml` as `--config`.
 
+Generated `v8project.yaml` files include a `yaml-language-server` modeline that points to the versioned JSON Schema for the current `v8-runner` release. For `v8project.local.yaml`, use the matching `docs/schemas/v8project.local.schema.json` raw GitHub tag URL in editor settings when schema-assisted editing matters.
+
 Use JSON output only when another tool, script, or final answer needs structured results:
 
 ```bash
