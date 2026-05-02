@@ -55,7 +55,7 @@ fn write_config(
     edt_cli_path: Option<&Path>,
 ) {
     let edt_section = edt_cli_path
-        .map(|path| format!("  edt-cli:\n    path: '{}'\n", path.display()))
+        .map(|path| format!("  edt_cli:\n    path: '{}'\n", path.display()))
         .unwrap_or_default();
     let config = format!(
         "basePath: '{}'\nworkPath: '{}'\nformat: {}\nbuilder: DESIGNER\ninfobase:\n  connection: 'File=/tmp/ib'\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: .\ntools:\n  platform:\n    path: '{}'\n{}",

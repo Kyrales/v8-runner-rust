@@ -1055,39 +1055,81 @@ mod tests {
     }
 
     #[test]
-    fn load_config_accepts_enterprise_additional_keys_aliases() {
+    fn load_config_accepts_enterprise_additional_launch_keys() {
         let dir = tempdir().expect("tempdir");
         let base = dir.path().join("base");
         let work = dir.path().join("work");
         let src = base.join("src");
         std::fs::create_dir_all(&src).expect("src dir");
 
-        for key in [
-            "additional-launch-keys",
-            "additional_launch_keys",
-            "additionalLaunchKeys",
-        ] {
-            let config_path = dir.path().join(format!("{key}.yaml"));
+        let config_path = dir.path().join("v8project.yaml");
+        std::fs::write(
+            &config_path,
+            format!(
+                "basePath: {}\nworkPath: {}\nformat: DESIGNER\nbuilder: DESIGNER\ninfobase:\n  connection: \"File=/tmp/ib\"\ntools:\n  enterprise:\n    additional-launch-keys:\n      - /TESTMANAGER\n      - /TCUser\n      - ci-user\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+                base.display(),
+                work.display()
+            ),
+        )
+        .expect("write config");
+
+        let config = load_config(config_path.to_str(), None).expect("load config");
+        assert_eq!(
+            config.tools.enterprise.additional_launch_keys,
+            vec![
+                "/TESTMANAGER".to_owned(),
+                "/TCUser".to_owned(),
+                "ci-user".to_owned()
+            ]
+        );
+    }
+
+    #[test]
+    fn load_config_rejects_removed_config_aliases() {
+        let cases = [
+            ("executionTimeout", "executionTimeout: 300000\n"),
+            ("execution_timeout_ms", "execution_timeout_ms: 300000\n"),
+            (
+                "edt-cli",
+                "tools:\n  edt-cli:\n    startup_timeout_ms: 2222\n",
+            ),
+            (
+                "additional_launch_keys",
+                "tools:\n  enterprise:\n    additional_launch_keys:\n      - /TESTMANAGER\n",
+            ),
+            (
+                "additionalLaunchKeys",
+                "tools:\n  enterprise:\n    additionalLaunchKeys:\n      - /TESTMANAGER\n",
+            ),
+            (
+                "startup-timeout-ms",
+                "tools:\n  edt_cli:\n    startup-timeout-ms: 2222\n",
+            ),
+            (
+                "command-timeout-ms",
+                "tools:\n  edt_cli:\n    command-timeout-ms: 3333\n",
+            ),
+        ];
+
+        for (name, extra_yaml) in cases {
+            let dir = tempdir().expect("tempdir");
+            let base = dir.path().join("base");
+            let work = dir.path().join("work");
+            let src = base.join("src");
+            std::fs::create_dir_all(&src).expect("src dir");
+            let config_path = dir.path().join(format!("{name}.yaml"));
             std::fs::write(
                 &config_path,
                 format!(
-                    "basePath: {}\nworkPath: {}\nformat: DESIGNER\nbuilder: DESIGNER\ninfobase:\n  connection: \"File=/tmp/ib\"\ntools:\n  enterprise:\n    {}:\n      - /TESTMANAGER\n      - /TCUser\n      - ci-user\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+                    "basePath: {}\nworkPath: {}\nformat: DESIGNER\nbuilder: DESIGNER\ninfobase:\n  connection: \"File=/tmp/ib\"\n{extra_yaml}source-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
                     base.display(),
-                    work.display(),
-                    key
+                    work.display()
                 ),
             )
             .expect("write config");
 
-            let config = load_config(config_path.to_str(), None).expect("load config");
-            assert_eq!(
-                config.tools.enterprise.additional_launch_keys,
-                vec![
-                    "/TESTMANAGER".to_owned(),
-                    "/TCUser".to_owned(),
-                    "ci-user".to_owned()
-                ]
-            );
+            load_config(config_path.to_str(), None)
+                .expect_err(&format!("{name} alias must be rejected"));
         }
     }
 
@@ -1123,7 +1165,7 @@ mod tests {
     }
 
     #[test]
-    fn load_config_accepts_kebab_case_edt_timeout_aliases() {
+    fn load_config_accepts_canonical_edt_timeout_keys() {
         let dir = tempdir().expect("tempdir");
         let base = dir.path().join("base");
         let work = dir.path().join("work");
@@ -1133,7 +1175,7 @@ mod tests {
         std::fs::write(
             &config_path,
             format!(
-                "basePath: {}\nworkPath: {}\nformat: DESIGNER\nbuilder: DESIGNER\ninfobase:\n  connection: \"File=/tmp/ib\"\ntools:\n  edt-cli:\n    startup-timeout-ms: 2222\n    command-timeout-ms: 3333\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+                "basePath: {}\nworkPath: {}\nformat: DESIGNER\nbuilder: DESIGNER\ninfobase:\n  connection: \"File=/tmp/ib\"\ntools:\n  edt_cli:\n    startup_timeout_ms: 2222\n    command_timeout_ms: 3333\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
                 base.display(),
                 work.display()
             ),
@@ -1157,7 +1199,7 @@ mod tests {
         std::fs::write(
             &config_path,
             format!(
-                "basePath: {}\nworkPath: {}\nformat: DESIGNER\nbuilder: DESIGNER\ninfobase:\n  connection: \"File=/tmp/ib\"\ntools:\n  platform:\n    version: 8.3.27.1859\n  edt-cli:\n    path: 1c-edt-2025.2.3\n    version: 1c-edt-2025.2.3\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+                "basePath: {}\nworkPath: {}\nformat: DESIGNER\nbuilder: DESIGNER\ninfobase:\n  connection: \"File=/tmp/ib\"\ntools:\n  platform:\n    version: 8.3.27.1859\n  edt_cli:\n    path: 1c-edt-2025.2.3\n    version: 1c-edt-2025.2.3\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
                 base.display(),
                 work.display()
             ),

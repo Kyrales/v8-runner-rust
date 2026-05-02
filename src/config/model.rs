@@ -19,12 +19,7 @@ pub struct AppConfig {
     pub work_path: PathBuf,
 
     /// Global execution budget for public CLI and MCP commands in milliseconds.
-    #[serde(
-        rename = "execution_timeout",
-        default = "default_execution_timeout_ms",
-        alias = "executionTimeout",
-        alias = "execution_timeout_ms"
-    )]
+    #[serde(rename = "execution_timeout", default = "default_execution_timeout_ms")]
     pub execution_timeout: u64,
 
     /// Source format: DESIGNER or EDT
@@ -253,7 +248,7 @@ pub struct ToolsConfig {
     #[serde(default)]
     pub enterprise: EnterpriseToolConfig,
 
-    #[serde(rename = "edt_cli", alias = "edt-cli", default)]
+    #[serde(rename = "edt_cli", default)]
     pub edt_cli: EdtCliConfig,
 
     #[serde(default)]
@@ -556,11 +551,7 @@ pub struct PlatformToolConfig {
 #[serde(rename_all = "kebab-case")]
 pub struct EnterpriseToolConfig {
     /// Additional command-line keys appended to enterprise client launches.
-    #[serde(
-        default,
-        alias = "additional_launch_keys",
-        alias = "additionalLaunchKeys"
-    )]
+    #[serde(default)]
     pub additional_launch_keys: Vec<String>,
 }
 
@@ -586,16 +577,14 @@ pub struct EdtCliConfig {
     /// Time limit for EDT startup until the prompt is ready.
     #[serde(
         default = "default_edt_cli_startup_timeout_ms",
-        rename = "startup_timeout_ms",
-        alias = "startup-timeout-ms"
+        rename = "startup_timeout_ms"
     )]
     pub startup_timeout_ms: u64,
 
     /// Default timeout for interactive EDT commands.
     #[serde(
         default = "default_edt_cli_command_timeout_ms",
-        rename = "command_timeout_ms",
-        alias = "command-timeout-ms"
+        rename = "command_timeout_ms"
     )]
     pub command_timeout_ms: u64,
 }

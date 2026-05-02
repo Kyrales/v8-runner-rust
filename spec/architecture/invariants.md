@@ -130,11 +130,11 @@
 ## Shared EDT
 
 1. EDT execution имеет два целевых режима: one-shot и shared interactive.
-2. `tools.edt_cli.interactive_mode=false` (YAML alias `interactive-mode`) означает one-shot `1cedtcli` execution.
-3. `tools.edt_cli.interactive_mode=true` (YAML alias `interactive-mode`) означает shared interactive EDT execution через общий actor/manager и общую interactive session.
+2. `tools.edt_cli.interactive_mode=false` (YAML key `interactive-mode`) означает one-shot `1cedtcli` execution.
+3. `tools.edt_cli.interactive_mode=true` (YAML key `interactive-mode`) означает shared interactive EDT execution через общий actor/manager и общую interactive session.
 4. Non-shared interactive EDT не является долгосрочным публичным режимом; если он встречается в коде, это implementation gap.
 5. Shared interactive EDT должен сохранять baseline reset/probe, restart, shutdown/restart drain, typed errors and telemetry contract.
-6. `tools.edt_cli.auto_start` (YAML alias `auto-start`) является eager prewarm-флагом только для long-lived shared EDT host process; на текущем этапе это MCP server.
+6. `tools.edt_cli.auto_start` (YAML key `auto-start`) является eager prewarm-флагом только для long-lived shared EDT host process; на текущем этапе это MCP server.
 7. CLI при `tools.edt_cli.interactive_mode=true` стартует EDT лениво при первом EDT-вызове и не должен eagerly prewarm interactive session на старте процесса команды.
 8. Если shared interactive временно покрывает не все EDT-сценарии, gap должен быть зафиксирован в документации или ADR.
 

@@ -25,7 +25,6 @@ pub fn local_config_schema_url() -> String {
 pub fn main_config_schema_json() -> Value {
     let mut schema = serde_json::to_value(schema_for!(MainConfigSchema)).expect("schema json");
     set_schema_id(&mut schema, &main_config_schema_url());
-    add_alias_properties(&mut schema);
     add_tool_extension_schema_constraints(&mut schema);
     add_numeric_runtime_bounds(&mut schema);
     schema
@@ -35,7 +34,6 @@ pub fn local_config_schema_json() -> Value {
     let mut schema =
         serde_json::to_value(schema_for!(LocalOverlayConfigSchema)).expect("schema json");
     set_schema_id(&mut schema, &local_config_schema_url());
-    add_alias_properties(&mut schema);
     add_tool_extension_schema_constraints(&mut schema);
     add_numeric_runtime_bounds(&mut schema);
     schema
@@ -69,90 +67,6 @@ fn schema_url(file_name: &str) -> String {
 fn set_schema_id(schema: &mut Value, id: &str) {
     let object = schema.as_object_mut().expect("root schema object");
     object.insert("$id".to_owned(), Value::String(id.to_owned()));
-}
-
-fn add_alias_properties(schema: &mut Value) {
-    add_alias_property_group(
-        schema,
-        &[],
-        &[
-            "execution_timeout",
-            "executionTimeout",
-            "execution_timeout_ms",
-        ],
-    );
-    for def in ["ToolsSchema", "PartialToolsSchema"] {
-        add_alias_property_group(schema, &[def], &["edt_cli", "edt-cli"]);
-    }
-    add_alias_property_group(
-        schema,
-        &["EnterpriseToolSchema"],
-        &[
-            "additional-launch-keys",
-            "additional_launch_keys",
-            "additionalLaunchKeys",
-        ],
-    );
-    add_alias_property_group(
-        schema,
-        &["EdtCliSchema"],
-        &["startup_timeout_ms", "startup-timeout-ms"],
-    );
-    add_alias_property_group(
-        schema,
-        &["EdtCliSchema"],
-        &["command_timeout_ms", "command-timeout-ms"],
-    );
-}
-
-fn add_alias_property_group(schema: &mut Value, def_path: &[&str], names: &[&str]) {
-    let Some((canonical, aliases)) = names.split_first() else {
-        return;
-    };
-
-    for alias in aliases {
-        duplicate_property(schema, def_path, canonical, alias);
-    }
-    reject_duplicate_aliases(schema, def_path, names);
-}
-
-fn duplicate_property(schema: &mut Value, def_path: &[&str], canonical: &str, alias: &str) {
-    let Some(object) = schema_object_mut(schema, def_path) else {
-        return;
-    };
-
-    let Some(properties) = object.get_mut("properties").and_then(Value::as_object_mut) else {
-        return;
-    };
-    let Some(canonical_schema) = properties.get(canonical).cloned() else {
-        return;
-    };
-    properties.insert(alias.to_owned(), canonical_schema);
-}
-
-fn reject_duplicate_aliases(schema: &mut Value, def_path: &[&str], names: &[&str]) {
-    reject_multiple_required_properties(schema, def_path, names);
-}
-
-fn reject_multiple_required_properties(schema: &mut Value, def_path: &[&str], names: &[&str]) {
-    let Some(object) = schema_object_mut(schema, def_path) else {
-        return;
-    };
-    let all_of = object
-        .entry("allOf")
-        .or_insert_with(|| Value::Array(Vec::new()))
-        .as_array_mut()
-        .expect("schema allOf array");
-
-    for i in 0..names.len() {
-        for j in (i + 1)..names.len() {
-            all_of.push(json!({
-                "not": {
-                    "required": [names[i], names[j]]
-                }
-            }));
-        }
-    }
 }
 
 fn add_tool_extension_schema_constraints(schema: &mut Value) {
@@ -279,26 +193,23 @@ fn allow_null_property(schema: &mut Value, def_path: &[&str], property: &str) {
     let Some(current) = properties.remove(property) else {
         return;
     };
+    let description = current.get("description").cloned();
 
-    properties.insert(
-        property.to_owned(),
-        json!({
+    let mut replacement = json!({
             "anyOf": [
                 current,
                 { "type": "null" }
             ]
-        }),
-    );
+    });
+    if let (Some(object), Some(description)) = (replacement.as_object_mut(), description) {
+        object.insert("description".to_owned(), description);
+    }
+
+    properties.insert(property.to_owned(), replacement);
 }
 
 fn add_numeric_runtime_bounds(schema: &mut Value) {
-    for name in [
-        "execution_timeout",
-        "executionTimeout",
-        "execution_timeout_ms",
-    ] {
-        set_numeric_bounds(schema, &[], name, Some(1), Some(86_400_000));
-    }
+    set_numeric_bounds(schema, &[], "execution_timeout", Some(1), Some(86_400_000));
     set_numeric_bounds(
         schema,
         &["BuildSchema"],
@@ -306,12 +217,20 @@ fn add_numeric_runtime_bounds(schema: &mut Value) {
         Some(1),
         None,
     );
-    for name in ["startup_timeout_ms", "startup-timeout-ms"] {
-        set_numeric_bounds(schema, &["EdtCliSchema"], name, Some(1), None);
-    }
-    for name in ["command_timeout_ms", "command-timeout-ms"] {
-        set_numeric_bounds(schema, &["EdtCliSchema"], name, Some(1), None);
-    }
+    set_numeric_bounds(
+        schema,
+        &["EdtCliSchema"],
+        "startup_timeout_ms",
+        Some(1),
+        None,
+    );
+    set_numeric_bounds(
+        schema,
+        &["EdtCliSchema"],
+        "command_timeout_ms",
+        Some(1),
+        None,
+    );
     for def in ["ClientMcpToolSchema", "PartialClientMcpToolSchema"] {
         set_numeric_bounds(schema, &[def], "port", Some(1), None);
     }
@@ -388,6 +307,7 @@ where
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct MainConfigSchema {
+    /// Root directory for project sources; defaults to the directory containing `v8project.yaml`.
     #[serde(
         default,
         deserialize_with = "deserialize_non_null_optional",
@@ -395,17 +315,18 @@ struct MainConfigSchema {
     )]
     #[schemars(with = "PathBuf")]
     base_path: Option<PathBuf>,
+    /// Working directory for generated state, logs, temporary files, and hash storages.
     work_path: PathBuf,
+    /// Global execution budget for public CLI and MCP commands in milliseconds.
     #[serde(
         rename = "execution_timeout",
-        alias = "executionTimeout",
-        alias = "execution_timeout_ms",
         default,
         deserialize_with = "deserialize_non_null_optional",
         skip_serializing_if = "Option::is_none"
     )]
     #[schemars(with = "u64")]
     execution_timeout: Option<u64>,
+    /// Source format used by project source sets when a nested source does not override it.
     #[serde(
         default,
         deserialize_with = "deserialize_non_null_optional",
@@ -413,6 +334,7 @@ struct MainConfigSchema {
     )]
     #[schemars(with = "SourceFormatSchema")]
     format: Option<SourceFormatSchema>,
+    /// Backend used for build/load operations.
     #[serde(
         default,
         deserialize_with = "deserialize_non_null_optional",
@@ -420,9 +342,12 @@ struct MainConfigSchema {
     )]
     #[schemars(with = "BuilderBackendSchema")]
     builder: Option<BuilderBackendSchema>,
+    /// Target infobase connection, credentials, and optional DBMS settings.
     infobase: InfobaseSchema,
+    /// Project source sets to build, test, dump, or materialize.
     #[serde(rename = "source-set")]
     source_sets: Vec<SourceSetSchema>,
+    /// Build pipeline settings.
     #[serde(
         default,
         deserialize_with = "deserialize_non_null_optional",
@@ -430,6 +355,7 @@ struct MainConfigSchema {
     )]
     #[schemars(with = "BuildSchema")]
     build: Option<BuildSchema>,
+    /// External tool discovery and launch settings.
     #[serde(
         default,
         deserialize_with = "deserialize_non_null_optional",
@@ -437,6 +363,7 @@ struct MainConfigSchema {
     )]
     #[schemars(with = "ToolsSchema")]
     tools: Option<ToolsSchema>,
+    /// MCP server transport and execution settings.
     #[serde(
         default,
         deserialize_with = "deserialize_non_null_optional",
@@ -444,6 +371,7 @@ struct MainConfigSchema {
     )]
     #[schemars(with = "McpSchema")]
     mcp: Option<McpSchema>,
+    /// Test runner defaults and profile settings.
     #[serde(
         default,
         deserialize_with = "deserialize_non_null_optional",
@@ -456,6 +384,7 @@ struct MainConfigSchema {
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct LocalOverlayConfigSchema {
+    /// Machine-local working directory override.
     #[serde(
         rename = "workPath",
         default,
@@ -464,6 +393,7 @@ struct LocalOverlayConfigSchema {
     )]
     #[schemars(with = "PathBuf")]
     work_path: Option<PathBuf>,
+    /// Machine-local infobase credentials and connection overrides.
     #[serde(
         default,
         deserialize_with = "deserialize_non_null_optional",
@@ -471,6 +401,7 @@ struct LocalOverlayConfigSchema {
     )]
     #[schemars(with = "PartialInfobaseSchema")]
     infobase: Option<PartialInfobaseSchema>,
+    /// Machine-local tool discovery and launch overrides.
     #[serde(
         default,
         deserialize_with = "deserialize_non_null_optional",
@@ -478,6 +409,7 @@ struct LocalOverlayConfigSchema {
     )]
     #[schemars(with = "PartialToolsSchema")]
     tools: Option<PartialToolsSchema>,
+    /// Machine-local test runner overrides.
     #[serde(
         default,
         deserialize_with = "deserialize_non_null_optional",
@@ -485,6 +417,7 @@ struct LocalOverlayConfigSchema {
     )]
     #[schemars(with = "PartialTestsSchema")]
     tests: Option<PartialTestsSchema>,
+    /// Machine-local MCP runtime overrides.
     #[serde(
         default,
         deserialize_with = "deserialize_non_null_optional",
@@ -511,11 +444,15 @@ enum BuilderBackendSchema {
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct InfobaseSchema {
+    /// 1C infobase connection string without embedded user or password.
     connection: String,
+    /// Optional infobase user name passed to platform utilities.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     user: Option<String>,
+    /// Optional infobase password passed to platform utilities.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     password: Option<String>,
+    /// Optional DBMS settings for server-based infobases.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     dbms: Option<InfobaseDbmsSchema>,
 }
@@ -523,6 +460,7 @@ struct InfobaseSchema {
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct PartialInfobaseSchema {
+    /// Optional local override for the 1C infobase connection string.
     #[serde(
         default,
         deserialize_with = "deserialize_non_null_optional",
@@ -530,10 +468,13 @@ struct PartialInfobaseSchema {
     )]
     #[schemars(with = "String")]
     connection: Option<String>,
+    /// Optional local infobase user name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     user: Option<String>,
+    /// Optional local infobase password.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     password: Option<String>,
+    /// Optional local DBMS settings override.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     dbms: Option<PartialInfobaseDbmsSchema>,
 }
@@ -541,14 +482,19 @@ struct PartialInfobaseSchema {
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct InfobaseDbmsSchema {
+    /// DBMS kind passed to `ibcmd --dbms`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     kind: Option<String>,
+    /// DBMS server passed to `ibcmd --database-server`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     server: Option<String>,
+    /// Physical database name passed to `ibcmd --database-name`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     name: Option<String>,
+    /// Optional DBMS user passed to `ibcmd --database-user`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     user: Option<String>,
+    /// Optional DBMS password passed to `ibcmd --database-password`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     password: Option<String>,
 }
@@ -558,9 +504,12 @@ type PartialInfobaseDbmsSchema = InfobaseDbmsSchema;
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct SourceSetSchema {
+    /// Source-set name used by CLI filters and diagnostics.
     name: String,
+    /// Source-set type: configuration, extension, external data processors, or external reports.
     #[serde(rename = "type")]
     purpose: SourceSetPurposeSchema,
+    /// Source path relative to `basePath` or an EDT project path.
     path: PathBuf,
 }
 
@@ -576,6 +525,7 @@ enum SourceSetPurposeSchema {
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct BuildSchema {
+    /// Maximum changed-file count for partial Designer load before falling back to full load.
     #[serde(
         default,
         deserialize_with = "deserialize_non_null_optional",
@@ -588,6 +538,7 @@ struct BuildSchema {
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct ToolsSchema {
+    /// Platform executable discovery settings.
     #[serde(
         default,
         deserialize_with = "deserialize_non_null_optional",
@@ -595,6 +546,7 @@ struct ToolsSchema {
     )]
     #[schemars(with = "PlatformToolSchema")]
     platform: Option<PlatformToolSchema>,
+    /// Enterprise client launch settings.
     #[serde(
         default,
         deserialize_with = "deserialize_non_null_optional",
@@ -602,15 +554,16 @@ struct ToolsSchema {
     )]
     #[schemars(with = "EnterpriseToolSchema")]
     enterprise: Option<EnterpriseToolSchema>,
+    /// EDT CLI discovery and execution settings.
     #[serde(
         rename = "edt_cli",
-        alias = "edt-cli",
         default,
         deserialize_with = "deserialize_non_null_optional",
         skip_serializing_if = "Option::is_none"
     )]
     #[schemars(with = "EdtCliSchema")]
     edt_cli: Option<EdtCliSchema>,
+    /// onec-client-mcp tool settings.
     #[serde(
         default,
         deserialize_with = "deserialize_non_null_optional",
@@ -618,6 +571,7 @@ struct ToolsSchema {
     )]
     #[schemars(with = "ClientMcpToolSchema")]
     client_mcp: Option<ClientMcpToolSchema>,
+    /// Vanessa Automation tool settings.
     #[serde(
         default,
         deserialize_with = "deserialize_non_null_optional",
@@ -630,6 +584,7 @@ struct ToolsSchema {
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct PartialToolsSchema {
+    /// Machine-local platform executable discovery settings.
     #[serde(
         default,
         deserialize_with = "deserialize_non_null_optional",
@@ -637,6 +592,7 @@ struct PartialToolsSchema {
     )]
     #[schemars(with = "PlatformToolSchema")]
     platform: Option<PlatformToolSchema>,
+    /// Machine-local enterprise client launch settings.
     #[serde(
         default,
         deserialize_with = "deserialize_non_null_optional",
@@ -644,15 +600,16 @@ struct PartialToolsSchema {
     )]
     #[schemars(with = "EnterpriseToolSchema")]
     enterprise: Option<EnterpriseToolSchema>,
+    /// Machine-local EDT CLI discovery and execution settings.
     #[serde(
         rename = "edt_cli",
-        alias = "edt-cli",
         default,
         deserialize_with = "deserialize_non_null_optional",
         skip_serializing_if = "Option::is_none"
     )]
     #[schemars(with = "EdtCliSchema")]
     edt_cli: Option<EdtCliSchema>,
+    /// Machine-local onec-client-mcp tool settings.
     #[serde(
         default,
         deserialize_with = "deserialize_non_null_optional",
@@ -660,6 +617,7 @@ struct PartialToolsSchema {
     )]
     #[schemars(with = "PartialClientMcpToolSchema")]
     client_mcp: Option<PartialClientMcpToolSchema>,
+    /// Machine-local Vanessa Automation tool settings.
     #[serde(
         default,
         deserialize_with = "deserialize_non_null_optional",
@@ -672,8 +630,10 @@ struct PartialToolsSchema {
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct PlatformToolSchema {
+    /// Platform binary, installation `bin` directory, or platform root discovery hint.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     path: Option<PathBuf>,
+    /// Platform version requirement used for discovery.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     version: Option<String>,
 }
@@ -681,10 +641,9 @@ struct PlatformToolSchema {
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
 struct EnterpriseToolSchema {
+    /// Additional command-line keys appended to enterprise client launches.
     #[serde(
         default,
-        alias = "additional_launch_keys",
-        alias = "additionalLaunchKeys",
         deserialize_with = "deserialize_non_null_optional",
         skip_serializing_if = "Option::is_none"
     )]
@@ -695,10 +654,13 @@ struct EnterpriseToolSchema {
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
 struct EdtCliSchema {
+    /// Path to `1cedtcli`, EDT installation root, or version-like discovery hint.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     path: Option<PathBuf>,
+    /// Optional EDT version hint used for auto-discovery.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     version: Option<String>,
+    /// Use long-lived interactive `1cedtcli` processes instead of one-shot invocations.
     #[serde(
         default,
         deserialize_with = "deserialize_non_null_optional",
@@ -706,6 +668,7 @@ struct EdtCliSchema {
     )]
     #[schemars(with = "bool")]
     interactive_mode: Option<bool>,
+    /// Eagerly prewarm the shared EDT session on MCP server startup.
     #[serde(
         default,
         deserialize_with = "deserialize_non_null_optional",
@@ -713,18 +676,18 @@ struct EdtCliSchema {
     )]
     #[schemars(with = "bool")]
     auto_start: Option<bool>,
+    /// Time limit for EDT startup until the prompt is ready, in milliseconds.
     #[serde(
         rename = "startup_timeout_ms",
-        alias = "startup-timeout-ms",
         default,
         deserialize_with = "deserialize_non_null_optional",
         skip_serializing_if = "Option::is_none"
     )]
     #[schemars(with = "u64")]
     startup_timeout_ms: Option<u64>,
+    /// Default timeout for interactive EDT commands, in milliseconds.
     #[serde(
         rename = "command_timeout_ms",
-        alias = "command-timeout-ms",
         default,
         deserialize_with = "deserialize_non_null_optional",
         skip_serializing_if = "Option::is_none"
@@ -736,8 +699,10 @@ struct EdtCliSchema {
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 struct ClientMcpToolSchema {
+    /// Default port passed to onec-client-mcp-devkit.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     port: Option<u16>,
+    /// Optional tool extension prepared by `build` for client MCP launches.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     extension: Option<ToolExtensionSchema>,
 }
@@ -745,8 +710,10 @@ struct ClientMcpToolSchema {
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 struct PartialClientMcpToolSchema {
+    /// Machine-local default port passed to onec-client-mcp-devkit.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     port: Option<u16>,
+    /// Machine-local override or reset for the client MCP tool extension.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "PartialToolExtensionSchema")]
     extension: Option<PartialToolExtensionSchema>,
@@ -755,10 +722,13 @@ struct PartialClientMcpToolSchema {
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 struct ToolExtensionSchema {
+    /// Extension name in the target infobase.
     name: String,
+    /// Source-backed extension input.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "ToolExtensionSourceSchema")]
     source: Option<ToolExtensionSourceSchema>,
+    /// Artifact-backed `.cfe` extension input.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "ToolExtensionArtifactSchema")]
     artifact: Option<ToolExtensionArtifactSchema>,
@@ -767,6 +737,7 @@ struct ToolExtensionSchema {
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 struct PartialToolExtensionSchema {
+    /// Machine-local extension name override.
     #[serde(
         default,
         deserialize_with = "deserialize_non_null_optional",
@@ -774,9 +745,11 @@ struct PartialToolExtensionSchema {
     )]
     #[schemars(with = "String")]
     name: Option<String>,
+    /// Machine-local source-backed extension input or branch-switch reset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "PartialToolExtensionSourceSchema")]
     source: Option<PartialToolExtensionSourceSchema>,
+    /// Machine-local artifact-backed `.cfe` extension input or branch-switch reset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "ToolExtensionArtifactSchema")]
     artifact: Option<ToolExtensionArtifactSchema>,
@@ -785,21 +758,27 @@ struct PartialToolExtensionSchema {
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 struct ToolExtensionSourceBranchSchema {
+    /// Extension name for the source-backed branch.
     name: String,
+    /// Source-backed extension branch.
     source: ToolExtensionSourceSchema,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 struct ToolExtensionArtifactBranchSchema {
+    /// Extension name for the artifact-backed branch.
     name: String,
+    /// Artifact-backed extension branch.
     artifact: ToolExtensionArtifactSchema,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 struct ToolExtensionSourceSchema {
+    /// Path to extension sources.
     path: PathBuf,
+    /// Optional source format; when omitted, the project-level format is used.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     format: Option<SourceFormatSchema>,
 }
@@ -807,6 +786,7 @@ struct ToolExtensionSourceSchema {
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 struct PartialToolExtensionSourceSchema {
+    /// Machine-local path override for extension sources.
     #[serde(
         default,
         deserialize_with = "deserialize_non_null_optional",
@@ -814,6 +794,7 @@ struct PartialToolExtensionSourceSchema {
     )]
     #[schemars(with = "PathBuf")]
     path: Option<PathBuf>,
+    /// Machine-local source format override.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     format: Option<SourceFormatSchema>,
 }
@@ -821,12 +802,14 @@ struct PartialToolExtensionSourceSchema {
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 struct ToolExtensionArtifactSchema {
+    /// Path to a `.cfe` extension artifact.
     path: PathBuf,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 struct VanessaToolSchema {
+    /// Path to the Vanessa Automation external data processor.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     epf_path: Option<PathBuf>,
 }
@@ -834,6 +817,7 @@ struct VanessaToolSchema {
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 struct McpSchema {
+    /// MCP HTTP transport settings.
     #[serde(
         default,
         deserialize_with = "deserialize_non_null_optional",
@@ -841,6 +825,7 @@ struct McpSchema {
     )]
     #[schemars(with = "McpHttpSchema")]
     http: Option<McpHttpSchema>,
+    /// Shared execution limits for MCP calls.
     #[serde(
         default,
         deserialize_with = "deserialize_non_null_optional",
@@ -855,6 +840,7 @@ type PartialMcpSchema = McpSchema;
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 struct McpHttpSchema {
+    /// Socket address for the MCP HTTP listener.
     #[serde(
         default,
         deserialize_with = "deserialize_non_null_optional",
@@ -862,6 +848,7 @@ struct McpHttpSchema {
     )]
     #[schemars(with = "String")]
     bind_address: Option<String>,
+    /// URL path that serves MCP HTTP requests.
     #[serde(
         default,
         deserialize_with = "deserialize_non_null_optional",
@@ -869,6 +856,7 @@ struct McpHttpSchema {
     )]
     #[schemars(with = "String")]
     path: Option<String>,
+    /// Whether MCP HTTP sessions keep state across requests.
     #[serde(
         default,
         deserialize_with = "deserialize_non_null_optional",
@@ -876,6 +864,7 @@ struct McpHttpSchema {
     )]
     #[schemars(with = "bool")]
     stateful_sessions: Option<bool>,
+    /// Maximum number of tracked HTTP sessions.
     #[serde(
         default,
         deserialize_with = "deserialize_non_null_optional",
@@ -883,6 +872,7 @@ struct McpHttpSchema {
     )]
     #[schemars(with = "usize")]
     max_sessions: Option<usize>,
+    /// Idle HTTP session eviction timeout in seconds.
     #[serde(
         default,
         deserialize_with = "deserialize_non_null_optional",
@@ -895,6 +885,7 @@ struct McpHttpSchema {
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 struct McpExecutionSchema {
+    /// Maximum number of MCP calls allowed to execute concurrently.
     #[serde(
         default,
         deserialize_with = "deserialize_non_null_optional",
@@ -902,6 +893,7 @@ struct McpExecutionSchema {
     )]
     #[schemars(with = "usize")]
     max_concurrent_calls: Option<usize>,
+    /// Grace period for shutdown drain in seconds.
     #[serde(
         default,
         deserialize_with = "deserialize_non_null_optional",
@@ -914,6 +906,7 @@ struct McpExecutionSchema {
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 struct TestsSchema {
+    /// Default test execution timeout in seconds.
     #[serde(
         default,
         deserialize_with = "deserialize_non_null_optional",
@@ -921,6 +914,7 @@ struct TestsSchema {
     )]
     #[schemars(with = "u64")]
     execution_timeout_seconds: Option<u64>,
+    /// YAxUnit test runner settings.
     #[serde(
         default,
         deserialize_with = "deserialize_non_null_optional",
@@ -928,6 +922,7 @@ struct TestsSchema {
     )]
     #[schemars(with = "YaxunitTestSchema")]
     yaxunit: Option<YaxunitTestSchema>,
+    /// Vanessa Automation test runner settings.
     #[serde(
         default,
         deserialize_with = "deserialize_non_null_optional",
@@ -942,6 +937,7 @@ type PartialTestsSchema = TestsSchema;
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 struct YaxunitTestSchema {
+    /// YAxUnit startup, run, and total timeout overrides.
     #[serde(
         default,
         deserialize_with = "deserialize_non_null_optional",
@@ -954,10 +950,13 @@ struct YaxunitTestSchema {
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 struct VanessaTestSchema {
+    /// Path to generated Vanessa parameters.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     params_path: Option<PathBuf>,
+    /// Vanessa profile name to use by default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     profile: Option<String>,
+    /// Stop the Vanessa test run after the first failure.
     #[serde(
         default,
         deserialize_with = "deserialize_non_null_optional",
@@ -965,6 +964,7 @@ struct VanessaTestSchema {
     )]
     #[schemars(with = "bool")]
     fail_fast: Option<bool>,
+    /// Vanessa startup, run, and total timeout overrides.
     #[serde(
         default,
         deserialize_with = "deserialize_non_null_optional",
@@ -972,6 +972,7 @@ struct VanessaTestSchema {
     )]
     #[schemars(with = "ExecutionTimeoutsSchema")]
     timeouts: Option<ExecutionTimeoutsSchema>,
+    /// Named Vanessa profiles available to CLI and MCP test runs.
     #[serde(
         default,
         deserialize_with = "deserialize_non_null_optional",
@@ -984,8 +985,10 @@ struct VanessaTestSchema {
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 struct VanessaProfileSchema {
+    /// Feature file or directory used by this Vanessa profile.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     feature_path: Option<PathBuf>,
+    /// Explicit feature files or directories to run.
     #[serde(
         default,
         deserialize_with = "deserialize_non_null_optional",
@@ -993,6 +996,7 @@ struct VanessaProfileSchema {
     )]
     #[schemars(with = "Vec<String>")]
     features_to_run: Option<Vec<String>>,
+    /// Tags included by this Vanessa profile.
     #[serde(
         default,
         deserialize_with = "deserialize_non_null_optional",
@@ -1000,6 +1004,7 @@ struct VanessaProfileSchema {
     )]
     #[schemars(with = "Vec<String>")]
     filter_tags: Option<Vec<String>>,
+    /// Tags ignored by this Vanessa profile.
     #[serde(
         default,
         deserialize_with = "deserialize_non_null_optional",
@@ -1007,6 +1012,7 @@ struct VanessaProfileSchema {
     )]
     #[schemars(with = "Vec<String>")]
     ignore_tags: Option<Vec<String>>,
+    /// Scenario name filters used by this Vanessa profile.
     #[serde(
         default,
         deserialize_with = "deserialize_non_null_optional",
@@ -1019,10 +1025,13 @@ struct VanessaProfileSchema {
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 struct ExecutionTimeoutsSchema {
+    /// Startup timeout in milliseconds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     startup_ms: Option<u64>,
+    /// Main execution timeout in milliseconds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     run_ms: Option<u64>,
+    /// Total execution timeout in milliseconds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     total_ms: Option<u64>,
 }
@@ -1037,12 +1046,94 @@ mod tests {
     };
     use std::path::Path;
 
+    const REMOVED_SCHEMA_ALIAS_PROPERTIES: &[&str] = &[
+        "executionTimeout",
+        "execution_timeout_ms",
+        "edt-cli",
+        "additional_launch_keys",
+        "additionalLaunchKeys",
+        "startup-timeout-ms",
+        "command-timeout-ms",
+    ];
+
     #[test]
     fn generated_schema_artifacts_are_current() {
         maybe_update_schema_artifacts();
 
         assert_schema_file(MAIN_CONFIG_SCHEMA_PATH, &main_config_schema_json());
         assert_schema_file(LOCAL_CONFIG_SCHEMA_PATH, &local_config_schema_json());
+    }
+
+    #[test]
+    fn generated_schemas_omit_removed_alias_properties() {
+        for schema in [main_config_schema_json(), local_config_schema_json()] {
+            for alias in REMOVED_SCHEMA_ALIAS_PROPERTIES {
+                assert_no_object_key(&schema, alias);
+            }
+        }
+    }
+
+    #[test]
+    fn generated_schemas_include_user_facing_field_descriptions() {
+        let main_schema = main_config_schema_json();
+        assert_property_description_contains(&main_schema, &[], "basePath", "Root directory");
+        assert_property_description_contains(&main_schema, &[], "workPath", "Working directory");
+        assert_property_description_contains(
+            &main_schema,
+            &[],
+            "source-set",
+            "Project source sets",
+        );
+        assert_property_description_contains(
+            &main_schema,
+            &["InfobaseSchema"],
+            "connection",
+            "infobase connection string",
+        );
+        assert_property_description_contains(
+            &main_schema,
+            &["SourceSetSchema"],
+            "type",
+            "Source-set type",
+        );
+        assert_property_description_contains(
+            &main_schema,
+            &["ToolsSchema"],
+            "client_mcp",
+            "onec-client-mcp",
+        );
+        assert_property_description_contains(
+            &main_schema,
+            &["ToolExtensionSchema"],
+            "source",
+            "Source-backed extension input",
+        );
+        assert_property_description_contains(
+            &main_schema,
+            &["McpHttpSchema"],
+            "bind_address",
+            "Socket address",
+        );
+        assert_property_description_contains(
+            &main_schema,
+            &["TestsSchema"],
+            "va",
+            "Vanessa Automation",
+        );
+
+        let local_schema = local_config_schema_json();
+        assert_property_description_contains(
+            &local_schema,
+            &[],
+            "workPath",
+            "Machine-local working directory",
+        );
+        assert_property_description_contains(
+            &local_schema,
+            &["PartialClientMcpToolSchema"],
+            "extension",
+            "Machine-local override",
+        );
     }
 
     fn maybe_update_schema_artifacts() {
@@ -1136,26 +1227,19 @@ mod tests {
     }
 
     #[test]
-    fn main_schema_accepts_documented_aliases_that_loader_accepts() {
+    fn main_schema_and_loader_accept_canonical_mixed_config_keys() {
         let config = format!(
-            "{}executionTimeout: 300000\ntools:\n  enterprise:\n    additionalLaunchKeys:\n      - /TESTMANAGER\n  edt-cli:\n    startup-timeout-ms: 300000\n    command-timeout-ms: 300000\n",
+            "{}execution_timeout: 300000\ntools:\n  enterprise:\n    additional-launch-keys:\n      - /TESTMANAGER\n  edt_cli:\n    startup_timeout_ms: 300000\n    command_timeout_ms: 300000\n",
             minimal_project_config_without_base_path()
         );
 
         assert_schema_valid(&main_config_schema_json(), &config);
         assert_config_loader_ok(&config);
-
-        let snake_timeout = format!(
-            "{}execution_timeout_ms: 300000\ntools:\n  enterprise:\n    additional_launch_keys:\n      - /TESTMANAGER\n",
-            minimal_project_config_without_base_path()
-        );
-        assert_schema_valid(&main_config_schema_json(), &snake_timeout);
-        assert_config_loader_ok(&snake_timeout);
     }
 
     #[test]
-    fn local_schema_accepts_documented_aliases_that_loader_accepts() {
-        let overlay = "tools:\n  enterprise:\n    additionalLaunchKeys:\n      - /TESTMANAGER\n  edt-cli:\n    startup-timeout-ms: 300000\n    command-timeout-ms: 300000\n";
+    fn local_schema_and_loader_accept_canonical_mixed_config_keys() {
+        let overlay = "tools:\n  enterprise:\n    additional-launch-keys:\n      - /TESTMANAGER\n  edt_cli:\n    startup_timeout_ms: 300000\n    command_timeout_ms: 300000\n";
 
         assert_schema_valid(&local_config_schema_json(), overlay);
         assert_overlay_loader_ok(overlay);
@@ -1210,22 +1294,34 @@ mod tests {
     }
 
     #[test]
-    fn schemas_and_loader_reject_duplicate_aliases_for_one_field() {
+    fn schemas_and_loader_reject_removed_alias_keys() {
         for config in [
             format!(
-                "{}execution_timeout: 300000\nexecutionTimeout: 300001\n",
+                "{}executionTimeout: 300000\n",
                 minimal_project_config_without_base_path()
             ),
             format!(
-                "{}tools:\n  edt_cli: {{}}\n  edt-cli: {{}}\n",
+                "{}execution_timeout_ms: 300000\n",
                 minimal_project_config_without_base_path()
             ),
             format!(
-                "{}tools:\n  enterprise:\n    additional-launch-keys: []\n    additionalLaunchKeys: []\n",
+                "{}tools:\n  edt-cli: {{}}\n",
                 minimal_project_config_without_base_path()
             ),
             format!(
-                "{}tools:\n  edt_cli:\n    startup_timeout_ms: 300000\n    startup-timeout-ms: 300001\n",
+                "{}tools:\n  enterprise:\n    additional_launch_keys: []\n",
+                minimal_project_config_without_base_path()
+            ),
+            format!(
+                "{}tools:\n  enterprise:\n    additionalLaunchKeys: []\n",
+                minimal_project_config_without_base_path()
+            ),
+            format!(
+                "{}tools:\n  edt_cli:\n    startup-timeout-ms: 300000\n",
+                minimal_project_config_without_base_path()
+            ),
+            format!(
+                "{}tools:\n  edt_cli:\n    command-timeout-ms: 300000\n",
                 minimal_project_config_without_base_path()
             ),
         ] {
@@ -1234,9 +1330,11 @@ mod tests {
         }
 
         for overlay in [
-            "tools:\n  edt_cli: {}\n  edt-cli: {}\n",
-            "tools:\n  enterprise:\n    additional_launch_keys: []\n    additionalLaunchKeys: []\n",
-            "tools:\n  edt_cli:\n    command_timeout_ms: 300000\n    command-timeout-ms: 300001\n",
+            "tools:\n  edt-cli: {}\n",
+            "tools:\n  enterprise:\n    additional_launch_keys: []\n",
+            "tools:\n  enterprise:\n    additionalLaunchKeys: []\n",
+            "tools:\n  edt_cli:\n    startup-timeout-ms: 300000\n",
+            "tools:\n  edt_cli:\n    command-timeout-ms: 300000\n",
         ] {
             assert_schema_invalid(&local_config_schema_json(), overlay);
             assert_overlay_loader_error(overlay);
@@ -1469,5 +1567,63 @@ mod tests {
             error.to_string().contains(expected),
             "expected error to contain {expected:?}, got {error}"
         );
+    }
+
+    fn assert_no_object_key(value: &serde_json::Value, forbidden: &str) {
+        match value {
+            serde_json::Value::Object(object) => {
+                assert!(
+                    !object.contains_key(forbidden),
+                    "schema must not contain alias property {forbidden:?}"
+                );
+                for value in object.values() {
+                    assert_no_object_key(value, forbidden);
+                }
+            }
+            serde_json::Value::Array(items) => {
+                for value in items {
+                    assert_no_object_key(value, forbidden);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn assert_property_description_contains(
+        schema: &serde_json::Value,
+        def_path: &[&str],
+        property: &str,
+        expected: &str,
+    ) {
+        let description = schema_property(schema, def_path, property)
+            .and_then(|property| property.get("description"))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_else(|| {
+                panic!(
+                    "schema property {}{} lacks description",
+                    if def_path.is_empty() {
+                        String::new()
+                    } else {
+                        format!("$defs.{}.", def_path.join("."))
+                    },
+                    property
+                )
+            });
+        assert!(
+            description.contains(expected),
+            "schema property {property:?} description {description:?} must contain {expected:?}"
+        );
+    }
+
+    fn schema_property<'a>(
+        schema: &'a serde_json::Value,
+        def_path: &[&str],
+        property: &str,
+    ) -> Option<&'a serde_json::Value> {
+        let mut object = schema.as_object()?;
+        for def in def_path {
+            object = object.get("$defs")?.as_object()?.get(*def)?.as_object()?;
+        }
+        object.get("properties")?.as_object()?.get(property)
     }
 }

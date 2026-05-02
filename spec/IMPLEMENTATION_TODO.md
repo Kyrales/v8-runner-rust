@@ -70,9 +70,8 @@ Scope:
 Acceptance:
 
 - Schema artifacts contain `description` entries for user-facing config fields.
-- Schema artifacts no longer contain alias-only properties such as `executionTimeout`,
-  `execution_timeout_ms`, `edt-cli`, `additionalLaunchKeys`, `additional_launch_keys`,
-  `startup-timeout-ms`, or `command-timeout-ms`.
+- Schema artifacts no longer contain removed alias-only properties for execution timeout, EDT CLI
+  section naming, enterprise launch keys, or EDT timeout spellings.
 - Loader rejects removed alias keys with normal unknown-field/schema errors.
 - `cargo test --locked generated_schema_artifacts_are_current` passes without
   `UPDATE_CONFIG_SCHEMAS=1`.

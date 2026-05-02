@@ -2,58 +2,36 @@
   "$defs": {
     "EdtCliSchema": {
       "additionalProperties": false,
-      "allOf": [
-        {
-          "not": {
-            "required": [
-              "startup_timeout_ms",
-              "startup-timeout-ms"
-            ]
-          }
-        },
-        {
-          "not": {
-            "required": [
-              "command_timeout_ms",
-              "command-timeout-ms"
-            ]
-          }
-        }
-      ],
       "properties": {
         "auto-start": {
+          "description": "Eagerly prewarm the shared EDT session on MCP server startup.",
           "type": "boolean"
         },
-        "command-timeout-ms": {
-          "format": "uint64",
-          "minimum": 1,
-          "type": "integer"
-        },
         "command_timeout_ms": {
+          "description": "Default timeout for interactive EDT commands, in milliseconds.",
           "format": "uint64",
           "minimum": 1,
           "type": "integer"
         },
         "interactive-mode": {
+          "description": "Use long-lived interactive `1cedtcli` processes instead of one-shot invocations.",
           "type": "boolean"
         },
         "path": {
+          "description": "Path to `1cedtcli`, EDT installation root, or version-like discovery hint.",
           "type": [
             "string",
             "null"
           ]
         },
-        "startup-timeout-ms": {
-          "format": "uint64",
-          "minimum": 1,
-          "type": "integer"
-        },
         "startup_timeout_ms": {
+          "description": "Time limit for EDT startup until the prompt is ready, in milliseconds.",
           "format": "uint64",
           "minimum": 1,
           "type": "integer"
         },
         "version": {
+          "description": "Optional EDT version hint used for auto-discovery.",
           "type": [
             "string",
             "null"
@@ -64,46 +42,9 @@
     },
     "EnterpriseToolSchema": {
       "additionalProperties": false,
-      "allOf": [
-        {
-          "not": {
-            "required": [
-              "additional-launch-keys",
-              "additional_launch_keys"
-            ]
-          }
-        },
-        {
-          "not": {
-            "required": [
-              "additional-launch-keys",
-              "additionalLaunchKeys"
-            ]
-          }
-        },
-        {
-          "not": {
-            "required": [
-              "additional_launch_keys",
-              "additionalLaunchKeys"
-            ]
-          }
-        }
-      ],
       "properties": {
         "additional-launch-keys": {
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        },
-        "additionalLaunchKeys": {
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        },
-        "additional_launch_keys": {
+          "description": "Additional command-line keys appended to enterprise client launches.",
           "items": {
             "type": "string"
           },
@@ -116,6 +57,7 @@
       "additionalProperties": false,
       "properties": {
         "run_ms": {
+          "description": "Main execution timeout in milliseconds.",
           "format": "uint64",
           "minimum": 1,
           "type": [
@@ -124,6 +66,7 @@
           ]
         },
         "startup_ms": {
+          "description": "Startup timeout in milliseconds.",
           "format": "uint64",
           "minimum": 1,
           "type": [
@@ -132,6 +75,7 @@
           ]
         },
         "total_ms": {
+          "description": "Total execution timeout in milliseconds.",
           "format": "uint64",
           "minimum": 1,
           "type": [
@@ -146,30 +90,35 @@
       "additionalProperties": false,
       "properties": {
         "kind": {
+          "description": "DBMS kind passed to `ibcmd --dbms`.",
           "type": [
             "string",
             "null"
           ]
         },
         "name": {
+          "description": "Physical database name passed to `ibcmd --database-name`.",
           "type": [
             "string",
             "null"
           ]
         },
         "password": {
+          "description": "Optional DBMS password passed to `ibcmd --database-password`.",
           "type": [
             "string",
             "null"
           ]
         },
         "server": {
+          "description": "DBMS server passed to `ibcmd --database-server`.",
           "type": [
             "string",
             "null"
           ]
         },
         "user": {
+          "description": "Optional DBMS user passed to `ibcmd --database-user`.",
           "type": [
             "string",
             "null"
@@ -182,11 +131,13 @@
       "additionalProperties": false,
       "properties": {
         "max_concurrent_calls": {
+          "description": "Maximum number of MCP calls allowed to execute concurrently.",
           "format": "uint",
           "minimum": 1,
           "type": "integer"
         },
         "shutdown_grace_period_secs": {
+          "description": "Grace period for shutdown drain in seconds.",
           "format": "uint64",
           "minimum": 1,
           "type": "integer"
@@ -198,22 +149,27 @@
       "additionalProperties": false,
       "properties": {
         "bind_address": {
+          "description": "Socket address for the MCP HTTP listener.",
           "type": "string"
         },
         "idle_ttl_secs": {
+          "description": "Idle HTTP session eviction timeout in seconds.",
           "format": "uint64",
           "minimum": 1,
           "type": "integer"
         },
         "max_sessions": {
+          "description": "Maximum number of tracked HTTP sessions.",
           "format": "uint",
           "minimum": 1,
           "type": "integer"
         },
         "path": {
+          "description": "URL path that serves MCP HTTP requests.",
           "type": "string"
         },
         "stateful_sessions": {
+          "description": "Whether MCP HTTP sessions keep state across requests.",
           "type": "boolean"
         }
       },
@@ -223,10 +179,12 @@
       "additionalProperties": false,
       "properties": {
         "execution": {
-          "$ref": "#/$defs/McpExecutionSchema"
+          "$ref": "#/$defs/McpExecutionSchema",
+          "description": "Shared execution limits for MCP calls."
         },
         "http": {
-          "$ref": "#/$defs/McpHttpSchema"
+          "$ref": "#/$defs/McpHttpSchema",
+          "description": "MCP HTTP transport settings."
         }
       },
       "type": "object"
@@ -237,14 +195,17 @@
         "extension": {
           "anyOf": [
             {
-              "$ref": "#/$defs/PartialToolExtensionSchema"
+              "$ref": "#/$defs/PartialToolExtensionSchema",
+              "description": "Machine-local override or reset for the client MCP tool extension."
             },
             {
               "type": "null"
             }
-          ]
+          ],
+          "description": "Machine-local override or reset for the client MCP tool extension."
         },
         "port": {
+          "description": "Machine-local default port passed to onec-client-mcp-devkit.",
           "format": "uint16",
           "maximum": 65535,
           "minimum": 1,
@@ -260,6 +221,7 @@
       "additionalProperties": false,
       "properties": {
         "connection": {
+          "description": "Optional local override for the 1C infobase connection string.",
           "type": "string"
         },
         "dbms": {
@@ -270,15 +232,18 @@
             {
               "type": "null"
             }
-          ]
+          ],
+          "description": "Optional local DBMS settings override."
         },
         "password": {
+          "description": "Optional local infobase password.",
           "type": [
             "string",
             "null"
           ]
         },
         "user": {
+          "description": "Optional local infobase user name.",
           "type": [
             "string",
             "null"
@@ -351,25 +316,30 @@
         "artifact": {
           "anyOf": [
             {
-              "$ref": "#/$defs/ToolExtensionArtifactSchema"
+              "$ref": "#/$defs/ToolExtensionArtifactSchema",
+              "description": "Machine-local artifact-backed `.cfe` extension input or branch-switch reset."
             },
             {
               "type": "null"
             }
-          ]
+          ],
+          "description": "Machine-local artifact-backed `.cfe` extension input or branch-switch reset."
         },
         "name": {
+          "description": "Machine-local extension name override.",
           "type": "string"
         },
         "source": {
           "anyOf": [
             {
-              "$ref": "#/$defs/PartialToolExtensionSourceSchema"
+              "$ref": "#/$defs/PartialToolExtensionSourceSchema",
+              "description": "Machine-local source-backed extension input or branch-switch reset."
             },
             {
               "type": "null"
             }
-          ]
+          ],
+          "description": "Machine-local source-backed extension input or branch-switch reset."
         }
       },
       "type": "object"
@@ -385,9 +355,11 @@
             {
               "type": "null"
             }
-          ]
+          ],
+          "description": "Machine-local source format override."
         },
         "path": {
+          "description": "Machine-local path override for extension sources.",
           "type": "string"
         }
       },
@@ -395,34 +367,26 @@
     },
     "PartialToolsSchema": {
       "additionalProperties": false,
-      "allOf": [
-        {
-          "not": {
-            "required": [
-              "edt_cli",
-              "edt-cli"
-            ]
-          }
-        }
-      ],
       "properties": {
         "client_mcp": {
-          "$ref": "#/$defs/PartialClientMcpToolSchema"
-        },
-        "edt-cli": {
-          "$ref": "#/$defs/EdtCliSchema"
+          "$ref": "#/$defs/PartialClientMcpToolSchema",
+          "description": "Machine-local onec-client-mcp tool settings."
         },
         "edt_cli": {
-          "$ref": "#/$defs/EdtCliSchema"
+          "$ref": "#/$defs/EdtCliSchema",
+          "description": "Machine-local EDT CLI discovery and execution settings."
         },
         "enterprise": {
-          "$ref": "#/$defs/EnterpriseToolSchema"
+          "$ref": "#/$defs/EnterpriseToolSchema",
+          "description": "Machine-local enterprise client launch settings."
         },
         "platform": {
-          "$ref": "#/$defs/PlatformToolSchema"
+          "$ref": "#/$defs/PlatformToolSchema",
+          "description": "Machine-local platform executable discovery settings."
         },
         "va": {
-          "$ref": "#/$defs/VanessaToolSchema"
+          "$ref": "#/$defs/VanessaToolSchema",
+          "description": "Machine-local Vanessa Automation tool settings."
         }
       },
       "type": "object"
@@ -431,12 +395,14 @@
       "additionalProperties": false,
       "properties": {
         "path": {
+          "description": "Platform binary, installation `bin` directory, or platform root discovery hint.",
           "type": [
             "string",
             "null"
           ]
         },
         "version": {
+          "description": "Platform version requirement used for discovery.",
           "type": [
             "string",
             "null"
@@ -456,16 +422,19 @@
       "additionalProperties": false,
       "properties": {
         "execution_timeout_seconds": {
+          "description": "Default test execution timeout in seconds.",
           "format": "uint64",
           "maximum": 86400,
           "minimum": 1,
           "type": "integer"
         },
         "va": {
-          "$ref": "#/$defs/VanessaTestSchema"
+          "$ref": "#/$defs/VanessaTestSchema",
+          "description": "Vanessa Automation test runner settings."
         },
         "yaxunit": {
-          "$ref": "#/$defs/YaxunitTestSchema"
+          "$ref": "#/$defs/YaxunitTestSchema",
+          "description": "YAxUnit test runner settings."
         }
       },
       "type": "object"
@@ -474,6 +443,7 @@
       "additionalProperties": false,
       "properties": {
         "path": {
+          "description": "Path to a `.cfe` extension artifact.",
           "type": "string"
         }
       },
@@ -486,30 +456,35 @@
       "additionalProperties": false,
       "properties": {
         "feature_path": {
+          "description": "Feature file or directory used by this Vanessa profile.",
           "type": [
             "string",
             "null"
           ]
         },
         "features_to_run": {
+          "description": "Explicit feature files or directories to run.",
           "items": {
             "type": "string"
           },
           "type": "array"
         },
         "filter_tags": {
+          "description": "Tags included by this Vanessa profile.",
           "items": {
             "type": "string"
           },
           "type": "array"
         },
         "ignore_tags": {
+          "description": "Tags ignored by this Vanessa profile.",
           "items": {
             "type": "string"
           },
           "type": "array"
         },
         "scenario_filter": {
+          "description": "Scenario name filters used by this Vanessa profile.",
           "items": {
             "type": "string"
           },
@@ -522,15 +497,18 @@
       "additionalProperties": false,
       "properties": {
         "fail_fast": {
+          "description": "Stop the Vanessa test run after the first failure.",
           "type": "boolean"
         },
         "params_path": {
+          "description": "Path to generated Vanessa parameters.",
           "type": [
             "string",
             "null"
           ]
         },
         "profile": {
+          "description": "Vanessa profile name to use by default.",
           "type": [
             "string",
             "null"
@@ -540,10 +518,12 @@
           "additionalProperties": {
             "$ref": "#/$defs/VanessaProfileSchema"
           },
+          "description": "Named Vanessa profiles available to CLI and MCP test runs.",
           "type": "object"
         },
         "timeouts": {
-          "$ref": "#/$defs/ExecutionTimeoutsSchema"
+          "$ref": "#/$defs/ExecutionTimeoutsSchema",
+          "description": "Vanessa startup, run, and total timeout overrides."
         }
       },
       "type": "object"
@@ -552,6 +532,7 @@
       "additionalProperties": false,
       "properties": {
         "epf_path": {
+          "description": "Path to the Vanessa Automation external data processor.",
           "type": [
             "string",
             "null"
@@ -564,7 +545,8 @@
       "additionalProperties": false,
       "properties": {
         "timeouts": {
-          "$ref": "#/$defs/ExecutionTimeoutsSchema"
+          "$ref": "#/$defs/ExecutionTimeoutsSchema",
+          "description": "YAxUnit startup, run, and total timeout overrides."
         }
       },
       "type": "object"
@@ -573,46 +555,25 @@
   "$id": "https://raw.githubusercontent.com/alkoleft/v8-runner-rust/refs/tags/v0.4.2/docs/schemas/v8project.local.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
-  "allOf": [
-    {
-      "not": {
-        "required": [
-          "execution_timeout",
-          "executionTimeout"
-        ]
-      }
-    },
-    {
-      "not": {
-        "required": [
-          "execution_timeout",
-          "execution_timeout_ms"
-        ]
-      }
-    },
-    {
-      "not": {
-        "required": [
-          "executionTimeout",
-          "execution_timeout_ms"
-        ]
-      }
-    }
-  ],
   "properties": {
     "infobase": {
-      "$ref": "#/$defs/PartialInfobaseSchema"
+      "$ref": "#/$defs/PartialInfobaseSchema",
+      "description": "Machine-local infobase credentials and connection overrides."
     },
     "mcp": {
-      "$ref": "#/$defs/McpSchema"
+      "$ref": "#/$defs/McpSchema",
+      "description": "Machine-local MCP runtime overrides."
     },
     "tests": {
-      "$ref": "#/$defs/TestsSchema"
+      "$ref": "#/$defs/TestsSchema",
+      "description": "Machine-local test runner overrides."
     },
     "tools": {
-      "$ref": "#/$defs/PartialToolsSchema"
+      "$ref": "#/$defs/PartialToolsSchema",
+      "description": "Machine-local tool discovery and launch overrides."
     },
     "workPath": {
+      "description": "Machine-local working directory override.",
       "type": "string"
     }
   },

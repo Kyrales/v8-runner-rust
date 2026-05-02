@@ -31,7 +31,7 @@
 
 ## Новый public config field, `source-set` type или `infobase` subtree
 
-1. Добавить typed field и нужные `serde` defaults/aliases в `src/config/model.rs`.
+1. Добавить typed field и нужные `serde` defaults/renames в `src/config/model.rs`.
 2. Добавить validation boundary в `src/config/validate.rs`, чтобы unsafe/unsupported combinations отклонялись до platform DSL.
 3. Обновить `config init`, round-trip fixtures и публичные примеры (`README.md`, `examples/*`), если поле входит в supported contract.
 4. Синхронизировать `spec/architecture/invariants.md`, `ARCHITECTURE.md` и соответствующий ADR, если поле меняет публичный контракт.

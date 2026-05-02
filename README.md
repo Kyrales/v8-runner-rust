@@ -126,7 +126,7 @@ v8-runner mcp serve stdio
 - [docs/CAPABILITIES.md](docs/CAPABILITIES.md): полный каталог команд, матрица поддержки,
   MCP tools и текущие ограничения.
 - [docs/CONFIGURATION.md](docs/CONFIGURATION.md): контракт `v8project.yaml`, поддержанные keys
-  (ключи), aliases (алиасы) и validation rules (правила валидации).
+  (ключи) и validation rules (правила валидации).
 - [docs/DEEP_DIVE.md](docs/DEEP_DIVE.md): execution semantics (семантика выполнения), runtime
   model (модель выполнения), lock/publication behavior (поведение блокировок и публикации).
 - [docs/README.md](docs/README.md): порядок чтения документации и source-of-truth (источник
