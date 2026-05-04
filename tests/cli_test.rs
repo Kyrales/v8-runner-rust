@@ -302,7 +302,7 @@ fn setup_va_project_with_work_name(
         )
     };
     let config = format!(
-        "basePath: '{}'\nworkPath: '{}'\nformat: DESIGNER\nbuilder: DESIGNER\ninfobase:\n  connection: 'File=/tmp/ib'\n  password: secret\ntests:\n  execution_timeout_seconds: 5\n  va:\n    params_path: '{}'\n    profile: smoke\n    fail_fast: true\n    profiles:\n      smoke:\n        feature_path: '{}'\n        features_to_run:\n          - login\n        filter_tags:\n          - '@smoke'\n        ignore_tags:\n          - '@draft'\n        scenario_filter:\n          - Проверка логина\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: main\ntools:\n  va:\n    epf_path: '{}'\n  platform:\n    path: '{}'\n{}",
+        "basePath: '{}'\nworkPath: '{}'\nformat: DESIGNER\nbuilder: DESIGNER\ninfobase:\n  connection: 'File=/tmp/ib'\n  password: secret\ntests:\n  execution_timeout_seconds: 5\n  va:\n    params_path: '{}'\n    profile: smoke\n    profiles:\n      smoke:\n        feature_path: '{}'\n        features_to_run:\n          - login\n        filter_tags:\n          - '@smoke'\n        ignore_tags:\n          - '@draft'\n        scenario_filter:\n          - Проверка логина\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: main\ntools:\n  va:\n    epf_path: '{}'\n  platform:\n    path: '{}'\n{}",
         base_path.display(),
         work_path.display(),
         va_params.display(),
@@ -767,7 +767,7 @@ fn test_va_builds_vanessa_command_and_overlay() {
         .as_str()
         .expect("WorkspaceRoot")
         .contains("/project"));
-    assert_eq!(params["ОстановкаПриВозникновенииОшибки"], true);
+    assert_eq!(params["ОстановкаПриВозникновенииОшибки"], false);
     assert_eq!(params["ВыполнитьСценарии"], true);
     assert_eq!(params["ЗавершитьРаботуСистемы"], true);
     assert_eq!(params["ДелатьОтчетВФорматеjUnit"], true);
@@ -792,8 +792,8 @@ fn test_va_builds_vanessa_command_and_overlay() {
         .expect("КаталогФич")
         .contains("/features/smoke"));
     assert_eq!(params["СписокФичДляВыполнения"][0], "login");
-    assert_eq!(params["СписокТеговОтбор"][0], "@smoke");
-    assert_eq!(params["СписокТеговИсключение"][0], "@draft");
+    assert_eq!(params["СписокТеговОтбор"][0], "smoke");
+    assert_eq!(params["СписокТеговИсключение"][0], "draft");
     assert_eq!(params["СписокСценариевДляВыполнения"][0], "Проверка логина");
 
     let payload: Value = serde_json::from_slice(&output.stdout).expect("json");
@@ -840,8 +840,8 @@ fn test_va_cli_filter_options_override_configured_profile_lists() {
     let params: Value =
         serde_json::from_slice(&fs::read(captured_params).expect("params")).expect("params json");
     assert_eq!(params["СписокФичДляВыполнения"][0], "checkout");
-    assert_eq!(params["СписокТеговОтбор"][0], "@critical");
-    assert_eq!(params["СписокТеговИсключение"][0], "@flaky");
+    assert_eq!(params["СписокТеговОтбор"][0], "critical");
+    assert_eq!(params["СписокТеговИсключение"][0], "flaky");
     assert_eq!(
         params["СписокСценариевДляВыполнения"][0],
         "Проверка оформления"

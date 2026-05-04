@@ -1419,7 +1419,7 @@ mod tests {
     #[test]
     fn schemas_and_loader_accept_supported_runtime_sections() {
         let config = format!(
-            "{}execution_timeout: 300000\nbuild:\n  partialLoadThreshold: 20\ntools:\n  client_mcp:\n    port: 9874\n  edt_cli:\n    startup_timeout_ms: 300000\n    command_timeout_ms: 300000\nmcp:\n  http:\n    bind_address: '127.0.0.1:3000'\n    path: /mcp\n    stateful_sessions: true\n    max_sessions: 64\n    idle_ttl_secs: 900\n  execution:\n    max_concurrent_calls: 1\n    shutdown_grace_period_secs: 30\ntests:\n  execution_timeout_seconds: 300\n  yaxunit:\n    timeouts:\n      startup_ms: 300000\n      run_ms: 300000\n      total_ms: 300000\n  va:\n    fail_fast: true\n    timeouts:\n      startup_ms: 300000\n      run_ms: 300000\n      total_ms: 300000\n",
+            "{}execution_timeout: 300000\nbuild:\n  partialLoadThreshold: 20\ntools:\n  client_mcp:\n    port: 9874\n  edt_cli:\n    startup_timeout_ms: 300000\n    command_timeout_ms: 300000\nmcp:\n  http:\n    bind_address: '127.0.0.1:3000'\n    path: /mcp\n    stateful_sessions: true\n    max_sessions: 64\n    idle_ttl_secs: 900\n  execution:\n    max_concurrent_calls: 1\n    shutdown_grace_period_secs: 30\ntests:\n  execution_timeout_seconds: 300\n  yaxunit:\n    timeouts:\n      startup_ms: 300000\n      run_ms: 300000\n      total_ms: 300000\n  va:\n    fail_fast: false\n    timeouts:\n      startup_ms: 300000\n      run_ms: 300000\n      total_ms: 300000\n",
             minimal_project_config_without_base_path()
         );
         assert_schema_valid(&main_config_schema_json(), &config);

@@ -172,7 +172,7 @@ tests:
   va:
     params_path: /path/to/va-params.json
     profile: smoke
-    fail_fast: true
+    fail_fast: false
     timeouts:
       total_ms: 300000
     profiles:
@@ -399,6 +399,10 @@ runtime identity и не добавляет отдельное поле конф
 
 `v8-runner test va --feature`, `--filter-tag`, `--ignore-tag` и `--scenario-filter`
 переопределяют соответствующие списки выбранного профиля только для текущего CLI-запуска.
+По умолчанию `fail_fast: false`.
+Для `СписокТеговОтбор` и `СписокТеговИсключение` в runtime `VAParams` runner удаляет один
+ведущий `@`, если он указан в `profiles.<name>.filter_tags`, `profiles.<name>.ignore_tags`,
+`--filter-tag` или `--ignore-tag`.
 
 При генерации runtime `VAParams` runner добавляет `WorkspaceRoot` со значением `basePath`,
 если это поле отсутствует или равно `null` в `tests.va.params_path`.

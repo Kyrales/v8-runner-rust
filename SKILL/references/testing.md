@@ -32,6 +32,10 @@ If the user points to a specific feature or profile, inspect `tests.va` in `v8pr
 
 `test va` uses the configured `tests.va.profile`; do not invent ad hoc feature paths without updating config or using the repo's established wrapper.
 
+`tests.va.fail_fast` defaults to `false`.
+
+When setting `tests.va.profiles.<name>.filter_tags` or `ignore_tags`, or passing `--filter-tag` / `--ignore-tag`, a leading `@` is accepted for user convenience but the generated `СписокТеговОтбор` and `СписокТеговИсключение` in runtime `VAParams` must be written without that leading `@`.
+
 ## VA Debugging And Scenario Authoring
 
 Use `launch mcp va` when the goal is interactive Vanessa Automation debugging, scenario writing, or driving the VA feature player through onec-client-mcp-devkit:

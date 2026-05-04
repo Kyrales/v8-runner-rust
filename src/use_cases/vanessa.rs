@@ -192,8 +192,8 @@ fn apply_profile_overlay(
         );
     }
     insert_string_array_if_non_empty(object, "СписокФичДляВыполнения", &profile.features_to_run);
-    insert_string_array_if_non_empty(object, "СписокТеговОтбор", &profile.filter_tags);
-    insert_string_array_if_non_empty(object, "СписокТеговИсключение", &profile.ignore_tags);
+    insert_normalized_tag_array_if_non_empty(object, "СписокТеговОтбор", &profile.filter_tags);
+    insert_normalized_tag_array_if_non_empty(object, "СписокТеговИсключение", &profile.ignore_tags);
     insert_string_array_if_non_empty(
         object,
         "СписокСценариевДляВыполнения",
@@ -273,6 +273,26 @@ fn insert_string_array_if_non_empty(object: &mut Map<String, Value>, key: &str, 
     object.insert(
         key.to_owned(),
         Value::Array(values.iter().cloned().map(Value::String).collect()),
+    );
+}
+
+fn insert_normalized_tag_array_if_non_empty(
+    object: &mut Map<String, Value>,
+    key: &str,
+    values: &[String],
+) {
+    if values.is_empty() {
+        object.remove(key);
+        return;
+    }
+    object.insert(
+        key.to_owned(),
+        Value::Array(
+            values
+                .iter()
+                .map(|value| Value::String(value.strip_prefix('@').unwrap_or(value).to_owned()))
+                .collect(),
+        ),
     );
 }
 
