@@ -84,10 +84,9 @@ fn config_init_creates_yaml_with_detected_designer_sources() {
 
     assert!(output.status.success());
     let config = fs::read_to_string(dir.path().join("v8project.yaml")).expect("config");
-    assert!(config.starts_with(&format!(
-        "# yaml-language-server: $schema=https://raw.githubusercontent.com/alkoleft/v8-runner-rust/refs/tags/v{}/docs/schemas/v8project.schema.json\n",
-        env!("CARGO_PKG_VERSION")
-    )));
+    assert!(config.starts_with(
+        "# yaml-language-server: $schema=https://raw.githubusercontent.com/alkoleft/v8-runner-rust/master/docs/schemas/v8project.schema.json\n"
+    ));
     serde_yaml::from_str::<serde_yaml::Value>(&config).expect("generated config remains YAML");
     assert!(config.contains("format: DESIGNER"));
     assert!(!config.contains("basePath:"));

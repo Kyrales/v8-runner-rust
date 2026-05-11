@@ -71,7 +71,7 @@ schema artifacts для редактирования `v8project.yaml` и `v8proj
 `v8-runner config init` пишет в начало `v8project.yaml` modeline:
 
 ```yaml
-# yaml-language-server: $schema=https://raw.githubusercontent.com/alkoleft/v8-runner-rust/refs/tags/v0.4.2/docs/schemas/v8project.schema.json
+# yaml-language-server: $schema=https://raw.githubusercontent.com/alkoleft/v8-runner-rust/master/docs/schemas/v8project.schema.json
 ```
 
 В VS Code установите расширение `redhat.vscode-yaml`. Оно использует эту строку
@@ -89,14 +89,13 @@ settings:
 ```json
 {
   "yaml.schemas": {
-    "https://raw.githubusercontent.com/alkoleft/v8-runner-rust/refs/tags/v0.4.2/docs/schemas/v8project.local.schema.json": "v8project.local.yaml"
+    "https://raw.githubusercontent.com/alkoleft/v8-runner-rust/master/docs/schemas/v8project.local.schema.json": "v8project.local.yaml"
   }
 }
 ```
 
-Schema version равна версии приложения из `Cargo.toml` и release tag: `v0.4.2` публикует schemas
-для `v8-runner 0.4.2`. Для воспроизводимого редактирования используйте raw URL с `refs/tags/vX.Y.Z`;
-веточные raw URLs допустимы только для разработки следующей версии.
+Schema URL всегда указывает на `master`, чтобы IDE подхватывала актуальный опубликованный schema
+artifact без привязки к release tag.
 
 ## Именование ключей
 

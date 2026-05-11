@@ -11,8 +11,8 @@ use serde_json::{json, Value};
 pub const MAIN_CONFIG_SCHEMA_PATH: &str = "docs/schemas/v8project.schema.json";
 pub const LOCAL_CONFIG_SCHEMA_PATH: &str = "docs/schemas/v8project.local.schema.json";
 
-const REPOSITORY_RAW_TAG_BASE: &str =
-    "https://raw.githubusercontent.com/alkoleft/v8-runner-rust/refs/tags";
+const REPOSITORY_RAW_SCHEMA_BASE: &str =
+    "https://raw.githubusercontent.com/alkoleft/v8-runner-rust/master/docs/schemas";
 
 pub fn main_config_schema_url() -> String {
     schema_url("v8project.schema.json")
@@ -58,10 +58,7 @@ pub fn schema_json_pretty(schema: &Value) -> String {
 }
 
 fn schema_url(file_name: &str) -> String {
-    format!(
-        "{REPOSITORY_RAW_TAG_BASE}/v{}/docs/schemas/{file_name}",
-        env!("CARGO_PKG_VERSION")
-    )
+    format!("{REPOSITORY_RAW_SCHEMA_BASE}/{file_name}")
 }
 
 fn set_schema_id(schema: &mut Value, id: &str) {
