@@ -53,3 +53,5 @@ Prefer `--source-set <NAME>` for narrow build, dump, convert, and artifact flows
 `v8project.local.yaml` is an automatic local overlay only. It may override only `workPath`,
 `infobase.*`, `tools.*`, `tests.*`, and `mcp.*`; it must not define `source-set`, `format`, or
 `builder`, and it must not be used as `--config`. `--workdir` wins over both config files.
+`config init` creates the sibling local overlay as an empty mapping with a schema modeline and adds
+`v8project.local.yaml` to `.gitignore` when needed.

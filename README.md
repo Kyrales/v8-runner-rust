@@ -38,8 +38,9 @@ cargo build --release
 v8-runner config init
 ```
 
-Команда анализирует структуру проекта, находит поддержанные `source-set` (наборы исходников) и
-создает `v8project.yaml`.
+Команда анализирует структуру проекта, находит поддержанные `source-set` (наборы исходников),
+создает `v8project.yaml`, пустой `v8project.local.yaml` со schema modeline и добавляет local
+overlay в `.gitignore`, если он еще не указан.
 
 Machine-local пути, credentials и настройки инструментов можно вынести в `v8project.local.yaml`
 рядом с основным конфигом. Этот файл применяется автоматически и должен оставаться вне Git.

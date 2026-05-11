@@ -33,6 +33,9 @@ v8-runner config init
 - создаёт `v8project.yaml` в текущем каталоге или по `--output <FILE>`;
 - добавляет modeline `yaml-language-server` со ссылкой на versioned schema для текущей версии
   `v8-runner`;
+- создаёт рядом пустой `v8project.local.yaml` с modeline на
+  `https://raw.githubusercontent.com/alkoleft/v8-runner-rust/master/docs/schemas/v8project.local.schema.json`;
+- добавляет `v8project.local.yaml` в `.gitignore`, если подходящий pattern еще не указан;
 - заполняет `source-set` по найденным исходникам;
 - не перезаписывает существующий файл без `--force`;
 - не пишет synthetic `CONFIGURATION`: если конфигурационный `source-set` не найден,
@@ -74,9 +77,14 @@ schema artifacts для редактирования `v8project.yaml` и `v8proj
 В VS Code установите расширение `redhat.vscode-yaml`. Оно использует эту строку
 автоматически; отдельная настройка workspace для основного файла не нужна.
 
-Для `v8project.local.yaml` schema подключается вручную через настройки VS Code, потому что local
-overlay обычно не генерируется командой. Добавьте это в `.vscode/settings.json` проекта или в
-user settings:
+Для `v8project.local.yaml` `config init` пишет отдельную modeline:
+
+```yaml
+# yaml-language-server: $schema=https://raw.githubusercontent.com/alkoleft/v8-runner-rust/master/docs/schemas/v8project.local.schema.json
+```
+
+Если local overlay создаётся вручную, добавьте это в `.vscode/settings.json` проекта или в user
+settings:
 
 ```json
 {
@@ -187,7 +195,9 @@ tests:
 ## Локальный overlay
 
 `v8project.local.yaml` расположен рядом с выбранным primary config и применяется автоматически.
-Файл не является самостоятельным config entrypoint: передавать его через `--config` нельзя.
+`config init` создаёт пустой local overlay как валидный YAML mapping (`{}`), добавляет schema
+modeline и сохраняет существующие значения, если файл уже был создан вручную. Файл не является
+самостоятельным config entrypoint: передавать его через `--config` нельзя.
 
 Precedence:
 

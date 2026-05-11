@@ -3,6 +3,7 @@ pub mod designer;
 pub mod edt;
 pub mod edt_session;
 pub mod enterprise;
+pub mod git;
 pub mod ibcmd;
 pub mod interactive;
 pub mod locator;

@@ -184,6 +184,8 @@ fn render_config_init_text(
 ) {
     let mut details = vec![
         format!("path: {}", result.path),
+        format!("local path: {}", result.local_path),
+        format!("gitignore: {}", result.gitignore_path),
         format!("format: {}", result.format),
         format!("builder: {}", result.builder),
     ];
