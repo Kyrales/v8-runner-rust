@@ -407,6 +407,7 @@ fn ensure_edt_workspace(
         )
     };
     debug!("[EDT] Инициализация workspace: {}", workspace.display());
+    let mut imported_projects = Vec::new();
     for project in projects {
         if let Some(outcome) = interruption_step_outcome(
             context,
@@ -418,7 +419,10 @@ fn ensure_edt_workspace(
             return outcome;
         }
         debug!("[EDT] Импорт проекта: {}", project.name);
-        log_live_stage("init: edt import", "[EDT] importing source-set project");
+        log_live_stage(
+            "init: edt import",
+            &format!("[EDT] importing source-set project '{}'", project.name),
+        );
         match dsl.import_project(&project.path) {
             Ok(result) => {
                 if let Err(error) =
@@ -436,6 +440,7 @@ fn ensure_edt_workspace(
                 )
             }
         }
+        imported_projects.push(project.name);
     }
 
     if let Err(error) = std::fs::write(&marker, b"initialized\n") {
@@ -455,10 +460,19 @@ fn ensure_edt_workspace(
         "import",
         started,
         with_optional_warning(
-            format!("workspace initialized: {}", workspace.display()),
+            edt_workspace_initialized_message(&workspace, &imported_projects),
             context_deferred_warning(context),
         ),
     )
+}
+
+fn edt_workspace_initialized_message(workspace: &Path, imported_projects: &[String]) -> String {
+    let mut message = format!("workspace initialized: {}", workspace.display());
+    if !imported_projects.is_empty() {
+        message.push_str("; imported EDT projects: ");
+        message.push_str(&imported_projects.join(", "));
+    }
+    message
 }
 
 fn create_infobase_via_designer(

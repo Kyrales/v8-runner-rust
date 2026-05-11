@@ -113,7 +113,18 @@ fn download_yaxunit(
         ToolExtensionInstallMode::Sources => {
             validate_yaxunit_source_set_config(config_path)?;
             let path = config.base_path.join("tests");
-            download_source_subdir(context, &release, YAXUNIT_SOURCE_PREFIX, &path, force)?;
+            let marker_path = config
+                .base_path
+                .join("build")
+                .join(format!(".tests{DOWNLOAD_MARKER_FILE}"));
+            download_source_subdir(
+                context,
+                &release,
+                YAXUNIT_SOURCE_PREFIX,
+                &path,
+                &marker_path,
+                force,
+            )?;
             Ok(vec![destination(
                 "yaxunit",
                 &release,
@@ -174,7 +185,15 @@ fn download_client_mcp(
                 .join("onec-client-mcp-devkit")
                 .join("exts")
                 .join("client-mcp");
-            download_source_subdir(context, &release, CLIENT_MCP_SOURCE_PREFIX, &path, force)?;
+            let marker_path = source_download_marker_path(&path);
+            download_source_subdir(
+                context,
+                &release,
+                CLIENT_MCP_SOURCE_PREFIX,
+                &path,
+                &marker_path,
+                force,
+            )?;
             Ok(vec![destination(
                 "onec-client-mcp-devkit",
                 &release,
@@ -287,9 +306,10 @@ fn download_source_subdir(
     release: &GitHubRelease,
     source_prefix: &str,
     target_path: &Path,
+    marker_path: &Path,
     force: bool,
 ) -> Result<(), AppError> {
-    if !should_download_source_dir(target_path, force)? {
+    if !should_download_source_dir(target_path, marker_path, force)? {
         return Ok(());
     }
     let archive_url = source_archive_url(release);
@@ -333,7 +353,7 @@ fn download_source_subdir(
         )
     });
     match publish_phase {
-        Ok(_) => write_source_download_marker(target_path),
+        Ok(_) => write_source_download_marker(target_path, marker_path),
         Err(error) => {
             let _ = fs::remove_dir_all(&staged);
             Err(AppError::Runtime(format!(
@@ -477,7 +497,11 @@ fn should_download_file(path: &Path, force: bool) -> Result<bool, AppError> {
     Ok(force)
 }
 
-fn should_download_source_dir(path: &Path, force: bool) -> Result<bool, AppError> {
+fn should_download_source_dir(
+    path: &Path,
+    marker_path: &Path,
+    force: bool,
+) -> Result<bool, AppError> {
     if !path.exists() {
         return Ok(true);
     }
@@ -487,7 +511,7 @@ fn should_download_source_dir(path: &Path, force: bool) -> Result<bool, AppError
             path.display()
         )));
     }
-    if !source_download_marker_path(path).exists() {
+    if !marker_path.exists() {
         return Err(AppError::Validation(format!(
             "download target already exists and is not managed by v8-runner: {}",
             path.display()
@@ -496,8 +520,7 @@ fn should_download_source_dir(path: &Path, force: bool) -> Result<bool, AppError
     Ok(force)
 }
 
-fn write_source_download_marker(target_path: &Path) -> Result<(), AppError> {
-    let marker_path = source_download_marker_path(target_path);
+fn write_source_download_marker(target_path: &Path, marker_path: &Path) -> Result<(), AppError> {
     let parent = marker_path.parent().ok_or_else(|| {
         AppError::Runtime(format!(
             "download marker path has no parent: {}",

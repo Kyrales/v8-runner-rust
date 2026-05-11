@@ -328,6 +328,10 @@ fn init_edt_with_ibcmd_creates_infobase_and_imports_projects_in_order() {
         .trim_matches('\'');
     assert!(Path::new(infobase_dir).join("1Cv8.1CD").exists());
     assert!(work_path.join("edt-workspace").exists());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("importing source-set project 'main'"));
+    assert!(stdout.contains("importing source-set project 'ext'"));
+    assert!(stdout.contains("imported EDT projects: main, ext"));
     let calls = fs::read_to_string(edt_calls_log).expect("calls");
     let lines: Vec<_> = calls.lines().collect();
     assert_eq!(lines.len(), 2);

@@ -321,9 +321,13 @@ fn tools_download_sources_writes_source_set_and_local_tool_settings() {
         .path()
         .join("tests/.v8-runner-tools-download.json")
         .exists());
-    assert!(dir
+    assert!(!dir
         .path()
         .join(".tests.v8-runner-tools-download.json")
+        .exists());
+    assert!(dir
+        .path()
+        .join("build/.tests.v8-runner-tools-download.json")
         .exists());
     assert!(dir
         .path()
@@ -350,6 +354,66 @@ fn tools_download_sources_writes_source_set_and_local_tool_settings() {
     assert!(local.contains("path: build/tools/onec-client-mcp-devkit/exts/client-mcp"));
     assert!(local.contains("format: EDT"));
     assert!(!local.contains(&dir.path().display().to_string()));
+}
+
+#[test]
+fn tools_download_sources_rejects_legacy_tests_markers_outside_build() {
+    let dir = temp_workspace();
+    let config_path = write_minimal_config(dir.path());
+    fs::create_dir_all(dir.path().join("tests")).expect("tests");
+    fs::write(
+        dir.path().join(".tests.v8-runner-tools-download.json"),
+        "{}\n",
+    )
+    .expect("legacy root marker");
+    fs::write(
+        dir.path().join("tests/.v8-runner-tools-download.json"),
+        "{}\n",
+    )
+    .expect("legacy nested marker");
+
+    let server_root = dir.path().join("server");
+    let port = free_tcp_port();
+    write_http_fixture(&server_root, port);
+    let _server = FixtureServer::start(&server_root, port);
+    assert!(wait_until(
+        std::time::Duration::from_secs(5),
+        std::time::Duration::from_millis(50),
+        || std::net::TcpStream::connect(("127.0.0.1", port)).is_ok()
+    ));
+
+    let output = v8_runner_command()
+        .env(
+            "V8TR_GITHUB_API_BASE_URL",
+            format!("http://127.0.0.1:{port}"),
+        )
+        .args([
+            "--config",
+            &config_path.display().to_string(),
+            "tools",
+            "download",
+            "yaxunit",
+            "--sources",
+        ])
+        .output()
+        .expect("run command");
+
+    assert!(
+        !output.status.success(),
+        "stdout={}\nstderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(combined.contains("download target already exists and is not managed by v8-runner"));
+    assert!(!dir
+        .path()
+        .join("build/.tests.v8-runner-tools-download.json")
+        .exists());
 }
 
 #[test]
