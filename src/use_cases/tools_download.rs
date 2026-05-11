@@ -15,7 +15,9 @@ use crate::domain::tools_download::{
 };
 use crate::platform::download;
 use crate::support::error::AppError;
-use crate::support::fs::{ensure_dir, publish_file_atomically, replace_dir_atomically};
+use crate::support::fs::{
+    ensure_dir, publish_file_atomically, remove_path_if_exists, replace_dir_atomically,
+};
 use crate::use_cases::context::ExecutionContext;
 use crate::use_cases::request::ToolsDownloadRequest;
 use crate::use_cases::result::{UseCaseFailure, UseCaseResult};
@@ -263,8 +265,7 @@ fn download_asset_file(
             asset.name
         ))
     })?;
-    write_file_download_marker(target_path)?;
-    publish_bytes(context, &bytes, target_path)
+    publish_file_bytes_with_marker(context, &bytes, target_path)
 }
 
 fn download_single_file_from_zip(
@@ -297,8 +298,7 @@ fn download_single_file_from_zip(
         ))
     })?;
     let file = find_file_in_zip(&bytes, file_name)?;
-    write_file_download_marker(target_path)?;
-    publish_bytes(context, &file, target_path)
+    publish_file_bytes_with_marker(context, &file, target_path)
 }
 
 fn download_source_subdir(
@@ -340,6 +340,8 @@ fn download_source_subdir(
         let _ = fs::remove_dir_all(&staged);
     })?;
 
+    let marker_existed = marker_path.exists();
+    write_source_download_marker(target_path, marker_path)?;
     let publish_phase = context.run_no_process_critical_phase(|| {
         replace_dir_atomically(
             &staged,
@@ -353,9 +355,12 @@ fn download_source_subdir(
         )
     });
     match publish_phase {
-        Ok(_) => write_source_download_marker(target_path, marker_path),
+        Ok(_) => Ok(()),
         Err(error) => {
             let _ = fs::remove_dir_all(&staged);
+            if !marker_existed {
+                let _ = remove_path_if_exists(marker_path);
+            }
             Err(AppError::Runtime(format!(
                 "failed to publish source directory '{}': {error}",
                 target_path.display()
@@ -474,6 +479,25 @@ fn publish_bytes(
                 "failed to publish downloaded file '{}': {error}",
                 target_path.display()
             )))
+        }
+    }
+}
+
+fn publish_file_bytes_with_marker(
+    context: &ExecutionContext,
+    bytes: &[u8],
+    target_path: &Path,
+) -> Result<(), AppError> {
+    let marker_path = file_download_marker_path(target_path);
+    let marker_existed = marker_path.exists();
+    write_file_download_marker(target_path)?;
+    match publish_bytes(context, bytes, target_path) {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            if !marker_existed {
+                let _ = remove_path_if_exists(&marker_path);
+            }
+            Err(error)
         }
     }
 }

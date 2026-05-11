@@ -10,6 +10,7 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 const RETRY_ATTEMPTS: usize = 3;
 const RETRY_DELAY: Duration = Duration::from_secs(2);
 const READ_BUFFER_SIZE: usize = 64 * 1024;
+const MAX_DOWNLOAD_BYTES: u64 = 512 * 1024 * 1024;
 
 #[derive(Debug, Error)]
 pub enum DownloadError {
@@ -24,6 +25,15 @@ pub enum DownloadError {
 
     #[error("HTTP response read failed for {url}: {source}")]
     Read { url: String, source: std::io::Error },
+
+    #[error(
+        "HTTP response for {url} exceeds maximum download size {max_bytes} bytes: {size_bytes} bytes"
+    )]
+    ResponseTooLarge {
+        url: String,
+        size_bytes: u64,
+        max_bytes: u64,
+    },
 
     #[error("HTTP download timed out after {timeout_ms}ms")]
     TimedOut { timeout_ms: u64 },
@@ -112,8 +122,11 @@ fn download_once(
         });
     }
 
-    let capacity = response
-        .content_length()
+    let content_length = response.content_length();
+    if let Some(size_bytes) = content_length {
+        ensure_allowed_download_size(&url_text, size_bytes)?;
+    }
+    let capacity = content_length
         .and_then(|value| usize::try_from(value).ok())
         .unwrap_or_default();
     let mut bytes = Vec::with_capacity(capacity);
@@ -131,7 +144,25 @@ fn download_once(
         if read == 0 {
             return Ok(bytes);
         }
+        let next_len = bytes
+            .len()
+            .checked_add(read)
+            .and_then(|value| u64::try_from(value).ok())
+            .unwrap_or(u64::MAX);
+        ensure_allowed_download_size(&url_text, next_len)?;
         bytes.extend_from_slice(&buffer[..read]);
+    }
+}
+
+fn ensure_allowed_download_size(url: &str, size_bytes: u64) -> Result<(), DownloadError> {
+    if size_bytes > MAX_DOWNLOAD_BYTES {
+        Err(DownloadError::ResponseTooLarge {
+            url: url.to_owned(),
+            size_bytes,
+            max_bytes: MAX_DOWNLOAD_BYTES,
+        })
+    } else {
+        Ok(())
     }
 }
 
@@ -184,9 +215,37 @@ impl DownloadError {
             DownloadError::Read { .. } => true,
             DownloadError::Status { status, .. } => status.is_server_error(),
             DownloadError::Client(_)
+            | DownloadError::ResponseTooLarge { .. }
             | DownloadError::TimedOut { .. }
             | DownloadError::Cancelled
             | DownloadError::InvalidUtf8(_) => false,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn download_size_limit_accepts_boundary_size() {
+        ensure_allowed_download_size("https://example.invalid/file", MAX_DOWNLOAD_BYTES)
+            .expect("boundary size is accepted");
+    }
+
+    #[test]
+    fn download_size_limit_rejects_oversized_response() {
+        let error =
+            ensure_allowed_download_size("https://example.invalid/file", MAX_DOWNLOAD_BYTES + 1)
+                .expect_err("oversized response is rejected");
+
+        assert!(matches!(
+            error,
+            DownloadError::ResponseTooLarge {
+                size_bytes,
+                max_bytes,
+                ..
+            } if size_bytes == MAX_DOWNLOAD_BYTES + 1 && max_bytes == MAX_DOWNLOAD_BYTES
+        ));
     }
 }

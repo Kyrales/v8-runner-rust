@@ -121,6 +121,10 @@ v8-runner tools download client-mcp [--sources] [--force]
   `vanessa` заполняет `tools.va.epf_path`, `client-mcp` заполняет
   `tools.client_mcp.extension`; повторный запуск переиспользует уже скачанные файлы, а
   `--force` перезаписывает только managed targets, созданные `tools download`.
+- Managed target определяется sidecar marker-файлом `tools download`; если публикация файла или
+  каталога не завершилась, новый marker очищается и target не считается управляемым.
+- Каждый HTTP response body ограничен 512 MiB; превышение лимита возвращает ошибку до публикации
+  target.
 
 ### `extensions`
 

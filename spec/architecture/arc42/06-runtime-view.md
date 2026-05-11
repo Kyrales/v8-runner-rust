@@ -88,6 +88,11 @@ sequenceDiagram
   `vanessa` и `tools.client_mcp.extension` для `client-mcp`; загрузка не устанавливает
   расширения в ИБ, не подменяет `build` и при `--force` заменяет только managed targets,
   созданные этой командой.
+- Managed target фиксируется sidecar marker-файлом до publish phase. Если публикация скачанного
+  файла или каталога завершается ошибкой, новый marker очищается, чтобы следующий запуск не считал
+  неуспешный target управляемым.
+- HTTP download path ограничивает response body 512 MiB и прерывает сценарий до распаковки или
+  публикации, если release asset или source archive превышает лимит.
 
 ### 6.5 Сценарий MCP EDT Syntax
 
