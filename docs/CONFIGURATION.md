@@ -31,8 +31,8 @@ v8-runner config init
 Что делает `config init`:
 
 - создаёт `v8project.yaml` в текущем каталоге или по `--output <FILE>`;
-- добавляет modeline `yaml-language-server` со ссылкой на versioned schema для текущей версии
-  `v8-runner`;
+- добавляет modeline `yaml-language-server` со ссылкой на опубликованный schema artifact в
+  ветке `master`;
 - создаёт рядом пустой `v8project.local.yaml` с modeline на
   `https://raw.githubusercontent.com/alkoleft/v8-runner-rust/master/docs/schemas/v8project.local.schema.json`;
 - добавляет `v8project.local.yaml` в `.gitignore`, если подходящий pattern еще не указан;
