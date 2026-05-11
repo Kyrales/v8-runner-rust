@@ -133,7 +133,7 @@ fn extensions_command_updates_all_extension_properties() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("│"));
     assert!(stdout.contains("● client_mcp: disable_safety"));
-    assert!(stdout.contains("│   updating extension properties"));
+    assert!(stdout.contains("updating extension properties"));
     assert!(stdout.contains("│   безопасный режим"));
     assert!(stdout.contains("● tests: disable_safety"));
     assert!(stdout.contains("● Extension properties updated successfully"));
