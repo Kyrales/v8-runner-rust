@@ -103,7 +103,8 @@ Schema version равна версии приложения из `Cargo.toml` и
 `v8project.yaml` использует не один стиль на весь документ. Это текущий loader contract, и docs
 ниже повторяют именно literal YAML keys.
 
-- top-level app keys: `basePath`, `workPath`, `source-set`;
+- top-level app keys: `workPath`, `execution_timeout`, `format`, `builder`, `infobase`,
+  `source-set`, `build`, `tools`, `mcp`, `tests`;
 - `build` использует `partialLoadThreshold`;
 - `mcp.*` и `tests.*` используют `snake_case`;
 - canonical key для EDT tool section: `tools.edt_cli`;
@@ -118,8 +119,6 @@ Schema version равна версии приложения из `Cargo.toml` и
 ## Канонический пример
 
 ```yaml
-# basePath можно опустить, тогда он равен каталогу v8project.yaml.
-basePath: /path/to/project
 workPath: build
 execution_timeout: 300000
 format: EDT
@@ -252,14 +251,6 @@ tests:
 
 ## Обязательный контракт
 
-### `basePath`
-
-- Тип: путь
-- Обязателен: нет
-- По умолчанию: каталог primary `v8project.yaml`
-
-Корень исходников проекта. Должен существовать и быть каталогом.
-
 ### `workPath`
 
 - Тип: путь
@@ -350,6 +341,8 @@ Credentials самой информационной базы.
 - `type`
 - `path`
 
+`path` задаётся относительно каталога primary `v8project.yaml`, если он не абсолютный.
+
 `type` поддерживает только:
 
 - `CONFIGURATION`
@@ -418,8 +411,8 @@ runtime identity и не добавляет отдельное поле конф
 ведущий `@`, если он указан в `profiles.<name>.filter_tags`, `profiles.<name>.ignore_tags`,
 `--filter-tag` или `--ignore-tag`.
 
-При генерации runtime `VAParams` runner добавляет `WorkspaceRoot` со значением `basePath`,
-если это поле отсутствует или равно `null` в `tests.va.params_path`.
+При генерации runtime `VAParams` runner добавляет `WorkspaceRoot` со значением каталога primary
+`v8project.yaml`, если это поле отсутствует или равно `null` в `tests.va.params_path`.
 
 Для Vanessa Automation обязательны:
 

@@ -307,14 +307,6 @@ where
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct MainConfigSchema {
-    /// Root directory for project sources; defaults to the directory containing `v8project.yaml`.
-    #[serde(
-        default,
-        deserialize_with = "deserialize_non_null_optional",
-        skip_serializing_if = "Option::is_none"
-    )]
-    #[schemars(with = "PathBuf")]
-    base_path: Option<PathBuf>,
     /// Working directory for generated state, logs, temporary files, and hash storages.
     work_path: PathBuf,
     /// Global execution budget for public CLI and MCP commands in milliseconds.
@@ -509,7 +501,7 @@ struct SourceSetSchema {
     /// Source-set type: configuration, extension, external data processors, or external reports.
     #[serde(rename = "type")]
     purpose: SourceSetPurposeSchema,
-    /// Source path relative to `basePath` or an EDT project path.
+    /// Source path relative to the primary config directory or an EDT project path.
     path: PathBuf,
 }
 
@@ -1047,6 +1039,7 @@ mod tests {
     use std::path::Path;
 
     const REMOVED_SCHEMA_ALIAS_PROPERTIES: &[&str] = &[
+        "basePath",
         "executionTimeout",
         "execution_timeout_ms",
         "edt-cli",
@@ -1076,7 +1069,6 @@ mod tests {
     #[test]
     fn generated_schemas_include_user_facing_field_descriptions() {
         let main_schema = main_config_schema_json();
-        assert_property_description_contains(&main_schema, &[], "basePath", "Root directory");
         assert_property_description_contains(&main_schema, &[], "workPath", "Working directory");
         assert_property_description_contains(
             &main_schema,
@@ -1476,6 +1468,10 @@ mod tests {
         for config in [
             format!(
                 "{}toolz: {{}}\n",
+                minimal_project_config_without_base_path()
+            ),
+            format!(
+                "{}basePath: /tmp/project\n",
                 minimal_project_config_without_base_path()
             ),
             format!(

@@ -17,7 +17,7 @@ pub enum ConfigValidationError {
     #[error("{0}")]
     InvalidYamlRoot(String),
 
-    #[error("basePath does not exist or is not a directory: {0}")]
+    #[error("project base path does not exist or is not a directory: {0}")]
     BasePathInvalid(String),
 
     #[error("workPath could not be created: {0}")]

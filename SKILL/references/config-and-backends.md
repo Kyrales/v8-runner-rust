@@ -6,7 +6,6 @@ settings before CLI overrides.
 
 ## Fields To Check First
 
-- `basePath`: root of 1C source files; defaults to the directory containing the primary config when omitted.
 - `workPath`: generated state, temp files, and workspace location.
 - `format`: `DESIGNER` or `EDT`.
 - `builder`: `DESIGNER` or `IBCMD`.
@@ -36,6 +35,7 @@ settings before CLI overrides.
 ## Source-Set Notes
 
 `source-set.name` is the stable identity for ordering, diagnostics, runtime contexts, generated directories, and command selection.
+Relative `source-set.path` values are resolved from the directory containing the primary `v8project.yaml`.
 
 Supported `source-set.type` values:
 

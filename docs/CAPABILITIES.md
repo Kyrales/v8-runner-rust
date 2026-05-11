@@ -201,7 +201,7 @@ v8-runner convert [--source-set <NAME>] [--output <DIR>]
 - Работает от текущего `v8project.yaml`, а не по arbitrary source/target paths.
 - Направление определяется только из `format`.
 - Без `--output` публикует результат под `workPath/convert/out/<sourceSetName>/<designer|edt>/`.
-- `--output` задаёт только target root и зеркалит `source-set.path` относительно `basePath`.
+- `--output` задаёт только target root и зеркалит `source-set.path` относительно каталога primary config.
 - Публикация остаётся staged full replacement с overlap guardrails.
 
 ### `load`

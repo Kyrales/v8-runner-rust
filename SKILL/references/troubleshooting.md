@@ -14,7 +14,7 @@ Inspect `v8project.yaml` fields that affect the failing command:
 - `format`
 - `builder`
 - `connection`
-- `basePath`
+- primary config directory
 - `workPath`
 - `source-set`
 - `tools.platform`

@@ -90,6 +90,7 @@ fn config_init_creates_yaml_with_detected_designer_sources() {
     )));
     serde_yaml::from_str::<serde_yaml::Value>(&config).expect("generated config remains YAML");
     assert!(config.contains("format: DESIGNER"));
+    assert!(!config.contains("basePath:"));
     assert!(config.contains("workPath: 'build'"));
     assert!(config.contains("infobase:"));
     assert!(config.contains("  connection: 'File=build/ib'"));
@@ -147,6 +148,7 @@ fn config_init_uses_json_envelope_and_output_override() {
     let config = fs::read_to_string(config_path).expect("config");
     assert!(config.contains("infobase:"));
     assert!(config.contains("  connection: 'File=/tmp/test-ib'"));
+    assert!(!config.contains("basePath:"));
 }
 
 #[test]
@@ -161,7 +163,10 @@ fn config_init_creates_local_overlay_next_to_output_override() {
         .expect("run command");
 
     assert!(output.status.success());
-    assert!(dir.path().join("config").join("v8project.yaml").exists());
+    let config =
+        fs::read_to_string(dir.path().join("config").join("v8project.yaml")).expect("config");
+    assert!(!config.contains("basePath:"));
+    assert!(config.contains("path: '..'"));
     let local_config = fs::read_to_string(dir.path().join("config").join("v8project.local.yaml"))
         .expect("local config");
     assert!(local_config.starts_with(LOCAL_CONFIG_SCHEMA_MODEL_LINE));
