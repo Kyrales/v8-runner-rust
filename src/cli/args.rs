@@ -3,6 +3,7 @@ use clap::{Args, Parser, Subcommand};
 #[derive(Parser, Debug)]
 #[command(
     name = "v8-runner",
+    version,
     about = "Run 1C:Enterprise build, test, dump, convert, and launch workflows"
 )]
 pub struct Cli {
@@ -43,6 +44,8 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub enum Command {
+    /// Print application version
+    Version,
     /// Generate project configuration and autodetect source-sets
     Config(ConfigArgs),
     /// Download YaXUnit, Vanessa Automation, and client MCP tool assets
@@ -532,6 +535,12 @@ mod tests {
     fn parses_init_command() {
         let cli = Cli::try_parse_from(["v8-runner", "init"]).expect("parse");
         assert!(matches!(cli.command, Command::Init));
+    }
+
+    #[test]
+    fn parses_version_command() {
+        let cli = Cli::try_parse_from(["v8-runner", "version"]).expect("parse");
+        assert!(matches!(cli.command, Command::Version));
     }
 
     #[test]

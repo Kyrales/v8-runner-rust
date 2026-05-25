@@ -87,6 +87,7 @@ pub fn execute_command(
     let cancellation = CancellationToken::new();
     let _signal_guard = CliSignalGuard::install(cancellation.clone());
     match command {
+        Command::Version => unreachable!("version command is handled outside cli::execute"),
         Command::Config(_) => unreachable!("config commands are handled outside cli::execute"),
         Command::Tools(args) => execute_tools(
             config,
@@ -167,6 +168,7 @@ pub fn execute_command(
 /// Returns the canonical command identifier for a parsed CLI command.
 pub fn command_name(command: &Command) -> CommandName {
     match command {
+        Command::Version => unreachable!("version command does not map to execution use cases"),
         Command::Config(_) => unreachable!("config commands do not map to execution use cases"),
         Command::Tools(ToolsArgs {
             command: ToolsCommand::Download(_),

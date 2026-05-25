@@ -32,8 +32,11 @@ v8-runner --json-message build
 
 Use text output for direct human diagnostics.
 
+Use `v8-runner version` or `v8-runner --version` to check the installed application version; it does not require `v8project.yaml`.
+
 Useful global flags:
 
+- `--version` to print the application version and exit.
 - `--config <CONFIG>` when the active config is not `./v8project.yaml`.
 - `--json-message` for machine-readable CLI envelopes.
 - `--workdir <WORKDIR>` to override `workPath`; it wins over `v8project.local.yaml`.

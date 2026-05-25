@@ -1,4 +1,5 @@
 use clap::Parser;
+use serde::Serialize;
 use tracing::{debug, error};
 
 use crate::cli::args::{
@@ -17,10 +18,15 @@ use crate::use_cases::config_init::{ConfigBuilderRequest, ConfigFormatRequest, C
 use crate::use_cases::result::{UseCaseError, UseCaseErrorKind};
 
 const CONFIG_INIT_COMMAND: &str = "config init";
+const VERSION_COMMAND: &str = "version";
 
 pub fn run() -> i32 {
     let cli = Cli::parse();
     let output_format = cli_output_format(cli.json_message);
+
+    if let Command::Version = &cli.command {
+        return run_version_command(output_format);
+    }
 
     if let Command::Mcp(args) = &cli.command {
         return run_mcp_command(&cli, args);
@@ -83,6 +89,7 @@ pub fn run() -> i32 {
     }
 
     let result = match &cli.command {
+        Command::Version => unreachable!("version command is handled before config loading"),
         Command::Init
         | Command::Config(_)
         | Command::Tools(_)
@@ -140,9 +147,35 @@ fn load_cli_config(
 
 fn command_name(command: &Command) -> &'static str {
     match command {
+        Command::Version => VERSION_COMMAND,
         Command::Config(_) => "config",
         _ => execute::command_name(command).as_str(),
     }
+}
+
+#[derive(Debug, Serialize)]
+struct VersionInfo {
+    name: &'static str,
+    version: &'static str,
+}
+
+fn run_version_command(output_format: &str) -> i32 {
+    let info = VersionInfo {
+        name: env!("CARGO_PKG_NAME"),
+        version: env!("CARGO_PKG_VERSION"),
+    };
+
+    if output_format == "json" {
+        let presenter = Presenter::new(
+            output_format.to_owned(),
+            crate::output::presenter::ColorMode::Disabled,
+        );
+        presenter.print_envelope(&Envelope::ok(VERSION_COMMAND, 0, info));
+    } else {
+        println!("{} {}", info.name, info.version);
+    }
+
+    0
 }
 
 fn run_config_command(args: &crate::cli::args::ConfigArgs, presenter: &Presenter) -> i32 {
