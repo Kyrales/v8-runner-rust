@@ -284,11 +284,9 @@ mod tests {
             .iter()
             .any(|arg| arg == "/tmp/va/vanessa automation.epf"));
         assert!(args.iter().any(|arg| arg == "/TESTMANAGER"));
-        assert!(args.windows(2).any(|pair| pair
-            == [
-                "/C",
-                "StartFeaturePlayer;VAParams=/tmp/va/va-params.json"
-            ]));
+        assert!(args
+            .windows(2)
+            .any(|pair| pair == ["/C", "StartFeaturePlayer;VAParams=/tmp/va/va-params.json"]));
     }
 
     #[test]

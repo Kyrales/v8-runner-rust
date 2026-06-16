@@ -1138,9 +1138,14 @@ mod tests {
         let expected = schema_json_pretty(generated);
         let actual = std::fs::read_to_string(path).expect("schema artifact");
         assert_eq!(
-            actual, expected,
+            normalize_newlines(&actual),
+            expected,
             "{path} is stale; rerun UPDATE_CONFIG_SCHEMAS=1 cargo test generated_schema_artifacts_are_current"
         );
+    }
+
+    fn normalize_newlines(text: &str) -> String {
+        text.replace("\r\n", "\n")
     }
 
     fn write_schema_file(path: &str, generated: &serde_json::Value) {

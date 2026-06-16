@@ -227,10 +227,7 @@ fn apply_test_overlay(object: &mut Map<String, Value>, artifacts: VanessaTestArt
     );
     object.insert("ДелатьОтчетВФорматеjUnit".to_owned(), Value::Bool(true));
     let junit_dir = Value::String(artifacts.junit_dir.display().to_string());
-    object.insert(
-        "КаталогВыгрузкиJUnit".to_owned(),
-        junit_dir.clone(),
-    );
+    object.insert("КаталогВыгрузкиJUnit".to_owned(), junit_dir.clone());
     ensure_object(object, "ОтчетJUnit").insert("КаталогВыгрузкиJUnit".to_owned(), junit_dir);
     apply_logging_overlay(
         object,
