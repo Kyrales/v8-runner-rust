@@ -1633,6 +1633,7 @@ mod tests {
         assert!(result.issues.is_empty());
     }
 
+    #[cfg(unix)]
     #[test]
     fn clean_exit_returns_clean_status() {
         let dir = tempdir().expect("tempdir");
@@ -1653,6 +1654,7 @@ mod tests {
         assert_eq!(result.exit_code, 0);
     }
 
+    #[cfg(unix)]
     #[test]
     fn validation_exit_preserves_parsed_issues() {
         let dir = tempdir().expect("tempdir");
@@ -1688,6 +1690,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn tool_failure_preserves_stderr_and_fallback_issue() {
         let dir = tempdir().expect("tempdir");
@@ -1719,6 +1722,7 @@ mod tests {
             .contains("license error"));
     }
 
+    #[cfg(unix)]
     #[test]
     fn unreadable_out_log_keeps_structured_failure() {
         let dir = tempdir().expect("tempdir");
@@ -1745,6 +1749,7 @@ mod tests {
         assert_eq!(result.issues.len(), 1);
     }
 
+    #[cfg(unix)]
     #[test]
     fn syntax_edt_runs_all_source_sets_when_projects_not_specified() {
         let dir = tempdir().expect("tempdir");
@@ -1776,6 +1781,7 @@ mod tests {
         assert!(result.platform_log_path.is_none());
     }
 
+    #[cfg(unix)]
     #[test]
     fn syntax_edt_uses_clean_syntax_workspace_instead_of_build_workspace() {
         let dir = tempdir().expect("tempdir");
@@ -1828,6 +1834,7 @@ mod tests {
             .contains("unknown EDT source-set(s): unknown"));
     }
 
+    #[cfg(unix)]
     #[test]
     fn syntax_edt_prefers_tool_failed_exit_code_in_aggregate() {
         let dir = tempdir().expect("tempdir");
@@ -1914,6 +1921,7 @@ mod tests {
         assert_eq!(payload.exit_code, -1);
     }
 
+    #[cfg(unix)]
     #[test]
     fn syntax_edt_uses_one_shot_execution_when_interactive_mode_is_disabled() {
         let dir = tempdir().expect("tempdir");

@@ -1434,7 +1434,7 @@ mod tests {
                     stderr: String::new(),
                 },
                 CommandBehavior::CompleteAfter {
-                    delay: Duration::from_millis(20),
+                    delay: Duration::from_millis(100),
                     stdout: "/tmp/other\n".to_owned(),
                     stderr: String::new(),
                 },
@@ -1478,6 +1478,13 @@ mod tests {
             let manager = manager.clone();
             async move { manager.execute(request("cmd-2", 200)).await }
         });
+        for _ in 0..50 {
+            if queued_len(&manager) == 1 {
+                break;
+            }
+            sleep(Duration::from_millis(5)).await;
+        }
+        assert_eq!(queued_len(&manager), 1);
 
         let first_result = first.await.expect("first join");
         assert!(matches!(
@@ -1487,7 +1494,7 @@ mod tests {
         assert_eq!(
             queued.await.expect("queued join"),
             Err(EdtSessionError::DrainedByRestartOrShutdown {
-                reason: EdtSessionDrainReason::Restart
+                reason: EdtSessionDrainReason::Restart,
             })
         );
         assert_eq!(
@@ -2020,7 +2027,7 @@ mod tests {
         let workspace = PathBuf::from("/tmp/edt workspace");
         let inner = FakeSessionFactory::new(vec![
             SessionPlan::Session(vec![CommandBehavior::CompleteAfter {
-                delay: Duration::from_millis(40),
+                delay: Duration::from_millis(200),
                 stdout: String::new(),
                 stderr: String::new(),
             }]),
@@ -2045,7 +2052,7 @@ mod tests {
         let factory = ResettingSessionFactory::new(
             inner.clone(),
             workspace.clone(),
-            Duration::from_millis(10),
+            Duration::from_millis(100),
         );
         let manager = manager(factory, 2, Duration::from_millis(100));
 
@@ -2058,6 +2065,13 @@ mod tests {
             let manager = manager.clone();
             async move { manager.execute(request("cmd-2", 200)).await }
         });
+        for _ in 0..50 {
+            if queued_len(&manager) == 1 {
+                break;
+            }
+            sleep(Duration::from_millis(5)).await;
+        }
+        assert_eq!(queued_len(&manager), 1);
 
         let first_result = first.await.expect("first join");
         assert!(matches!(

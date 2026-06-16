@@ -51,6 +51,7 @@ mod tests {
         dump_object_list_file, partial_list_file, partial_lists_dir, platform_logs_dir,
         reserved_source_set_dir,
     };
+    use std::path::Path;
     use tempfile::tempdir;
 
     #[test]
@@ -60,8 +61,8 @@ mod tests {
         let partial_dir = partial_lists_dir(dir.path()).expect("partial dir");
         let logs_dir = platform_logs_dir(dir.path()).expect("logs dir");
 
-        assert!(partial_dir.ends_with("temp/partial-lists"));
-        assert!(logs_dir.ends_with("logs/platform"));
+        assert!(partial_dir.ends_with(Path::new("temp").join("partial-lists")));
+        assert!(logs_dir.ends_with(Path::new("logs").join("platform")));
     }
 
     #[test]
@@ -72,12 +73,12 @@ mod tests {
         let dump_partial = dump_object_list_file(dir.path()).expect("dump partial file");
         assert!(partial
             .path()
-            .to_string_lossy()
-            .contains("temp/partial-lists"));
+            .parent()
+            .is_some_and(|path| path.ends_with(Path::new("temp").join("partial-lists"))));
         assert!(dump_partial
             .path()
-            .to_string_lossy()
-            .contains("temp/partial-lists"));
+            .parent()
+            .is_some_and(|path| path.ends_with(Path::new("temp").join("partial-lists"))));
     }
 
     #[test]
@@ -86,6 +87,6 @@ mod tests {
         let reserved = reserved_source_set_dir(dir.path(), "main");
 
         assert!(!reserved.exists());
-        assert!(reserved.ends_with("designer/main"));
+        assert!(reserved.ends_with(Path::new("designer").join("main")));
     }
 }
