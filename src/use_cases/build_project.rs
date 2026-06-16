@@ -29,6 +29,7 @@ use crate::use_cases::request::BuildRequest as BuildArgs;
 use crate::use_cases::result::{UseCaseFailure, UseCaseResult};
 use crate::use_cases::source_inventory::SourceSetInventory;
 use crate::use_cases::tool_extension;
+use tempfile::NamedTempFile;
 use tracing::debug;
 
 mod coordinator;
@@ -455,10 +456,8 @@ fn execute_source_set_step(
         let list_file = partial_list_file(&config.work_path).map_err(|error| {
             AppError::Runtime(format!("failed to create partial list file: {error}"))
         })?;
-        partial_load::write_list_file(paths, load_context.path(), list_file.path()).map_err(
-            |error| AppError::Runtime(format!("failed to write partial load list: {error}")),
-        )?;
-        build_designer_dsl(
+        let list_file = write_partial_load_list_or_preserve(paths, load_context.path(), list_file)?;
+        let designer_dsl = match build_designer_dsl(
             context,
             config,
             binary,
@@ -467,13 +466,34 @@ fn execute_source_set_step(
             step_index,
             "load",
             InterruptionSafetyClass::CriticalNonAbortable,
-        )?
-        .load_config_from_files_partial(
+        ) {
+            Ok(dsl) => dsl,
+            Err(error) => {
+                let partial_list = preserve_partial_load_list(list_file);
+                return Err(attach_partial_load_list_path(error, partial_list));
+            }
+        };
+        let load_result = designer_dsl.load_config_from_files_partial(
             load_context.path(),
             list_file.path(),
             extension_name(source_set),
-        )
-        .map_err(AppError::from)?
+        );
+        match load_result {
+            Ok(result) if result.process.exit_code == 0 => result,
+            Ok(result) => {
+                let partial_list = preserve_partial_load_list(list_file);
+                ensure_platform_success("load", source_set, &result)
+                    .map_err(|error| attach_partial_load_list_path(error, partial_list))?;
+                result
+            }
+            Err(error) => {
+                let partial_list = preserve_partial_load_list(list_file);
+                return Err(attach_partial_load_list_path(
+                    AppError::from(error),
+                    partial_list,
+                ));
+            }
+        }
     } else {
         build_designer_dsl(
             context,
@@ -530,6 +550,49 @@ fn execute_source_set_step(
     .into_iter()
     .flatten()
     .collect())
+}
+
+fn write_partial_load_list_or_preserve(
+    paths: &[PathBuf],
+    source_root: &Path,
+    list_file: NamedTempFile,
+) -> Result<NamedTempFile, AppError> {
+    match partial_load::write_list_file(paths, source_root, list_file.path()) {
+        Ok(()) => Ok(list_file),
+        Err(error) => {
+            let partial_list = preserve_partial_load_list(list_file);
+            Err(attach_partial_load_list_path(
+                AppError::Runtime(format!("failed to write partial load list: {error}")),
+                partial_list,
+            ))
+        }
+    }
+}
+
+fn preserve_partial_load_list(list_file: NamedTempFile) -> Result<PathBuf, String> {
+    let original_path = list_file.path().to_path_buf();
+    list_file.keep().map(|(_file, path)| path).map_err(|error| {
+        format!(
+            "failed to preserve partial load list '{}': {}",
+            original_path.display(),
+            error.error
+        )
+    })
+}
+
+fn attach_partial_load_list_path(
+    error: AppError,
+    partial_list: Result<PathBuf, String>,
+) -> AppError {
+    let detail = match partial_list {
+        Ok(path) => format!("partial load list path: {}", path.display()),
+        Err(message) => message,
+    };
+
+    match error {
+        AppError::Platform(message) => AppError::Platform(format!("{message}; {detail}")),
+        other => other.with_context(detail),
+    }
 }
 
 fn execute_source_set_step_ibcmd(
@@ -2585,6 +2648,131 @@ mod tests {
 
         let rerun = run_build(&config, &build_args(false)).expect("rerun");
         assert!(matches!(rerun.steps[0].mode, BuildMode::Skipped));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn failing_partial_load_preserves_list_file_and_reports_path() {
+        let dir = tempdir().expect("tempdir");
+        let base = dir.path().join("base");
+        let work = dir.path().join("work");
+        let script = dir.path().join("1cv8");
+        let calls = dir.path().join("calls.log");
+        create_source_tree(&base);
+        write_designer_script(&script, &calls, Some("/LoadConfigFromFiles"));
+        let config = build_config(
+            &base,
+            &work,
+            &script,
+            20,
+            SourceFormat::Designer,
+            BuilderBackend::Designer,
+        );
+        prime_snapshots(&config);
+
+        fs::write(
+            base.join("main")
+                .join("Catalogs.Items")
+                .join("ObjectModule.bsl"),
+            "procedure Test()\n  // changed\nendprocedure",
+        )
+        .expect("modify main");
+
+        let failure = run_build(&config, &build_args(false)).expect_err("partial load fails");
+        let message = failure.error.message();
+        let marker = "partial load list path: ";
+        let list_path = message
+            .split(marker)
+            .nth(1)
+            .map(str::trim)
+            .map(PathBuf::from)
+            .expect("partial list path in error");
+        let list_contents = fs::read_to_string(&list_path).expect("preserved partial list");
+        let payload = failure
+            .payload
+            .as_ref()
+            .expect("build failures should preserve a structured payload");
+
+        assert_eq!(failure.error.kind(), UseCaseErrorKind::Platform);
+        assert!(matches!(payload.steps[0].mode, BuildMode::Partial { .. }));
+        assert!(!payload.steps[0].ok);
+        assert!(list_path.starts_with(work.join("temp").join("partial-lists")));
+        assert!(list_contents.contains("Catalogs.Items/ObjectModule.bsl"));
+        assert!(list_contents.contains("Catalogs.Items/ObjectModule.xml"));
+        assert!(!list_contents.lines().any(|line| line == "Catalogs.Items"));
+        assert_eq!(storage_generation(&config, "main"), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn failing_partial_load_dsl_setup_preserves_list_file_and_reports_path() {
+        let dir = tempdir().expect("tempdir");
+        let base = dir.path().join("base");
+        let work = dir.path().join("work");
+        let script = dir.path().join("1cv8");
+        let calls = dir.path().join("calls.log");
+        create_source_tree(&base);
+        write_designer_script(&script, &calls, None);
+        let config = build_config(
+            &base,
+            &work,
+            &script,
+            20,
+            SourceFormat::Designer,
+            BuilderBackend::Designer,
+        );
+        prime_snapshots(&config);
+
+        fs::write(
+            base.join("main")
+                .join("Catalogs.Items")
+                .join("ObjectModule.bsl"),
+            "procedure Test()\n  // changed\nendprocedure",
+        )
+        .expect("modify main");
+        fs::write(work.join("logs"), "not a directory").expect("block platform logs dir");
+
+        let failure = run_build(&config, &build_args(false)).expect_err("partial load setup fails");
+        let message = failure.error.message();
+        let marker = "partial load list path: ";
+        let list_path = message
+            .split(marker)
+            .nth(1)
+            .and_then(|tail| tail.split(';').next())
+            .map(str::trim)
+            .map(PathBuf::from)
+            .expect("partial list path in error");
+        let list_contents = fs::read_to_string(&list_path).expect("preserved partial list");
+
+        assert_eq!(failure.error.kind(), UseCaseErrorKind::Runtime);
+        assert!(message.contains("failed to create platform logs dir"));
+        assert!(list_path.starts_with(work.join("temp").join("partial-lists")));
+        assert!(list_contents.contains("Catalogs.Items/ObjectModule.bsl"));
+        assert!(!list_contents.lines().any(|line| line == "Catalogs.Items"));
+        assert!(!calls.exists());
+        assert_eq!(storage_generation(&config, "main"), 1);
+    }
+
+    #[test]
+    fn partial_load_list_write_error_preserves_list_file_path() {
+        let temp = tempdir().expect("tempdir");
+        let root = temp.path().join("src");
+        let outside = temp.path().join("outside.bsl");
+        std::fs::create_dir_all(&root).expect("root");
+        std::fs::write(&outside, "module").expect("outside file");
+        let list_file = tempfile::NamedTempFile::new_in(temp.path()).expect("list file");
+        let list_path = list_file.path().to_path_buf();
+
+        let error = super::write_partial_load_list_or_preserve(&[outside], &root, list_file)
+            .expect_err("write must fail for path outside root");
+
+        let crate::support::error::AppError::Runtime(message) = error else {
+            panic!("expected runtime error");
+        };
+        assert!(message.contains("failed to write partial load list"));
+        assert!(message.contains("partial load list path:"));
+        assert!(message.contains(&list_path.display().to_string()));
+        assert!(list_path.exists());
     }
 
     #[cfg(unix)]

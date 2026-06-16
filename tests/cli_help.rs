@@ -15,8 +15,24 @@ fn root_help_splits_commands_and_global_options() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("Commands:"));
     assert!(stdout.contains("Global options:"));
+    assert!(stdout.contains("Print application version"));
     assert!(stdout.contains("Build configured source-sets into the infobase"));
     assert!(stdout.contains("--json-message"));
+}
+
+#[test]
+fn root_version_flag_prints_application_version() {
+    let output = v8_runner_command()
+        .args(["--version"])
+        .output()
+        .expect("run command");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(
+        stdout.trim(),
+        format!("v8-runner {}", env!("CARGO_PKG_VERSION"))
+    );
 }
 
 #[test]

@@ -35,6 +35,8 @@ v8-runner build --full-rebuild
 
 Partial dump with IBCMD degrades to incremental dump. Mention this in the summary and check the resulting Git diff.
 
+Failed Designer partial-load builds report `partial load list path: ...`. Inspect that file together with the adjacent platform log to see the exact relative file paths passed to `-listFile`; directory entries in that list are a runner bug.
+
 Do not clean failed run directories until diagnostics are complete. Failed artifacts should remain under:
 
 ```text
@@ -50,4 +52,5 @@ Useful `workPath` locations:
 - `workPath/convert/edt-workspace/`: separate EDT workspace for `convert`.
 - `workPath/designer/<sourceSetName>/`: generated Designer representation, especially for EDT flows.
 - `workPath/logs/platform/`: platform logs.
+- `workPath/temp/partial-lists/`: Designer partial load/dump list files; failed partial-load builds preserve the relevant list file for diagnostics.
 - `workPath/temp/`: temporary run artifacts and diagnostics.

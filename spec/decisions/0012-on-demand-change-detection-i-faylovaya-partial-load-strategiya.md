@@ -33,7 +33,7 @@
 9. `--full-rebuild` означает bypass текущего анализа и последующий full rescan/commit после успешной platform операции; это не отдельный backend mode.
 10. Partial load является file-level стратегией, а не semantic object dependency graph.
 11. Partial load запрещён и заменяется full load, если изменён `Configuration.xml`, есть удаления, expansion небезопасен, expanded set пустой или превышает `build.partialLoadThreshold`.
-12. Изменения `.bsl` расширяются до sibling XML и object directory, чтобы Designer получил достаточно файлов для безопасной загрузки.
+12. Изменения `.bsl` расширяются только до существующих связанных XML-файлов, включая sibling XML и ancestor XML descriptors; каталоги в `-listFile` не добавляются, потому что Designer partial load должен получать file-only список.
 13. Prepared snapshot коммитится только после успешного соответствующего export/load step.
 
 ## Неграницы (Non-goals)
