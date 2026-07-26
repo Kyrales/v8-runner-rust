@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use chrono::Utc;
+use uuid::Uuid;
 
 use crate::support::error::AppError;
 use crate::support::fs::{
@@ -65,6 +65,22 @@ impl StagedPublication {
         stage_prefix: &str,
         extension: &str,
     ) -> Result<Self, AppError> {
+        Self::prepare_file_with_metadata_writer(
+            target_path,
+            target_identity,
+            stage_prefix,
+            extension,
+            |publication| publication.write_stage_metadata("failed to write staging metadata"),
+        )
+    }
+
+    fn prepare_file_with_metadata_writer(
+        target_path: &Path,
+        target_identity: &str,
+        stage_prefix: &str,
+        extension: &str,
+        write_metadata: impl FnOnce(&Self) -> Result<(), AppError>,
+    ) -> Result<Self, AppError> {
         let target_parent = target_path.parent().ok_or_else(|| {
             AppError::Runtime(format!(
                 "target path has no parent: {}",
@@ -88,7 +104,9 @@ impl StagedPublication {
                 publication.staging_path.display()
             )));
         }
-        publication.write_stage_metadata("failed to write staging metadata")?;
+        if let Err(error) = write_metadata(&publication) {
+            return Err(publication.cleanup_failure(error));
+        }
         Ok(publication)
     }
 
@@ -173,10 +191,34 @@ impl StagedPublication {
 }
 
 pub(super) fn cleanup_staging_path(staging_path: &Path, error: AppError) -> AppError {
+    cleanup_staging_path_with(staging_path, error, remove_path_if_exists)
+}
+
+fn cleanup_staging_path_with(
+    staging_path: &Path,
+    error: AppError,
+    mut remove: impl FnMut(&Path) -> std::io::Result<()>,
+) -> AppError {
     let sidecar = metadata_sidecar_path(staging_path);
-    let _ = remove_path_if_exists(staging_path);
-    let _ = remove_path_if_exists(&sidecar);
-    error
+    let mut cleanup_errors = Vec::new();
+    if let Err(remove_error) = remove(staging_path) {
+        cleanup_errors.push(format!(
+            "failed to remove staging path '{}': {remove_error}",
+            staging_path.display()
+        ));
+    }
+    if let Err(remove_error) = remove(&sidecar) {
+        cleanup_errors.push(format!(
+            "failed to remove staging metadata '{}': {remove_error}",
+            sidecar.display()
+        ));
+    }
+
+    if cleanup_errors.is_empty() {
+        error
+    } else {
+        error.with_context(format!("cleanup failed: {}", cleanup_errors.join("; ")))
+    }
 }
 
 pub(super) fn interruption_before_publish(
@@ -187,8 +229,11 @@ pub(super) fn interruption_before_publish(
 }
 
 fn make_run_id() -> String {
-    let timestamp = Utc::now().timestamp_nanos_opt().unwrap_or_default();
-    format!("{}-{timestamp:x}", std::process::id())
+    make_run_id_with_uuid(std::process::id(), Uuid::new_v4())
+}
+
+fn make_run_id_with_uuid(pid: u32, uuid: Uuid) -> String {
+    format!("{pid}-{uuid}")
 }
 
 #[cfg(test)]
@@ -197,12 +242,16 @@ mod tests {
 
     use tempfile::tempdir;
     use tokio_util::sync::CancellationToken;
+    use uuid::Uuid;
 
     use crate::support::error::AppError;
     use crate::support::fs::{metadata_sidecar_path, read_temp_dir_metadata};
     use crate::use_cases::context::{CommandName, ExecutionContext, ExecutionInterruption};
 
-    use super::{cleanup_staging_path, interruption_before_publish, StagedPublication};
+    use super::{
+        cleanup_staging_path, cleanup_staging_path_with, interruption_before_publish,
+        make_run_id_with_uuid, StagedPublication,
+    };
 
     #[test]
     fn prepare_dir_creates_stage_dir_and_metadata_then_publishes() {
@@ -230,6 +279,22 @@ mod tests {
     }
 
     #[test]
+    fn run_id_uses_uuid_entropy_and_is_a_valid_file_name() {
+        let first = make_run_id_with_uuid(
+            42,
+            Uuid::parse_str("123e4567-e89b-12d3-a456-426614174000").expect("uuid"),
+        );
+        let second = make_run_id_with_uuid(
+            42,
+            Uuid::parse_str("123e4567-e89b-12d3-a456-426614174001").expect("uuid"),
+        );
+
+        assert_ne!(first, second);
+        assert!(first.starts_with("42-"));
+        assert!(!first.chars().any(|value| "<>:\"/\\|?*".contains(value)));
+    }
+
+    #[test]
     fn prepare_file_writes_metadata_without_materializing_stage_file() {
         let dir = tempdir().expect("tempdir");
         let target = dir.path().join("target.cf");
@@ -241,6 +306,33 @@ mod tests {
         let metadata = read_temp_dir_metadata(publication.staging_path()).expect("metadata");
         assert_eq!(metadata.target_identity, "identity");
         assert_eq!(metadata.target_path, target);
+    }
+
+    #[test]
+    fn prepare_file_cleans_partial_metadata_failure() {
+        let dir = tempdir().expect("tempdir");
+        let target = dir.path().join("target.cf");
+        let mut created_paths = None;
+
+        let error = StagedPublication::prepare_file_with_metadata_writer(
+            &target,
+            "identity",
+            ".stage",
+            "cf",
+            |publication| {
+                fs::write(publication.staging_path(), "partial stage").expect("partial stage");
+                let sidecar = metadata_sidecar_path(publication.staging_path());
+                fs::write(&sidecar, "partial metadata").expect("partial metadata");
+                created_paths = Some((publication.staging_path().to_path_buf(), sidecar));
+                Err(AppError::Runtime("metadata write failed".to_owned()))
+            },
+        )
+        .expect_err("metadata failure");
+
+        let (stage, sidecar) = created_paths.expect("created paths");
+        assert!(error.to_string().contains("metadata write failed"));
+        assert!(!stage.exists());
+        assert!(!sidecar.exists());
     }
 
     #[test]
@@ -277,6 +369,31 @@ mod tests {
         assert_eq!(error.to_string(), "runtime error: failed before publish");
         assert!(!publication.staging_path().exists());
         assert!(!metadata.exists());
+    }
+
+    #[test]
+    fn cleanup_failure_reports_errors_for_stage_and_sidecar() {
+        let staging_path = std::path::Path::new("stage.cf");
+        let sidecar = metadata_sidecar_path(staging_path);
+        let mut removed = Vec::new();
+
+        let error = cleanup_staging_path_with(
+            staging_path,
+            AppError::Runtime("publication failed".to_owned()),
+            |path| {
+                removed.push(path.to_path_buf());
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    format!("denied {}", path.display()),
+                ))
+            },
+        );
+
+        let message = error.to_string();
+        assert_eq!(removed, vec![staging_path.to_path_buf(), sidecar]);
+        assert!(message.contains("publication failed"));
+        assert!(message.contains("failed to remove staging path"));
+        assert!(message.contains("failed to remove staging metadata"));
     }
 
     #[test]

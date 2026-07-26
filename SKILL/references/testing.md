@@ -20,6 +20,18 @@ v8-runner test yaxunit --full module <MODULE_NAME>
 
 Use module-level runs for narrow code changes. Use all tests for pre-push confidence or broad changes.
 
+Экспорт оригинального JUnit XML YAxUnit для CI:
+
+```bash
+v8-runner test yaxunit --junit-output build/test-results/yaxunit.xml all
+v8-runner test yaxunit --junit-output build/test-results/yaxunit.xml module <MODULE_NAME>
+```
+
+Относительный путь разрешается от каталога основного `v8project.yaml`. Экспорт всегда содержит
+полный оригинальный XML, не зависит от `--full` и при корректном JUnit сохраняется также для
+упавших тестов. Целевой файл заменяется атомарно; перед запуском прежний файл удаляется, поэтому
+при отсутствии нового корректного отчёта устаревший артефакт не остаётся.
+
 ## Vanessa Automation
 
 Run the configured Vanessa Automation profile:

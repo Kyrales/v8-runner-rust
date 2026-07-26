@@ -497,6 +497,22 @@ pub fn replace_file_atomically(
     run_id: &str,
     target_identity: &str,
 ) -> std::io::Result<ReplaceFileOutcome> {
+    replace_file_atomically_with_cleanup(
+        staging_file,
+        target_file,
+        run_id,
+        target_identity,
+        &|path| remove_path_if_exists(path),
+    )
+}
+
+fn replace_file_atomically_with_cleanup(
+    staging_file: &Path,
+    target_file: &Path,
+    run_id: &str,
+    target_identity: &str,
+    cleanup: &dyn Fn(&Path) -> std::io::Result<()>,
+) -> std::io::Result<ReplaceFileOutcome> {
     let parent = target_file.parent().ok_or_else(|| {
         std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
@@ -514,11 +530,9 @@ pub fn replace_file_atomically(
     if !target_file.exists() {
         publish_file_atomically(staging_file, target_file)?;
         let fsync_result = best_effort_fsync_dir(parent);
-        let _ = remove_path_if_exists(&stage_metadata_path);
+        let cleanup_warning = cleanup_path_warning(&stage_metadata_path, "stage metadata", cleanup);
         fsync_result?;
-        return Ok(ReplaceFileOutcome {
-            cleanup_warning: None,
-        });
+        return Ok(ReplaceFileOutcome { cleanup_warning });
     }
 
     std::fs::rename(target_file, &backup_file)?;
@@ -569,19 +583,16 @@ pub fn replace_file_atomically(
         ));
     }
 
-    let _ = remove_path_if_exists(&stage_metadata_path);
-
     let mut warnings = Vec::new();
-    if let Err(error) = remove_path_if_exists(&backup_file) {
-        warnings.push(format!(
-            "failed to remove backup file '{}': {error}",
-            backup_file.display()
-        ));
-    } else if let Err(error) = remove_path_if_exists(&backup_metadata_path) {
-        warnings.push(format!(
-            "failed to remove backup metadata '{}': {error}",
-            backup_metadata_path.display()
-        ));
+    if let Some(warning) = cleanup_path_warning(&stage_metadata_path, "stage metadata", cleanup) {
+        warnings.push(warning);
+    }
+    if let Some(warning) = cleanup_path_warning(&backup_file, "backup file", cleanup) {
+        warnings.push(warning);
+    } else if let Some(warning) =
+        cleanup_path_warning(&backup_metadata_path, "backup metadata", cleanup)
+    {
+        warnings.push(warning);
     }
 
     Ok(ReplaceFileOutcome {
@@ -590,6 +601,19 @@ pub fn replace_file_atomically(
         } else {
             Some(warnings.join("; "))
         },
+    })
+}
+
+fn cleanup_path_warning(
+    path: &Path,
+    description: &str,
+    cleanup: &dyn Fn(&Path) -> std::io::Result<()>,
+) -> Option<String> {
+    cleanup(path).err().map(|error| {
+        format!(
+            "failed to remove {description} '{}': {error}",
+            path.display()
+        )
     })
 }
 
@@ -612,8 +636,8 @@ mod tests {
     use super::{
         acquire_advisory_lock, advisory_lock_owner_id, publish_file_atomically,
         publish_file_atomically_impl, read_advisory_lock_metadata, remove_path_if_exists,
-        try_acquire_advisory_lock, try_acquire_advisory_lock_with_hook, AdvisoryLockMetadata,
-        TOOL_NAME,
+        replace_file_atomically_with_cleanup, try_acquire_advisory_lock,
+        try_acquire_advisory_lock_with_hook, AdvisoryLockMetadata, TOOL_NAME,
     };
     use std::fs;
     use std::io::ErrorKind;
@@ -821,6 +845,35 @@ mod tests {
 
         assert!(result.is_ok());
         assert_eq!(fs::read_to_string(&destination).expect("dest"), "new");
+    }
+
+    #[test]
+    fn replace_file_reports_stage_metadata_cleanup_failure_after_publish() {
+        let dir = tempdir().expect("tempdir");
+        let staging = dir.path().join("report.stage.xml");
+        let target = dir.path().join("report.xml");
+        let stage_metadata = super::metadata_sidecar_path(&staging);
+        fs::write(&staging, "new report").expect("staging");
+
+        let outcome = replace_file_atomically_with_cleanup(
+            &staging,
+            &target,
+            "run-id",
+            "target-id",
+            &|path| {
+                assert_eq!(path, stage_metadata);
+                Err(std::io::Error::new(
+                    ErrorKind::PermissionDenied,
+                    "cleanup denied",
+                ))
+            },
+        )
+        .expect("publication remains successful");
+
+        assert_eq!(fs::read_to_string(&target).expect("target"), "new report");
+        let warning = outcome.cleanup_warning.expect("cleanup warning");
+        assert!(warning.contains(&stage_metadata.display().to_string()));
+        assert!(warning.contains("cleanup denied"));
     }
 
     #[cfg(windows)]

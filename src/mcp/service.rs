@@ -86,6 +86,7 @@ where
         let use_case_request = TestRequest {
             execution: TestRequest::default_execution(),
             full: request.full.unwrap_or(false),
+            junit_output: None,
             scope: TestScopeRequest::All,
         };
 
@@ -130,6 +131,7 @@ where
         let use_case_request = TestRequest {
             execution: TestRequest::default_execution(),
             full: request.full.unwrap_or(false),
+            junit_output: None,
             scope: TestScopeRequest::Module { name: module_name },
         };
 

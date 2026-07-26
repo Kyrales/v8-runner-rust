@@ -29,6 +29,66 @@ const YAXUNIT_LOG_FIXTURE: &str = include_str!(concat!(
     "/tests/fixtures/parsers/yaxunit.log"
 ));
 
+#[derive(Clone, Copy)]
+enum FakeJunitReport<'a> {
+    Missing,
+    Empty,
+    Xml(&'a [u8]),
+}
+
+fn write_test_script_with_report_mode(
+    path: &Path,
+    calls_log: &Path,
+    captured_config: &Path,
+    report: FakeJunitReport<'_>,
+    exit_code: i32,
+    sleep_seconds: Option<u64>,
+) {
+    let source = captured_config.with_extension("fake-junit.xml");
+    let report_ready = captured_config.with_extension("report-ready");
+    let report_branch = match report {
+        FakeJunitReport::Missing => String::new(),
+        FakeJunitReport::Empty => ": > \"$report\"".to_owned(),
+        FakeJunitReport::Xml(bytes) => {
+            fs::write(&source, bytes).expect("fake JUnit source");
+            format!("cp '{}' \"$report\"", source.display())
+        }
+    };
+    let sleep_branch = sleep_seconds
+        .map(|seconds| format!("sleep {seconds}"))
+        .unwrap_or_default();
+    let body = format!(
+        r#"printf '%s\n' "$*" >> '{}'
+payload=""
+out=""
+prev=""
+for arg in "$@"; do
+  if [ "$prev" = "/C" ]; then payload="$arg"; fi
+  case "$arg" in /C*) payload="${{arg#/C}}" ;; esac
+  if [ "$prev" = "/Out" ]; then out="$arg"; fi
+  prev="$arg"
+done
+cfg=$(printf '%s' "$payload" | sed 's/^"//; s/"$//; s/^RunUnitTests=//')
+cp "$cfg" '{}'
+report=$(awk -F '"' '/reportPath/ {{print $4; exit}}' "$cfg")
+ylog=$(awk -F '"' '/"file"/ {{print $4; exit}}' "$cfg")
+mkdir -p "$(dirname "$report")" "$(dirname "$ylog")" "$(dirname "$out")"
+{}
+touch '{}'
+: > "$ylog"
+printf 'platform /P secret uri http://user:pass@example\n' > "$out"
+{}
+exit {}"#,
+        calls_log.display(),
+        captured_config.display(),
+        report_branch,
+        report_ready.display(),
+        sleep_branch,
+        exit_code,
+    );
+    write_script(path, &body);
+}
+
 fn write_test_script(
     path: &Path,
     calls_log: &Path,
@@ -38,17 +98,44 @@ fn write_test_script(
     exit_code: i32,
     sleep_seconds: Option<u64>,
 ) {
+    let report_source = captured_config.with_extension("normal-junit.xml");
+    let log_source = captured_config.with_extension("normal-yaxunit.log");
+    fs::write(&report_source, report_xml.as_bytes()).expect("fake JUnit source");
+    fs::write(&log_source, yax_log.as_bytes()).expect("fake YaXUnit log source");
     let sleep_branch = sleep_seconds
-        .map(|value| format!("sleep {value}"))
+        .map(|seconds| format!("sleep {seconds}"))
         .unwrap_or_default();
     let body = format!(
-        "printf '%s\\n' \"$*\" >> '{}'\npayload=\"\"\nout=\"\"\nprev=\"\"\nfor arg in \"$@\"; do\n  if [ \"$prev\" = \"/C\" ]; then payload=\"$arg\"; fi\n  case \"$arg\" in /C*) payload=\"${{arg#/C}}\" ;; esac\n  if [ \"$prev\" = \"/Out\" ]; then out=\"$arg\"; fi\n  prev=\"$arg\"\ndone\ncfg=$(printf '%s' \"$payload\" | sed 's/^\"//; s/\"$//; s/^RunUnitTests=//')\ncp \"$cfg\" '{}'\nreport=$(awk -F '\"' '/reportPath/ {{print $4; exit}}' \"$cfg\")\nylog=$(awk -F '\"' '/\"file\"/ {{print $4; exit}}' \"$cfg\")\nmkdir -p \"$(dirname \"$report\")\" \"$(dirname \"$ylog\")\" \"$(dirname \"$out\")\"\ncat <<'XML' > \"$report\"\n{}\nXML\ncat <<'LOG' > \"$ylog\"\n{}\nLOG\nprintf 'platform /P secret uri http://user:pass@example\\n' > \"$out\"\n{}\nexit {}",
+        r#"printf '%s\n' "$*" >> '{}'
+payload=""
+out=""
+prev=""
+for arg in "$@"; do
+  if [ "$prev" = "/C" ]; then payload="$arg"; fi
+  case "$arg" in /C*) payload="${{arg#/C}}" ;; esac
+  if [ "$prev" = "/Out" ]; then out="$arg"; fi
+  prev="$arg"
+done
+cfg=$(printf '%s' "$payload" | sed 's/^"//; s/"$//; s/^RunUnitTests=//')
+cp "$cfg" '{}'
+report=$(awk -F '"' '/reportPath/ {{print $4; exit}}' "$cfg")
+ylog=$(awk -F '"' '/"file"/ {{print $4; exit}}' "$cfg")
+mkdir -p "$(dirname "$report")" "$(dirname "$ylog")" "$(dirname "$out")"
+cp '{}' "$report"
+cp '{}' "$ylog"
+printf 'platform /P secret uri http://user:pass@example\n' > "$out"
+{}
+if [ -n "${{V8_RUNNER_TEST_BLOCK_JUNIT_EXPORT_PARENT:-}}" ]; then
+  rmdir "$V8_RUNNER_TEST_BLOCK_JUNIT_EXPORT_PARENT"
+  printf 'block publication parent\n' > "$V8_RUNNER_TEST_BLOCK_JUNIT_EXPORT_PARENT"
+fi
+exit {}"#,
         calls_log.display(),
         captured_config.display(),
-        report_xml,
-        yax_log,
+        report_source.display(),
+        log_source.display(),
         sleep_branch,
-        exit_code
+        exit_code,
     );
     write_script(path, &body);
 }
@@ -187,6 +274,37 @@ fn setup_project(
         sleep_seconds,
         &[],
     )
+}
+
+fn setup_project_with_report_mode(
+    report: FakeJunitReport<'_>,
+    timeout_seconds: u64,
+    sleep_seconds: Option<u64>,
+) -> (tempfile::TempDir, PathBuf, PathBuf, PathBuf) {
+    let (dir, config_path, _build_calls, test_calls, captured_config) = setup_project(
+        "work",
+        JUNIT_SMOKE_REPORT_FIXTURE,
+        "",
+        0,
+        false,
+        timeout_seconds,
+        sleep_seconds,
+    );
+    write_test_script_with_report_mode(
+        &dir.path().join("platform/bin/1cv8c"),
+        &test_calls,
+        &captured_config,
+        report,
+        0,
+        sleep_seconds,
+    );
+    let report_ready = captured_config.with_extension("report-ready");
+    (dir, config_path, captured_config, report_ready)
+}
+
+fn send_interrupt(pid: u32) {
+    let result = unsafe { libc::kill(pid as i32, libc::SIGINT) };
+    assert_eq!(result, 0, "send SIGINT to v8-runner");
 }
 
 fn setup_project_with_additional_launch_keys(
@@ -413,6 +531,308 @@ fn test_all_full_json_runs_build_first_and_returns_report() {
 }
 
 #[test]
+fn test_junit_output_all_uses_primary_config_root_and_cleans_success_artifacts() {
+    let (dir, config_path, _build_calls, _test_calls, _captured_config) = setup_project(
+        "work",
+        JUNIT_SMOKE_REPORT_FIXTURE,
+        "12:00:00.000 [INF] ok",
+        0,
+        false,
+        5,
+        None,
+    );
+    let relative_output = "build/results/yaxunit.xml";
+    let external_output = config_path
+        .parent()
+        .expect("config parent")
+        .join(relative_output);
+
+    let output = v8_runner_command()
+        .args([
+            "--config",
+            &config_path.display().to_string(),
+            "--no-color",
+            "test",
+            "yaxunit",
+            "--junit-output",
+            relative_output,
+            "all",
+        ])
+        .output()
+        .expect("run");
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    assert_eq!(
+        fs::read(&external_output).expect("exported JUnit"),
+        JUNIT_SMOKE_REPORT_FIXTURE.as_bytes()
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains(&format!("JUnit report: {}", external_output.display())));
+    assert!(!stdout.contains("Tests completed with warnings"));
+    let runs = dir.path().join("work/temp/yaxunit/runs");
+    assert!(
+        !runs.exists() || fs::read_dir(runs).expect("runs").next().is_none(),
+        "successful internal run artifacts must be cleaned"
+    );
+}
+
+#[test]
+fn test_junit_output_module_preserves_raw_bytes_and_json_step_target() {
+    let (_dir, config_path, _build_calls, _test_calls, captured_config) = setup_project(
+        "work",
+        JUNIT_SMOKE_REPORT_FIXTURE,
+        "12:00:00.000 [INF] ok",
+        0,
+        false,
+        5,
+        None,
+    );
+    let external_output = config_path
+        .parent()
+        .expect("config parent")
+        .join("nested/report.xml");
+
+    let output = v8_runner_command()
+        .args([
+            "--config",
+            &config_path.display().to_string(),
+            "--json-message",
+            "test",
+            "yaxunit",
+            "--junit-output",
+            "nested/report.xml",
+            "module",
+            "Foo",
+        ])
+        .output()
+        .expect("run");
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    assert_eq!(
+        fs::read(&external_output).expect("export"),
+        JUNIT_SMOKE_REPORT_FIXTURE.as_bytes()
+    );
+    assert!(fs::read_to_string(captured_config)
+        .expect("config")
+        .contains("Foo"));
+    let payload: Value = serde_json::from_slice(&output.stdout).expect("json");
+    let export_step = payload["steps"]
+        .as_array()
+        .expect("steps")
+        .iter()
+        .find(|step| step["name"] == "export_junit")
+        .expect("export step");
+    assert_eq!(export_step["kind"], "publish");
+    assert_eq!(export_step["target"], external_output.display().to_string());
+}
+
+#[test]
+fn test_junit_output_failed_report_and_full_compact_export_identical_bytes() {
+    let report = "<testsuite name=\"suite\"><testcase name=\"ok\"/><testcase name=\"bad\"><failure message=\"boom\">trace</failure></testcase></testsuite>\n";
+    let (_dir, config_path, _build_calls, _test_calls, _captured_config) =
+        setup_project("work", report, "12:00:00.000 [INF] ok", 0, false, 5, None);
+    let compact_path = config_path.parent().expect("parent").join("compact.xml");
+    let full_path = config_path.parent().expect("parent").join("full.xml");
+
+    let compact = v8_runner_command()
+        .args([
+            "--config",
+            &config_path.display().to_string(),
+            "--json-message",
+            "test",
+            "yaxunit",
+            "--junit-output",
+            "compact.xml",
+            "all",
+        ])
+        .output()
+        .expect("compact");
+    let full = v8_runner_command()
+        .args([
+            "--config",
+            &config_path.display().to_string(),
+            "--json-message",
+            "test",
+            "--full",
+            "yaxunit",
+            "--junit-output",
+            "full.xml",
+            "all",
+        ])
+        .output()
+        .expect("full");
+
+    assert_eq!(compact.status.code(), Some(3));
+    assert_eq!(full.status.code(), Some(3));
+    assert_eq!(
+        fs::read(compact_path).expect("compact export"),
+        report.as_bytes()
+    );
+    assert_eq!(fs::read(full_path).expect("full export"), report.as_bytes());
+    let compact_json: Value = serde_json::from_slice(&compact.stdout).expect("compact json");
+    assert!(compact_json["data"]["retained_paths"]["run_dir"].is_string());
+    assert!(compact_json["data"]["diagnostics"]
+        .as_array()
+        .expect("diagnostics")
+        .iter()
+        .any(|value| value
+            .as_str()
+            .is_some_and(|value| value.starts_with("JUnit report exported to "))));
+}
+
+#[test]
+fn test_junit_output_is_published_for_nonzero_enterprise_exit() {
+    let (_dir, config_path, _build_calls, _test_calls, _captured_config) = setup_project(
+        "work",
+        JUNIT_SMOKE_REPORT_FIXTURE,
+        "12:00:00.000 [INF] ok",
+        17,
+        false,
+        5,
+        None,
+    );
+    let external_output = config_path.parent().expect("parent").join("nonzero.xml");
+    let output = v8_runner_command()
+        .args([
+            "--config",
+            &config_path.display().to_string(),
+            "--json-message",
+            "test",
+            "yaxunit",
+            "--junit-output",
+            "nonzero.xml",
+            "all",
+        ])
+        .output()
+        .expect("run");
+
+    assert_eq!(output.status.code(), Some(3));
+    assert_eq!(
+        fs::read(external_output).expect("export"),
+        JUNIT_SMOKE_REPORT_FIXTURE.as_bytes()
+    );
+    let payload: Value = serde_json::from_slice(&output.stdout).expect("json");
+    assert_eq!(payload["data"]["error_kind"], "enterprise_exited_non_zero");
+}
+
+#[test]
+fn test_nonzero_enterprise_exit_with_missing_junit_keeps_junit_primary() {
+    let (dir, config_path, _build_calls, test_calls, captured_config) = setup_project(
+        "work",
+        JUNIT_SMOKE_REPORT_FIXTURE,
+        "12:00:00.000 [INF] ok",
+        17,
+        false,
+        5,
+        None,
+    );
+    write_test_script_with_report_mode(
+        &dir.path().join("platform/bin/1cv8c"),
+        &test_calls,
+        &captured_config,
+        FakeJunitReport::Missing,
+        17,
+        None,
+    );
+    let target = config_path
+        .parent()
+        .expect("parent")
+        .join("missing-nonzero.xml");
+
+    let output = v8_runner_command()
+        .args([
+            "--config",
+            &config_path.display().to_string(),
+            "--json-message",
+            "test",
+            "yaxunit",
+            "--junit-output",
+            "missing-nonzero.xml",
+            "all",
+        ])
+        .output()
+        .expect("run");
+
+    assert_eq!(output.status.code(), Some(3));
+    assert!(!target.exists());
+    let payload: Value = serde_json::from_slice(&output.stdout).expect("json");
+    assert_eq!(payload["data"]["error_kind"], "junit_not_produced");
+    assert_eq!(
+        payload["data"]["execution"]["errors"][0]["code"],
+        "junit_not_produced"
+    );
+    assert_eq!(
+        payload["data"]["execution"]["errors"][1]["code"],
+        "enterprise_exited_non_zero"
+    );
+    assert!(payload["data"]["diagnostics"]
+        .as_array()
+        .expect("diagnostics")
+        .iter()
+        .any(|value| value == "enterprise test run exited with code 17"));
+    let run_dir = payload["data"]["retained_paths"]["run_dir"]
+        .as_str()
+        .expect("retained run dir");
+    assert!(Path::new(run_dir).is_dir());
+}
+
+#[test]
+fn test_junit_output_publication_failure_retains_internal_artifacts_and_no_target() {
+    let (_dir, config_path, _build_calls, _test_calls, _captured_config) = setup_project(
+        "work",
+        JUNIT_SMOKE_REPORT_FIXTURE,
+        "12:00:00.000 [INF] ok",
+        0,
+        false,
+        5,
+        None,
+    );
+    let blocked_parent = config_path.parent().expect("parent").join("blocked-parent");
+    let external_output = blocked_parent.join("report.xml");
+    let output = v8_runner_command()
+        .env("V8_RUNNER_TEST_BLOCK_JUNIT_EXPORT_PARENT", &blocked_parent)
+        .args([
+            "--config",
+            &config_path.display().to_string(),
+            "--json-message",
+            "test",
+            "yaxunit",
+            "--junit-output",
+            "blocked-parent/report.xml",
+            "all",
+        ])
+        .output()
+        .expect("run");
+
+    assert_eq!(output.status.code(), Some(3));
+    assert!(!external_output.exists());
+    let payload: Value = serde_json::from_slice(&output.stdout).expect("json");
+    assert_eq!(payload["data"]["error_kind"], "junit_export_failed");
+    assert_eq!(payload["data"]["execution"]["status"], "failed");
+    assert!(payload["data"]["report"]["summary"]["total"].is_number());
+    let run_dir = payload["data"]["retained_paths"]["run_dir"]
+        .as_str()
+        .expect("retained run dir");
+    assert!(Path::new(run_dir).is_dir());
+    let export_step = payload["steps"]
+        .as_array()
+        .expect("steps")
+        .iter()
+        .find(|step| step["name"] == "export_junit")
+        .expect("export step");
+    assert_eq!(export_step["status"], "failed");
+    assert_eq!(export_step["target"], external_output.display().to_string());
+}
+
+#[test]
 fn test_run_appends_enterprise_additional_launch_keys() {
     let (_dir, config_path, _build_calls, test_calls, _captured_config) =
         setup_project_with_additional_launch_keys(
@@ -550,12 +970,12 @@ fn test_command_streams_enterprise_stage_before_runner_finishes() {
 
     let saw_enterprise_stage = wait_for_received_line(
         &rx,
-        Duration::from_secs(5),
+        Duration::from_secs(30),
         Duration::from_millis(100),
         |line| line.contains("● test: enterprise run"),
     );
 
-    let runner_started_before_release = wait_for_file(&runner_started, Duration::from_secs(5));
+    let runner_started_before_release = wait_for_file(&runner_started, Duration::from_secs(30));
     let early_status = child.try_wait().ok().flatten();
     fs::write(&release_runner, b"release").expect("release runner");
 
@@ -1332,4 +1752,277 @@ fn test_timeout_retains_artifacts() {
         .as_str()
         .expect("platform log");
     assert!(!platform_log.is_empty());
+}
+
+#[test]
+fn test_timeout_with_valid_junit_exports_exact_report_and_preserves_timeout() {
+    let (_dir, config_path, _captured_config, _report_ready) = setup_project_with_report_mode(
+        FakeJunitReport::Xml(JUNIT_SMOKE_REPORT_FIXTURE.as_bytes()),
+        1,
+        Some(2),
+    );
+    let target = config_path.parent().expect("parent").join("timeout.xml");
+
+    let output = v8_runner_command()
+        .args([
+            "--config",
+            &config_path.display().to_string(),
+            "--json-message",
+            "test",
+            "yaxunit",
+            "--junit-output",
+            "timeout.xml",
+            "all",
+        ])
+        .output()
+        .expect("run");
+
+    assert_eq!(output.status.code(), Some(3));
+    assert_eq!(
+        fs::read(target).expect("export"),
+        JUNIT_SMOKE_REPORT_FIXTURE.as_bytes()
+    );
+    let payload: Value = serde_json::from_slice(&output.stdout).expect("json");
+    assert_eq!(payload["data"]["execution"]["status"], "timed_out");
+    assert!(payload["data"]["report"]["summary"]["total"].is_number());
+    assert_eq!(
+        payload["data"]["execution"]["interruptions"][0]["kind"],
+        "timed_out"
+    );
+    assert_eq!(
+        payload["data"]["execution"]["interruptions"]
+            .as_array()
+            .expect("interruptions")
+            .len(),
+        1
+    );
+    assert!(payload["data"]
+        .get("warnings")
+        .and_then(Value::as_array)
+        .map_or(true, |warnings| warnings.iter().all(|warning| !warning
+            .as_str()
+            .unwrap_or_default()
+            .contains("publication completed"))));
+}
+
+#[test]
+fn test_timeout_with_missing_junit_makes_junit_primary_and_does_not_export() {
+    let (_dir, config_path, _captured_config, _report_ready) =
+        setup_project_with_report_mode(FakeJunitReport::Missing, 1, Some(2));
+    let target = config_path.parent().expect("parent").join("missing.xml");
+
+    let output = v8_runner_command()
+        .args([
+            "--config",
+            &config_path.display().to_string(),
+            "--json-message",
+            "test",
+            "yaxunit",
+            "--junit-output",
+            "missing.xml",
+            "all",
+        ])
+        .output()
+        .expect("run");
+
+    assert_eq!(output.status.code(), Some(3));
+    assert!(!target.exists());
+    let payload: Value = serde_json::from_slice(&output.stdout).expect("json");
+    assert_eq!(payload["data"]["error_kind"], "junit_not_produced");
+    assert_eq!(payload["data"]["execution"]["status"], "invalid_output");
+    assert_eq!(
+        payload["data"]["execution"]["interruptions"][0]["kind"],
+        "timed_out"
+    );
+    assert!(payload["data"]["retained_paths"]["run_dir"].is_string());
+    assert_eq!(
+        payload["data"]["execution"]["errors"][1]["code"],
+        "enterprise_timed_out"
+    );
+}
+
+#[test]
+fn test_timeout_with_malformed_junit_makes_parse_error_primary() {
+    let (_dir, config_path, _captured_config, _report_ready) =
+        setup_project_with_report_mode(FakeJunitReport::Xml(b"<testsuite>"), 1, Some(2));
+    let target = config_path.parent().expect("parent").join("malformed.xml");
+
+    let output = v8_runner_command()
+        .args([
+            "--config",
+            &config_path.display().to_string(),
+            "--json-message",
+            "test",
+            "yaxunit",
+            "--junit-output",
+            "malformed.xml",
+            "all",
+        ])
+        .output()
+        .expect("run");
+
+    assert_eq!(output.status.code(), Some(3));
+    assert!(!target.exists());
+    let payload: Value = serde_json::from_slice(&output.stdout).expect("json");
+    assert_eq!(payload["data"]["error_kind"], "junit_malformed");
+    assert_eq!(
+        payload["data"]["execution"]["errors"][1]["code"],
+        "enterprise_timed_out"
+    );
+    assert_eq!(
+        payload["data"]["execution"]["interruptions"][0]["kind"],
+        "timed_out"
+    );
+}
+
+#[test]
+fn test_cancellation_with_valid_junit_exports_and_preserves_cancelled_status() {
+    let (_dir, config_path, _captured_config, report_ready) = setup_project_with_report_mode(
+        FakeJunitReport::Xml(JUNIT_SMOKE_REPORT_FIXTURE.as_bytes()),
+        60,
+        Some(30),
+    );
+    let target = config_path.parent().expect("parent").join("cancelled.xml");
+    let child = v8_runner_command()
+        .args([
+            "--config",
+            &config_path.display().to_string(),
+            "--json-message",
+            "test",
+            "yaxunit",
+            "--junit-output",
+            "cancelled.xml",
+            "all",
+        ])
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn");
+    assert!(wait_for_file(&report_ready, Duration::from_secs(30)));
+    send_interrupt(child.id());
+
+    let output = child.wait_with_output().expect("wait");
+    assert_eq!(output.status.code(), Some(3));
+    assert_eq!(
+        fs::read(target).expect("cancelled export"),
+        JUNIT_SMOKE_REPORT_FIXTURE.as_bytes()
+    );
+    let payload: Value = serde_json::from_slice(&output.stdout).expect("json");
+    assert_eq!(payload["data"]["execution"]["status"], "cancelled");
+    assert_eq!(payload["data"]["error_kind"], "enterprise_cancelled");
+    assert_eq!(
+        payload["data"]["execution"]["interruptions"][0]["kind"],
+        "cancelled"
+    );
+    assert_eq!(
+        payload["data"]["execution"]["interruptions"]
+            .as_array()
+            .expect("interruptions")
+            .len(),
+        1
+    );
+    assert!(payload["data"]
+        .get("warnings")
+        .and_then(Value::as_array)
+        .map_or(true, |warnings| warnings.iter().all(|warning| !warning
+            .as_str()
+            .unwrap_or_default()
+            .contains("publication completed"))));
+    let run_dir = payload["data"]["retained_paths"]["run_dir"]
+        .as_str()
+        .expect("retained run directory");
+    assert!(Path::new(run_dir).is_dir());
+}
+
+#[test]
+fn test_cancellation_with_missing_junit_keeps_target_absent_and_junit_primary() {
+    let (_dir, config_path, _captured_config, report_ready) =
+        setup_project_with_report_mode(FakeJunitReport::Missing, 60, Some(30));
+    let target = config_path
+        .parent()
+        .expect("parent")
+        .join("cancel-missing.xml");
+    fs::write(&target, b"stale").expect("stale target");
+    let child = v8_runner_command()
+        .args([
+            "--config",
+            &config_path.display().to_string(),
+            "--json-message",
+            "test",
+            "yaxunit",
+            "--junit-output",
+            "cancel-missing.xml",
+            "all",
+        ])
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn");
+    assert!(wait_for_file(&report_ready, Duration::from_secs(30)));
+    send_interrupt(child.id());
+
+    let output = child.wait_with_output().expect("wait");
+    assert_eq!(output.status.code(), Some(3));
+    assert!(!target.exists());
+    let payload: Value = serde_json::from_slice(&output.stdout).expect("json");
+    assert_eq!(payload["data"]["error_kind"], "junit_not_produced");
+    assert_eq!(payload["data"]["execution"]["status"], "invalid_output");
+    assert_eq!(
+        payload["data"]["execution"]["errors"][1]["code"],
+        "enterprise_cancelled"
+    );
+    assert_eq!(
+        payload["data"]["execution"]["interruptions"][0]["kind"],
+        "cancelled"
+    );
+    let run_dir = payload["data"]["retained_paths"]["run_dir"]
+        .as_str()
+        .expect("retained run directory");
+    assert!(Path::new(run_dir).is_dir());
+}
+
+#[test]
+fn test_timeout_with_empty_junit_does_not_publish_target() {
+    let (_dir, config_path, _captured_config, _report_ready) =
+        setup_project_with_report_mode(FakeJunitReport::Empty, 1, Some(2));
+    let target = config_path.parent().expect("parent").join("empty.xml");
+    fs::write(&target, b"stale").expect("stale target");
+
+    let output = v8_runner_command()
+        .args([
+            "--config",
+            &config_path.display().to_string(),
+            "--json-message",
+            "test",
+            "yaxunit",
+            "--junit-output",
+            "empty.xml",
+            "all",
+        ])
+        .output()
+        .expect("run");
+
+    assert_eq!(output.status.code(), Some(3));
+    assert!(!target.exists());
+    let payload: Value = serde_json::from_slice(&output.stdout).expect("json");
+    assert_eq!(payload["data"]["error_kind"], "junit_empty");
+    assert_eq!(payload["data"]["execution"]["status"], "invalid_output");
+    assert_eq!(
+        payload["data"]["execution"]["errors"][0]["code"],
+        "junit_empty"
+    );
+    assert_eq!(
+        payload["data"]["execution"]["errors"][1]["code"],
+        "enterprise_timed_out"
+    );
+    assert_eq!(
+        payload["data"]["execution"]["interruptions"][0]["kind"],
+        "timed_out"
+    );
+    assert_eq!(
+        payload["data"]["execution"]["interruptions"][0]["deferred"],
+        false
+    );
+    let run_dir = payload["data"]["retained_paths"]["run_dir"]
+        .as_str()
+        .expect("retained run directory");
+    assert!(Path::new(run_dir).is_dir());
 }

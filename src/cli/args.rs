@@ -1,4 +1,5 @@
 use clap::{Args, Parser, Subcommand};
+use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -230,6 +231,10 @@ pub enum TestRunner {
 #[derive(Args, Debug)]
 #[command(next_help_heading = "Command options")]
 pub struct TestYaxunitArgs {
+    /// Export the YaXUnit JUnit report to this path
+    #[arg(long, value_name = "PATH")]
+    pub junit_output: Option<PathBuf>,
+
     #[command(subcommand)]
     pub scope: TestScope,
 }
@@ -508,6 +513,7 @@ mod tests {
         LoadArgs, McpCommand, McpServeTransport, SyntaxTarget, TestRunner, TestScope,
     };
     use clap::Parser;
+    use std::path::PathBuf;
 
     #[test]
     fn syntax_config_extension_conflicts_with_all_extensions() {
@@ -640,6 +646,41 @@ mod tests {
             }
             _ => panic!("unexpected command"),
         }
+    }
+
+    #[test]
+    fn parses_junit_output_only_for_yaxunit() {
+        let cli = Cli::try_parse_from([
+            "v8-runner",
+            "test",
+            "yaxunit",
+            "--junit-output",
+            "reports/junit.xml",
+            "all",
+        ])
+        .expect("parse YaXUnit JUnit output");
+
+        match cli.command {
+            Command::Test(args) => match args.runner {
+                TestRunner::Yaxunit(yaxunit) => {
+                    assert_eq!(
+                        yaxunit.junit_output,
+                        Some(PathBuf::from("reports/junit.xml"))
+                    );
+                }
+                _ => panic!("unexpected test runner"),
+            },
+            _ => panic!("unexpected command"),
+        }
+
+        let result = Cli::try_parse_from([
+            "v8-runner",
+            "test",
+            "va",
+            "--junit-output",
+            "reports/junit.xml",
+        ]);
+        assert!(result.is_err());
     }
 
     #[test]

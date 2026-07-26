@@ -144,3 +144,22 @@ fn convert_help_uses_output_target_root_name() {
     assert!(stdout.contains("--source-set <SOURCE_SET>"));
     assert!(stdout.contains("--json-message"));
 }
+
+#[test]
+fn test_help_exposes_junit_output_only_for_yaxunit() {
+    let yaxunit_output = v8_runner_command()
+        .args(["test", "yaxunit", "--help"])
+        .output()
+        .expect("run YaXUnit help");
+    assert!(yaxunit_output.status.success());
+    let yaxunit_stdout = String::from_utf8_lossy(&yaxunit_output.stdout);
+    assert!(yaxunit_stdout.contains("--junit-output <PATH>"));
+
+    let va_output = v8_runner_command()
+        .args(["test", "va", "--help"])
+        .output()
+        .expect("run VA help");
+    assert!(va_output.status.success());
+    let va_stdout = String::from_utf8_lossy(&va_output.stdout);
+    assert!(!va_stdout.contains("--junit-output"));
+}

@@ -122,6 +122,7 @@ pub fn execute_command(
         Command::Test(args) => execute_test(
             config,
             args,
+            primary_config_path.as_deref(),
             presenter,
             clean_before_execution,
             cancellation,
@@ -426,11 +427,12 @@ fn execute_build(
 fn execute_test(
     config: &AppConfig,
     args: &TestArgs,
+    primary_config_path: Option<&Path>,
     presenter: &Presenter,
     clean_before_execution: bool,
     cancellation: CancellationToken,
 ) -> Result<(), UseCaseError> {
-    let request = map_test_request(config, args)
+    let request = map_test_request(config, args, primary_config_path)
         .map_err(|error| render_pre_dispatch_error(presenter, CommandName::Test, error))?;
     let effective_config = effective_test_config(config, args)
         .map_err(|error| render_pre_dispatch_error(presenter, CommandName::Test, error))?;
@@ -846,23 +848,52 @@ fn map_tools_download_force(args: &ToolsDownloadArgs) -> bool {
     }
 }
 
-fn map_test_request(config: &AppConfig, args: &TestArgs) -> Result<TestRequest, UseCaseError> {
+fn map_test_request(
+    config: &AppConfig,
+    args: &TestArgs,
+    primary_config_path: Option<&Path>,
+) -> Result<TestRequest, UseCaseError> {
     let client_mode = map_test_client_mode(args.client_mode.as_deref())?;
     match &args.runner {
-        TestRunner::Yaxunit(TestYaxunitArgs { scope }) => {
+        TestRunner::Yaxunit(TestYaxunitArgs {
+            junit_output,
+            scope,
+        }) => {
             let scope = map_yaxunit_scope(scope)?;
             Ok(TestRequest {
                 execution: build_yaxunit_execution(config, &args.launch, client_mode)?,
                 full: args.full,
+                junit_output: resolve_junit_output(junit_output.as_deref(), primary_config_path)?,
                 scope,
             })
         }
         TestRunner::Va(_) => Ok(TestRequest {
             execution: build_vanessa_execution(config, &args.launch, client_mode)?,
             full: args.full,
+            junit_output: None,
             scope: TestScopeRequest::All,
         }),
     }
+}
+
+fn resolve_junit_output(
+    value: Option<&Path>,
+    primary_config_path: Option<&Path>,
+) -> Result<Option<PathBuf>, UseCaseError> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    if value.as_os_str().is_empty() || value.is_absolute() {
+        return Ok(Some(value.to_path_buf()));
+    }
+
+    let config_parent = primary_config_path.and_then(Path::parent).ok_or_else(|| {
+        UseCaseError::new(
+            UseCaseErrorKind::Validation,
+            "relative --junit-output requires a primary config path with a parent directory",
+        )
+    })?;
+    Ok(Some(config_parent.join(value)))
 }
 
 fn effective_test_config(config: &AppConfig, args: &TestArgs) -> Result<AppConfig, UseCaseError> {
@@ -1846,7 +1877,17 @@ fn append_retained_test_artifacts(details: &mut Vec<String>, result: &TestRunRes
 }
 
 fn should_hide_success_test_diagnostic(diagnostic: &str) -> bool {
-    diagnostic.trim_start().starts_with("platform ")
+    let diagnostic = diagnostic.trim_start();
+    diagnostic.starts_with("platform ") || diagnostic.starts_with("JUnit report exported to ")
+}
+
+fn junit_export_path(steps: &[StepResult]) -> Option<&str> {
+    steps
+        .iter()
+        .find(|step| {
+            step.name == "export_junit" && matches!(step.status, ExecutionStepStatus::Succeeded)
+        })
+        .and_then(|step| step.target.as_deref())
 }
 
 fn visible_test_diagnostics(result: &TestRunResult) -> Vec<String> {
@@ -2297,6 +2338,9 @@ fn render_test_text(result: &TestRunResult, presenter: &Presenter) {
             report.summary.errors
         ));
     }
+    if let Some(path) = junit_export_path(&result.steps) {
+        details.push(format!("JUnit report: {path}"));
+    }
 
     if !succeeded || has_warning {
         append_step_signals(&mut details, &result.steps);
@@ -2327,6 +2371,7 @@ fn render_test_step_label(name: &str) -> String {
         "prepare_runner" => "prepare runner".to_owned(),
         "run" => "enterprise run".to_owned(),
         "parse_junit" => "parse JUnit report".to_owned(),
+        "export_junit" => "export JUnit report".to_owned(),
         "parse_log" => "parse runner log".to_owned(),
         other => other.to_owned(),
     }
@@ -2389,9 +2434,10 @@ fn status_label(status: &TestStatus) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_load_envelope, command_name, execute_command, map_artifacts_request_with_config,
-        map_build_request, map_designer_config_request, map_dump_request, map_extensions_request,
-        map_launch_request, map_load_request, map_syntax_request, map_test_request,
+        build_load_envelope, command_name, execute_command, junit_export_path,
+        map_artifacts_request_with_config, map_build_request, map_designer_config_request,
+        map_dump_request, map_extensions_request, map_launch_request, map_load_request,
+        map_syntax_request, map_test_request, render_test_step_label, resolve_junit_output,
     };
     use crate::cli::args::{
         ArtifactsArgs, BuildArgs, Command, DesignerConfigSyntaxArgs, DesignerModulesSyntaxArgs,
@@ -2404,7 +2450,9 @@ mod tests {
         TestsConfig, ToolsConfig,
     };
     use crate::domain::artifacts::ArtifactBuildMode;
-    use crate::domain::execution::{ExecutionOutcome, ExecutionStatus};
+    use crate::domain::execution::{
+        ExecutionOutcome, ExecutionStatus, ExecutionStepKind, StepResult,
+    };
     use crate::domain::load::{
         CompatibilityState, LoadExecutionMetadata, LoadMode, LoadResult, LoadTargetKind,
     };
@@ -2425,6 +2473,79 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
+    fn resolves_relative_junit_output_from_primary_config_parent() {
+        let config_path = Path::new("workspace/config/v8project.yaml");
+
+        let resolved =
+            resolve_junit_output(Some(Path::new("reports/junit.xml")), Some(config_path))
+                .expect("resolve relative JUnit output");
+
+        assert_eq!(
+            resolved,
+            Some(PathBuf::from("workspace/config/reports/junit.xml"))
+        );
+    }
+
+    #[test]
+    fn preserves_absolute_junit_output() {
+        let absolute = if cfg!(windows) {
+            PathBuf::from(r"C:\reports\junit.xml")
+        } else {
+            PathBuf::from("/reports/junit.xml")
+        };
+
+        let resolved = resolve_junit_output(
+            Some(absolute.as_path()),
+            Some(Path::new("workspace/config/v8project.yaml")),
+        )
+        .expect("preserve absolute JUnit output");
+
+        assert_eq!(resolved, Some(absolute));
+    }
+
+    #[test]
+    fn preserves_empty_junit_output_for_use_case_validation() {
+        let resolved = resolve_junit_output(
+            Some(Path::new("")),
+            Some(Path::new("workspace/config/v8project.yaml")),
+        )
+        .expect("preserve empty JUnit output");
+
+        assert_eq!(resolved, Some(PathBuf::new()));
+    }
+
+    #[test]
+    fn rejects_relative_junit_output_without_primary_config() {
+        let error = resolve_junit_output(Some(Path::new("reports/junit.xml")), None)
+            .expect_err("relative JUnit output requires primary config");
+
+        assert_eq!(error.kind(), UseCaseErrorKind::Validation);
+    }
+
+    #[test]
+    fn renders_export_junit_step_label() {
+        assert_eq!(
+            render_test_step_label("export_junit"),
+            "export JUnit report"
+        );
+    }
+
+    #[test]
+    fn finds_successful_junit_export_path_without_treating_it_as_a_warning() {
+        let path = Path::new("reports/junit.xml").display().to_string();
+        let steps = vec![
+            StepResult::succeeded("export_junit", ExecutionStepKind::Publish, 1)
+                .with_target(path.clone())
+                .with_message(format!("JUnit report exported to {path}")),
+        ];
+
+        assert_eq!(junit_export_path(&steps), Some(path.as_str()));
+        assert!(super::should_hide_success_test_diagnostic(&format!(
+            "JUnit report exported to {path}"
+        )));
+    }
+
+    #[test]
     fn maps_test_module_request() {
         let work = tempdir().expect("tempdir");
         let config = sample_config(work.path());
@@ -2435,11 +2556,13 @@ mod tests {
                 client_mode: None,
                 launch: LaunchOptionsArgs::default(),
                 runner: TestRunner::Yaxunit(TestYaxunitArgs {
+                    junit_output: None,
                     scope: TestScope::Module {
                         name: "ModuleA".to_owned(),
                     },
                 }),
             },
+            None,
         )
         .expect("request");
 
@@ -2453,6 +2576,39 @@ mod tests {
     }
 
     #[test]
+    fn maps_relative_junit_output_from_config_file_not_base_path() {
+        let work = tempdir().expect("tempdir");
+        let mut config = sample_config(work.path());
+        config.base_path = work.path().join("different-base-path");
+        let primary_config_path = work.path().join("config").join("v8project.yaml");
+
+        let request = map_test_request(
+            &config,
+            &TestArgs {
+                full: false,
+                client_mode: None,
+                launch: LaunchOptionsArgs::default(),
+                runner: TestRunner::Yaxunit(TestYaxunitArgs {
+                    junit_output: Some(PathBuf::from("reports/junit.xml")),
+                    scope: TestScope::All,
+                }),
+            },
+            Some(primary_config_path.as_path()),
+        )
+        .expect("request");
+
+        assert_eq!(
+            request.junit_output,
+            Some(work.path().join("config/reports/junit.xml"))
+        );
+        assert!(!request
+            .junit_output
+            .as_deref()
+            .expect("JUnit output")
+            .starts_with(&config.base_path));
+    }
+
+    #[test]
     fn rejects_blank_test_module_request() {
         let work = tempdir().expect("tempdir");
         let config = sample_config(work.path());
@@ -2463,11 +2619,13 @@ mod tests {
                 client_mode: None,
                 launch: LaunchOptionsArgs::default(),
                 runner: TestRunner::Yaxunit(TestYaxunitArgs {
+                    junit_output: None,
                     scope: TestScope::Module {
                         name: "   ".to_owned(),
                     },
                 }),
             },
+            None,
         )
         .expect_err("blank module should be rejected");
 
@@ -2511,6 +2669,7 @@ mod tests {
                 launch: LaunchOptionsArgs::default(),
                 runner: TestRunner::Va(TestVaArgs::default()),
             },
+            None,
         )
         .expect("request");
 
@@ -2935,6 +3094,7 @@ mod tests {
                 client_mode: None,
                 launch: LaunchOptionsArgs::default(),
                 runner: TestRunner::Yaxunit(TestYaxunitArgs {
+                    junit_output: None,
                     scope: TestScope::All,
                 }),
             }),
@@ -2998,6 +3158,7 @@ mod tests {
                 client_mode: None,
                 launch: LaunchOptionsArgs::default(),
                 runner: TestRunner::Yaxunit(TestYaxunitArgs {
+                    junit_output: None,
                     scope: TestScope::Module {
                         name: "   ".to_owned(),
                     },

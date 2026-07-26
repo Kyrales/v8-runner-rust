@@ -141,6 +141,108 @@ mod tests {
         assert!(interruption.is_some());
         assert_eq!(status, ExecutionStatus::TimedOut);
     }
+
+    #[test]
+    fn failed_enterprise_completion_keeps_typed_failure_without_process_result() {
+        let (_kind, _error, interruption, _status) =
+            enterprise_error_kind(EnterpriseError::Spawn(ProcessError::TimedOut {
+                cmd: "1cv8c ENTERPRISE".to_owned(),
+                timeout_ms: 500,
+            }));
+        let interruption = interruption.expect("timeout interruption");
+        let completion = super::super::EnterpriseCompletion::Failed {
+            kind: Some(TestErrorKind::EnterpriseSpawnFailed),
+            error: AppError::Runtime("enterprise failed".to_owned()),
+            interruption: Some(interruption.clone()),
+            status: ExecutionStatus::TimedOut,
+        };
+
+        assert_eq!(
+            completion.enterprise_error().map(|error| error.code),
+            Some(TestErrorKind::EnterpriseSpawnFailed.code().to_owned())
+        );
+        assert_eq!(completion.interruption(), Some(&interruption));
+        assert!(completion.process_exit_code().is_none());
+        assert!(matches!(
+            completion,
+            super::super::EnterpriseCompletion::Failed {
+                status: ExecutionStatus::TimedOut,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn deferred_timeout_and_cancellation_append_typed_enterprise_error_after_primary() {
+        for (process_error, expected_kind, expected_status) in [
+            (
+                ProcessError::TimedOut {
+                    cmd: "1cv8c ENTERPRISE".to_owned(),
+                    timeout_ms: 500,
+                },
+                TestErrorKind::EnterpriseTimedOut,
+                ExecutionStatus::TimedOut,
+            ),
+            (
+                ProcessError::Cancelled {
+                    cmd: "1cv8c ENTERPRISE".to_owned(),
+                },
+                TestErrorKind::EnterpriseCancelled,
+                ExecutionStatus::Cancelled,
+            ),
+        ] {
+            let (kind, error, interruption, status) =
+                enterprise_error_kind(EnterpriseError::Spawn(process_error));
+            assert_eq!(kind, None, "global mapping must remain unchanged");
+            let completion = super::super::EnterpriseCompletion::Failed {
+                kind,
+                error,
+                interruption,
+                status,
+            };
+            for primary_kind in [
+                TestErrorKind::JunitMalformed,
+                TestErrorKind::JunitExportFailed,
+            ] {
+                let mut errors = vec![crate::domain::test::test_execution_error(
+                    primary_kind.clone(),
+                    "primary JUnit error",
+                )];
+                completion.append_enterprise_error(&mut errors);
+
+                assert_eq!(errors[0].code, primary_kind.code());
+                assert_eq!(errors[1].code, expected_kind.clone().code());
+            }
+            let mut diagnostics = vec!["primary JUnit diagnostic".to_owned()];
+            completion.append_enterprise_diagnostic(&mut diagnostics);
+            assert_eq!(diagnostics[0], "primary JUnit diagnostic");
+            assert!(diagnostics[1].contains("enterprise test run"));
+            assert_eq!(completion.status(), expected_status);
+            assert!(completion.interruption().is_some());
+        }
+    }
+
+    #[test]
+    fn publication_interruption_is_duplicate_only_for_same_enterprise_reason() {
+        let (_kind, error, interruption, status) =
+            enterprise_error_kind(EnterpriseError::Spawn(ProcessError::TimedOut {
+                cmd: "1cv8c ENTERPRISE".to_owned(),
+                timeout_ms: 500,
+            }));
+        let completion = super::super::EnterpriseCompletion::Failed {
+            kind: None,
+            error,
+            interruption,
+            status,
+        };
+
+        assert!(completion.represents_publication_interruption(
+            crate::use_cases::context::ExecutionInterruption::TimedOut
+        ));
+        assert!(!completion.represents_publication_interruption(
+            crate::use_cases::context::ExecutionInterruption::Cancelled
+        ));
+    }
 }
 
 pub(super) fn succeeded_step(

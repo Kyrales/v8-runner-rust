@@ -1,5 +1,5 @@
 use std::fs;
-use std::io::BufReader;
+use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -10,7 +10,8 @@ use uuid::Uuid;
 use crate::config::model::AppConfig;
 use crate::domain::artifact::ArtifactSet;
 use crate::domain::execution::{
-    ExecutionMetrics, ExecutionOutcome, ExecutionStatus, ExecutionStepKind, StepResult,
+    ExecutionInterruptionDetails, ExecutionMetrics, ExecutionOutcome, ExecutionStatus,
+    ExecutionStepKind, StepResult,
 };
 use crate::domain::runner::LaunchClientModeRequest;
 use crate::domain::test::{
@@ -20,6 +21,7 @@ use crate::domain::test::{
 use crate::parsers::junit;
 use crate::parsers::vanessa_log;
 use crate::parsers::yaxunit_log;
+use crate::platform::result::PlatformCommandResult;
 use crate::support::error::AppError;
 use crate::use_cases::build_project;
 use crate::use_cases::context::ExecutionContext;
@@ -32,6 +34,9 @@ const STACK_TRACE_LIMIT: usize = 500;
 
 mod coordinator;
 mod helpers;
+mod junit_export;
+
+use self::junit_export::JunitExport;
 
 use self::helpers::{
     build_enterprise_dsl, build_platform_launch, build_summary, capped_timeout_ms,
@@ -89,6 +94,137 @@ struct RunArtifacts {
     runner_log: PathBuf,
     platform_log: PathBuf,
     sentinel: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ValidatedJunit {
+    report: TestReport,
+    bytes: Vec<u8>,
+}
+
+#[derive(Debug)]
+enum EnterpriseCompletion {
+    Completed(PlatformCommandResult),
+    Failed {
+        kind: Option<TestErrorKind>,
+        error: AppError,
+        interruption: Option<ExecutionInterruptionDetails>,
+        status: ExecutionStatus,
+    },
+}
+
+impl EnterpriseCompletion {
+    fn process_exit_code(&self) -> Option<i32> {
+        match self {
+            Self::Completed(result) => Some(result.process.exit_code),
+            Self::Failed { .. } => None,
+        }
+    }
+
+    fn enterprise_error(&self) -> Option<crate::domain::execution::ExecutionError> {
+        match self {
+            Self::Completed(result) if result.process.exit_code != 0 => Some(test_execution_error(
+                TestErrorKind::EnterpriseExitedNonZero,
+                format!(
+                    "enterprise test run exited with code {}",
+                    result.process.exit_code
+                ),
+            )),
+            Self::Completed(_) => None,
+            Self::Failed {
+                kind: Some(kind),
+                error,
+                ..
+            } => Some(test_execution_error(kind.clone(), error.to_string())),
+            Self::Failed {
+                kind: None,
+                error,
+                status: ExecutionStatus::TimedOut,
+                ..
+            } => Some(test_execution_error(
+                TestErrorKind::EnterpriseTimedOut,
+                error.to_string(),
+            )),
+            Self::Failed {
+                kind: None,
+                error,
+                status: ExecutionStatus::Cancelled,
+                ..
+            } => Some(test_execution_error(
+                TestErrorKind::EnterpriseCancelled,
+                error.to_string(),
+            )),
+            Self::Failed {
+                kind: None,
+                status:
+                    ExecutionStatus::Succeeded
+                    | ExecutionStatus::Failed
+                    | ExecutionStatus::InvalidOutput,
+                ..
+            } => None,
+        }
+    }
+
+    fn append_enterprise_error(&self, errors: &mut Vec<crate::domain::execution::ExecutionError>) {
+        if let Some(error) = self.enterprise_error() {
+            errors.push(error);
+        }
+    }
+
+    #[cfg(test)]
+    fn status(&self) -> ExecutionStatus {
+        match self {
+            Self::Completed(result) if result.process.exit_code == 0 => ExecutionStatus::Succeeded,
+            Self::Completed(_) => ExecutionStatus::Failed,
+            Self::Failed { status, .. } => *status,
+        }
+    }
+
+    fn interruption(&self) -> Option<&ExecutionInterruptionDetails> {
+        match self {
+            Self::Completed(_) => None,
+            Self::Failed { interruption, .. } => interruption.as_ref(),
+        }
+    }
+
+    fn represents_publication_interruption(
+        &self,
+        publication: crate::use_cases::context::ExecutionInterruption,
+    ) -> bool {
+        match (self.interruption().map(|details| details.kind), publication) {
+            (
+                Some(crate::domain::execution::ExecutionInterruptionKind::Cancelled),
+                crate::use_cases::context::ExecutionInterruption::Cancelled,
+            )
+            | (
+                Some(crate::domain::execution::ExecutionInterruptionKind::TimedOut),
+                crate::use_cases::context::ExecutionInterruption::TimedOut,
+            ) => true,
+            (
+                None
+                | Some(crate::domain::execution::ExecutionInterruptionKind::Cancelled)
+                | Some(crate::domain::execution::ExecutionInterruptionKind::TimedOut),
+                crate::use_cases::context::ExecutionInterruption::Cancelled
+                | crate::use_cases::context::ExecutionInterruption::TimedOut,
+            ) => false,
+        }
+    }
+
+    fn diagnostics(&self, mut diagnostics: Vec<String>, config: &AppConfig) -> Vec<String> {
+        match self {
+            Self::Completed(result) => collect_diagnostics(result, diagnostics, config),
+            Self::Failed { .. } => {
+                self.append_enterprise_diagnostic(&mut diagnostics);
+                diagnostics
+            }
+        }
+    }
+
+    fn append_enterprise_diagnostic(&self, diagnostics: &mut Vec<String>) {
+        if let Self::Failed { error, .. } = self {
+            diagnostics.push(error.to_string());
+        }
+    }
 }
 
 enum PreparedRun {
@@ -311,37 +447,50 @@ fn discover_junit_report(root: &Path) -> Option<PathBuf> {
     None
 }
 
-fn parse_junit_report(artifacts: &RunArtifacts) -> crate::parsers::NormalizedParse<TestReport> {
-    if !artifacts.junit_xml.exists() {
-        return crate::parsers::NormalizedParse::default().with_errors(vec![test_execution_error(
-            TestErrorKind::JunitNotProduced,
-            "JUnit report was not produced",
-        )]);
-    }
-    if fs::metadata(&artifacts.junit_xml)
-        .map(|meta| meta.len() == 0)
-        .unwrap_or(false)
-    {
+fn parse_junit_report(artifacts: &RunArtifacts) -> crate::parsers::NormalizedParse<ValidatedJunit> {
+    let bytes = match fs::read(&artifacts.junit_xml) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            let message = if error.kind() == std::io::ErrorKind::NotFound {
+                "JUnit report was not produced".to_owned()
+            } else {
+                error.to_string()
+            };
+            return crate::parsers::NormalizedParse::default().with_errors(vec![
+                test_execution_error(TestErrorKind::JunitNotProduced, message),
+            ]);
+        }
+    };
+    if bytes.is_empty() {
         return crate::parsers::NormalizedParse::default().with_errors(vec![test_execution_error(
             TestErrorKind::JunitEmpty,
             "JUnit report is empty",
         )]);
     }
-    let file = fs::File::open(&artifacts.junit_xml).map_err(|error| error.to_string());
-    let file = match file {
-        Ok(file) => file,
-        Err(error) => {
-            return crate::parsers::NormalizedParse::default().with_errors(vec![
-                test_execution_error(TestErrorKind::JunitNotProduced, error),
-            ]);
-        }
-    };
-    let reader = BufReader::new(file);
-    let mut normalized = junit::parse_normalized(reader);
+    let mut normalized = junit::parse_normalized(Cursor::new(bytes.as_slice()));
     if normalized.errors.is_empty() {
-        return normalized;
+        let payload = normalized
+            .payload
+            .take()
+            .map(|report| ValidatedJunit { report, bytes });
+        let errors = if payload.is_none() {
+            vec![test_execution_error(
+                TestErrorKind::JunitMalformed,
+                "JUnit parser returned neither a report nor an error",
+            )]
+        } else {
+            Vec::new()
+        };
+        return crate::parsers::NormalizedParse {
+            payload,
+            metrics: normalized.metrics,
+            diagnostics: normalized.diagnostics,
+            errors,
+            warnings: normalized.warnings,
+            artifacts: normalized.artifacts,
+        };
     }
-    normalized.errors = normalized
+    let errors = normalized
         .errors
         .into_iter()
         .map(|error| match error.code.as_str() {
@@ -352,7 +501,14 @@ fn parse_junit_report(artifacts: &RunArtifacts) -> crate::parsers::NormalizedPar
             _ => error,
         })
         .collect();
-    normalized
+    crate::parsers::NormalizedParse {
+        payload: None,
+        metrics: normalized.metrics,
+        diagnostics: normalized.diagnostics,
+        errors,
+        warnings: normalized.warnings,
+        artifacts: normalized.artifacts,
+    }
 }
 
 fn compact_report(report: &TestReport) -> TestReport {
@@ -560,6 +716,62 @@ mod tests {
         }
     }
 
+    fn yaxunit_request(junit_output: PathBuf, scope: TestScopeRequest) -> TestRequest {
+        TestRequest {
+            full: false,
+            junit_output: Some(junit_output),
+            scope,
+            execution: ScenarioExecutionRequest {
+                profile: RunnerProfile {
+                    id: "yaxunit".to_owned(),
+                    kind: RunnerKind::YaXUnit,
+                    output_formats: vec![],
+                    backend_hint: Some("enterprise".to_owned()),
+                },
+                client_mode: Some(LaunchClientModeRequest::Thin),
+                timeouts: ExecutionTimeouts::default(),
+                policy: ExecutionPolicy::default(),
+                launch: LaunchOptions::default(),
+            },
+        }
+    }
+
+    #[test]
+    fn stale_junit_target_is_removed_before_invalid_scope_and_build_failure() {
+        let invalid_dir = tempdir().expect("invalid tempdir");
+        let invalid_config = config(invalid_dir.path());
+        let invalid_target = invalid_dir.path().join("invalid.xml");
+        std::fs::write(&invalid_target, b"stale").expect("stale invalid target");
+        let invalid = yaxunit_request(
+            invalid_target.clone(),
+            TestScopeRequest::Module {
+                name: "   ".to_owned(),
+            },
+        );
+
+        let _failure = run_tests(
+            &ExecutionContext::cli(CommandName::Test),
+            &invalid_config,
+            &invalid,
+        )
+        .expect_err("invalid scope");
+        assert!(!invalid_target.exists());
+
+        let build_dir = tempdir().expect("build tempdir");
+        let build_config = config(build_dir.path());
+        let build_target = build_dir.path().join("build.xml");
+        std::fs::write(&build_target, b"stale").expect("stale build target");
+        let build = yaxunit_request(build_target.clone(), TestScopeRequest::All);
+
+        let _failure = run_tests(
+            &ExecutionContext::cli(CommandName::Test),
+            &build_config,
+            &build,
+        )
+        .expect_err("build prerequisite");
+        assert!(!build_target.exists());
+    }
+
     #[test]
     fn creates_distinct_run_dirs() {
         let dir = tempdir().expect("tempdir");
@@ -694,6 +906,48 @@ mod tests {
     }
 
     #[test]
+    fn junit_parse_retains_the_exact_validated_bytes() {
+        let dir = tempdir().expect("tempdir");
+        let artifacts = create_artifacts(dir.path());
+        std::fs::create_dir_all(&artifacts.run_dir).expect("run dir");
+        let bytes = b"<?xml version=\"1.0\"?>\r\n<testsuite name=\"raw\"><testcase name=\"ok\"/></testsuite>\r\n";
+        std::fs::write(&artifacts.junit_xml, bytes).expect("write JUnit");
+
+        let parsed = parse_junit_report(&artifacts)
+            .payload
+            .expect("validated JUnit");
+        std::fs::write(&artifacts.junit_xml, b"changed after validation")
+            .expect("replace JUnit after validation");
+
+        assert_eq!(parsed.bytes, bytes);
+        assert_eq!(parsed.report.summary.total, 1);
+    }
+
+    #[test]
+    fn junit_parse_classifies_empty_and_read_failures() {
+        let dir = tempdir().expect("tempdir");
+        let artifacts = create_artifacts(dir.path());
+        std::fs::create_dir_all(&artifacts.run_dir).expect("run dir");
+        std::fs::write(&artifacts.junit_xml, b"").expect("empty JUnit");
+
+        let empty = parse_junit_report(&artifacts);
+        assert_eq!(empty.errors[0].code, TestErrorKind::JunitEmpty.code());
+        assert_eq!(empty.errors[0].message, "JUnit report is empty");
+
+        std::fs::remove_file(&artifacts.junit_xml).expect("remove empty file");
+        std::fs::create_dir(&artifacts.junit_xml).expect("directory at report path");
+        let expected_read_error = std::fs::read(&artifacts.junit_xml)
+            .expect_err("directory must not be readable as a JUnit file")
+            .to_string();
+        let unreadable = parse_junit_report(&artifacts);
+        assert_eq!(
+            unreadable.errors[0].code,
+            TestErrorKind::JunitNotProduced.code()
+        );
+        assert_eq!(unreadable.errors[0].message, expected_read_error);
+    }
+
+    #[test]
     fn unsafe_vanessa_profile_name_is_rejected() {
         let dir = tempdir().expect("tempdir");
         let mut config = config(dir.path());
@@ -717,6 +971,7 @@ mod tests {
 
         let args = crate::use_cases::request::TestRequest {
             full: false,
+            junit_output: None,
             scope: crate::use_cases::request::TestScopeRequest::All,
             execution: crate::domain::runner::ScenarioExecutionRequest {
                 profile: RunnerProfile {
@@ -743,11 +998,14 @@ mod tests {
     fn run_tests_reports_cancelled_execution_before_first_safe_point() {
         let dir = tempdir().expect("tempdir");
         let config = config(dir.path());
+        let export_target = dir.path().join("report.xml");
+        std::fs::write(&export_target, b"stale").expect("stale export");
         let cancellation = CancellationToken::new();
         cancellation.cancel();
         let context = ExecutionContext::cli(CommandName::Test).with_cancellation(cancellation);
         let args = TestRequest {
             full: false,
+            junit_output: Some(export_target.clone()),
             scope: TestScopeRequest::All,
             execution: ScenarioExecutionRequest {
                 profile: RunnerProfile {
@@ -769,6 +1027,64 @@ mod tests {
         assert_eq!(payload.execution.status, ExecutionStatus::Cancelled);
         assert_eq!(payload.execution.interruptions.len(), 1);
         assert!(payload.execution.errors.is_empty());
+        assert!(!export_target.exists());
+    }
+
+    #[test]
+    fn junit_export_prepare_failure_precedes_target_validation_and_cancellation() {
+        let dir = tempdir().expect("tempdir");
+        let config = config(dir.path());
+        let export_target = dir.path().join("report.xml");
+        std::fs::create_dir(&export_target).expect("export target directory");
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+        let context = ExecutionContext::cli(CommandName::Test).with_cancellation(cancellation);
+        let args = TestRequest {
+            full: false,
+            junit_output: Some(export_target),
+            scope: TestScopeRequest::Module {
+                name: "   ".to_owned(),
+            },
+            execution: ScenarioExecutionRequest {
+                profile: RunnerProfile {
+                    id: "yaxunit".to_owned(),
+                    kind: RunnerKind::YaXUnit,
+                    output_formats: vec![],
+                    backend_hint: Some("enterprise".to_owned()),
+                },
+                client_mode: Some(LaunchClientModeRequest::Thin),
+                timeouts: ExecutionTimeouts::default(),
+                policy: ExecutionPolicy::default(),
+                launch: LaunchOptions::default(),
+            },
+        };
+
+        let failure = run_tests(&context, &config, &args).expect_err("prepare must fail first");
+        let payload = failure.payload.expect("payload");
+
+        assert_eq!(payload.execution.status, ExecutionStatus::Failed);
+        assert_eq!(payload.execution.errors.len(), 1);
+        assert_eq!(
+            payload.execution.errors[0].code,
+            TestErrorKind::JunitExportFailed.code()
+        );
+        assert_eq!(payload.steps.len(), 1);
+        assert_eq!(payload.steps[0].name, "export_junit");
+        assert_eq!(
+            payload.steps[0].kind,
+            crate::domain::execution::ExecutionStepKind::Publish
+        );
+        let expected_target = args
+            .junit_output
+            .as_deref()
+            .expect("target")
+            .display()
+            .to_string();
+        assert_eq!(
+            payload.steps[0].target.as_deref(),
+            Some(expected_target.as_str())
+        );
+        assert!(payload.execution.interruptions.is_empty());
     }
 
     fn create_artifacts(root: &std::path::Path) -> RunArtifacts {

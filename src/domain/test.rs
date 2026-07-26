@@ -17,11 +17,13 @@ pub const TEST_ERROR_CODE_ENTERPRISE_EXITED_EARLY: &str = "enterprise_exited_ear
 pub const TEST_ERROR_CODE_ENTERPRISE_STDOUT_LOG_IO: &str = "enterprise_stdout_log_io";
 pub const TEST_ERROR_CODE_ENTERPRISE_STDERR_LOG_IO: &str = "enterprise_stderr_log_io";
 pub const TEST_ERROR_CODE_ENTERPRISE_TIMED_OUT: &str = "enterprise_timed_out";
+pub const TEST_ERROR_CODE_ENTERPRISE_CANCELLED: &str = "enterprise_cancelled";
 pub const TEST_ERROR_CODE_ENTERPRISE_EXITED_NON_ZERO: &str = "enterprise_exited_non_zero";
 pub const TEST_ERROR_CODE_TEST_FAILURES: &str = "test_failures";
 pub const TEST_ERROR_CODE_JUNIT_NOT_PRODUCED: &str = "junit_not_produced";
 pub const TEST_ERROR_CODE_JUNIT_EMPTY: &str = "junit_empty";
 pub const TEST_ERROR_CODE_JUNIT_MALFORMED: &str = "junit_malformed";
+pub const TEST_ERROR_CODE_JUNIT_EXPORT_FAILED: &str = "junit_export_failed";
 pub const TEST_RUNNER_ID: &str = "yaxunit";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -49,11 +51,13 @@ pub enum TestErrorKind {
     EnterpriseStdoutLogIo,
     EnterpriseStderrLogIo,
     EnterpriseTimedOut,
+    EnterpriseCancelled,
     EnterpriseExitedNonZero,
     TestFailures,
     JunitNotProduced,
     JunitEmpty,
     JunitMalformed,
+    JunitExportFailed,
 }
 
 impl TestErrorKind {
@@ -67,11 +71,13 @@ impl TestErrorKind {
             Self::EnterpriseStdoutLogIo => TEST_ERROR_CODE_ENTERPRISE_STDOUT_LOG_IO,
             Self::EnterpriseStderrLogIo => TEST_ERROR_CODE_ENTERPRISE_STDERR_LOG_IO,
             Self::EnterpriseTimedOut => TEST_ERROR_CODE_ENTERPRISE_TIMED_OUT,
+            Self::EnterpriseCancelled => TEST_ERROR_CODE_ENTERPRISE_CANCELLED,
             Self::EnterpriseExitedNonZero => TEST_ERROR_CODE_ENTERPRISE_EXITED_NON_ZERO,
             Self::TestFailures => TEST_ERROR_CODE_TEST_FAILURES,
             Self::JunitNotProduced => TEST_ERROR_CODE_JUNIT_NOT_PRODUCED,
             Self::JunitEmpty => TEST_ERROR_CODE_JUNIT_EMPTY,
             Self::JunitMalformed => TEST_ERROR_CODE_JUNIT_MALFORMED,
+            Self::JunitExportFailed => TEST_ERROR_CODE_JUNIT_EXPORT_FAILED,
         }
     }
 
@@ -85,11 +91,13 @@ impl TestErrorKind {
             TEST_ERROR_CODE_ENTERPRISE_STDOUT_LOG_IO => Self::EnterpriseStdoutLogIo,
             TEST_ERROR_CODE_ENTERPRISE_STDERR_LOG_IO => Self::EnterpriseStderrLogIo,
             TEST_ERROR_CODE_ENTERPRISE_TIMED_OUT => Self::EnterpriseTimedOut,
+            TEST_ERROR_CODE_ENTERPRISE_CANCELLED => Self::EnterpriseCancelled,
             TEST_ERROR_CODE_ENTERPRISE_EXITED_NON_ZERO => Self::EnterpriseExitedNonZero,
             TEST_ERROR_CODE_TEST_FAILURES => Self::TestFailures,
             TEST_ERROR_CODE_JUNIT_NOT_PRODUCED => Self::JunitNotProduced,
             TEST_ERROR_CODE_JUNIT_EMPTY => Self::JunitEmpty,
             TEST_ERROR_CODE_JUNIT_MALFORMED => Self::JunitMalformed,
+            TEST_ERROR_CODE_JUNIT_EXPORT_FAILED => Self::JunitExportFailed,
             _ => return None,
         })
     }
@@ -282,6 +290,7 @@ pub fn test_execution_status(kind: Option<TestErrorKind>, ok: bool) -> Execution
 
     match kind {
         Some(TestErrorKind::EnterpriseTimedOut) => ExecutionStatus::TimedOut,
+        Some(TestErrorKind::EnterpriseCancelled) => ExecutionStatus::Cancelled,
         Some(
             TestErrorKind::JunitMalformed
             | TestErrorKind::JunitEmpty
@@ -296,7 +305,8 @@ pub fn test_execution_status(kind: Option<TestErrorKind>, ok: bool) -> Execution
             | TestErrorKind::EnterpriseStdoutLogIo
             | TestErrorKind::EnterpriseStderrLogIo
             | TestErrorKind::EnterpriseExitedNonZero
-            | TestErrorKind::TestFailures,
+            | TestErrorKind::TestFailures
+            | TestErrorKind::JunitExportFailed,
         )
         | None => ExecutionStatus::Failed,
     }
@@ -343,6 +353,36 @@ mod tests {
             let code = kind.clone().code();
             assert_eq!(TestErrorKind::from_code(code), Some(kind));
         }
+    }
+
+    #[test]
+    fn enterprise_cancelled_code_roundtrips() {
+        let kind = TestErrorKind::EnterpriseCancelled;
+
+        assert_eq!(kind.clone().code(), "enterprise_cancelled");
+        assert_eq!(
+            TestErrorKind::from_code(kind.clone().code()),
+            Some(kind.clone())
+        );
+        assert_eq!(
+            super::test_execution_status(Some(kind), false),
+            ExecutionStatus::Cancelled
+        );
+    }
+
+    #[test]
+    fn junit_export_failure_code_roundtrips_and_maps_to_failed() {
+        let kind = TestErrorKind::JunitExportFailed;
+
+        assert_eq!(kind.clone().code(), "junit_export_failed");
+        assert_eq!(
+            TestErrorKind::from_code(kind.clone().code()),
+            Some(kind.clone())
+        );
+        assert_eq!(
+            super::test_execution_status(Some(kind), false),
+            ExecutionStatus::Failed
+        );
     }
 
     #[test]

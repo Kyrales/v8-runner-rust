@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use crate::domain::artifacts::{CFE_RUNNER_ID, CF_RUNNER_ID, EPF_RUNNER_ID, ERF_RUNNER_ID};
 use crate::domain::execution::ExecutionTimeouts;
 use crate::domain::load::LoadMode;
@@ -51,6 +53,8 @@ pub struct TestRequest {
     pub execution: ScenarioExecutionRequest,
     /// When `true`, the use case may request a full build before test execution.
     pub full: bool,
+    /// Optional destination for exporting the runner's JUnit report.
+    pub junit_output: Option<PathBuf>,
     /// Selected test scope. Module targets require a non-empty module name.
     pub scope: TestScopeRequest,
 }

@@ -178,14 +178,20 @@ v8-runner build [--source-set <NAME>] [--full-rebuild]
 ### `test`
 
 ```bash
-v8-runner test yaxunit [--full] all
-v8-runner test yaxunit [--full] module <NAME>
+v8-runner test yaxunit [--full] [--junit-output <PATH>] all
+v8-runner test yaxunit [--full] [--junit-output <PATH>] module <NAME>
 v8-runner test va
 v8-runner test va --feature login --filter-tag @smoke
 ```
 
 - Всегда сначала запускает `build`.
 - `test yaxunit module <NAME>` требует непустое имя модуля.
+- `--junit-output <PATH>` сохраняет оригинальный полный JUnit XML YAxUnit для команд `all` и
+  `module`; относительный путь разрешается от каталога основного `v8project.yaml`.
+- При корректном JUnit отчёт сохраняется и при падениях тестов. Параметр `--full` управляет только
+  представлением результата в выводе `v8-runner` и не изменяет экспортируемый XML.
+- Целевой файл публикуется атомарно. При запуске с `--junit-output` прежний отчёт удаляется заранее,
+  поэтому при отсутствии нового корректного JUnit устаревший файл не остаётся.
 - `test va` использует профиль из `tests.va.profile`; `--feature`, `--filter-tag`,
   `--ignore-tag` и `--scenario-filter` переопределяют соответствующие списки выбранного профиля
   только для текущего запуска.
