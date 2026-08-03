@@ -803,6 +803,9 @@ mod tests {
 
     fn read_http_request(stream: &mut TcpStream) -> String {
         stream
+            .set_nonblocking(false)
+            .expect("set fake MCP stream blocking");
+        stream
             .set_read_timeout(Some(Duration::from_secs(1)))
             .expect("set read timeout");
         let mut bytes = Vec::new();
