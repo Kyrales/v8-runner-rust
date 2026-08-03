@@ -77,6 +77,8 @@ use crate::use_cases::tools_download;
 use crate::use_cases::transport::dispatch_with_workspace_lock;
 
 const EXTERNAL_EPF_WAIT_CLEANUP_MARGIN: Duration = Duration::from_millis(500);
+// std::time::Instant documents about 100 years as a portable checked-add horizon.
+const MAX_EXTERNAL_EPF_WAIT_TIMEOUT: Duration = Duration::from_secs(100 * 365 * 24 * 60 * 60);
 
 /// Executes a parsed CLI command by mapping it into transport-neutral requests and
 /// rendering the resulting command output.
@@ -732,7 +734,8 @@ fn execute_launch(
 ) -> Result<(), UseCaseError> {
     let request = map_launch_request(args)
         .map_err(|error| render_pre_dispatch_error(presenter, CommandName::Launch, error))?;
-    let context = launch_cli_context(config, &request, cancellation);
+    let context = launch_cli_context(config, &request, cancellation)
+        .map_err(|error| render_pre_dispatch_error(presenter, CommandName::Launch, error))?;
     let started = Instant::now();
     with_cli_workspace_lock(
         config,
@@ -1129,7 +1132,7 @@ fn launch_cli_context(
     config: &AppConfig,
     request: &LaunchRequest,
     cancellation: CancellationToken,
-) -> ExecutionContext {
+) -> Result<ExecutionContext, UseCaseError> {
     let timeout = request
         .launch
         .external_epf_wait
@@ -1141,9 +1144,15 @@ fn launch_cli_context(
             )
         })
         .unwrap_or_else(|| config.execution_timeout_duration());
-    ExecutionContext::cli(CommandName::Launch)
-        .with_deadline(Some(Instant::now() + timeout))
-        .with_cancellation(cancellation)
+    let deadline = Instant::now().checked_add(timeout).ok_or_else(|| {
+        UseCaseError::new(
+            UseCaseErrorKind::Validation,
+            "--wait-timeout-ms is too large to form a process deadline",
+        )
+    })?;
+    Ok(ExecutionContext::cli(CommandName::Launch)
+        .with_deadline(Some(deadline))
+        .with_cancellation(cancellation))
 }
 
 fn map_load_request(args: &LoadArgs) -> Result<LoadRequest, UseCaseError> {
@@ -1401,6 +1410,7 @@ fn map_direct_launch_options(
                     "--wait-timeout-ms must be greater than or equal to 1",
                 ));
             }
+            validate_external_epf_wait_timeout(timeout_ms)?;
             Some(ExternalEpfWaitOptions {
                 timeout_ms,
                 stderr_output: stderr_output.clone(),
@@ -1428,6 +1438,24 @@ fn map_direct_launch_options(
         raw_args: common.raw_keys.clone(),
         external_epf_wait,
     })
+}
+
+fn validate_external_epf_wait_timeout(timeout_ms: u64) -> Result<(), UseCaseError> {
+    let timeout = Duration::from_millis(timeout_ms);
+    if timeout > MAX_EXTERNAL_EPF_WAIT_TIMEOUT {
+        return Err(UseCaseError::new(
+            UseCaseErrorKind::Validation,
+            "--wait-timeout-ms is too large to form a process deadline",
+        ));
+    }
+    let timeout = timeout.saturating_add(EXTERNAL_EPF_WAIT_CLEANUP_MARGIN);
+    Instant::now().checked_add(timeout).ok_or_else(|| {
+        UseCaseError::new(
+            UseCaseErrorKind::Validation,
+            "--wait-timeout-ms is too large to form a process deadline",
+        )
+    })?;
+    Ok(())
 }
 
 fn map_mcp_launch_options(args: &LaunchOptionsArgs) -> Result<LaunchOptions, UseCaseError> {
@@ -2513,9 +2541,9 @@ fn status_label(status: &TestStatus) -> &'static str {
 mod tests {
     use super::{
         build_load_envelope, command_name, execute_command, map_artifacts_request_with_config,
-        map_build_request, map_designer_config_request, map_dump_request, map_extensions_request,
-        map_launch_request, map_load_request, map_syntax_request, map_test_request,
-        resolve_junit_output,
+        map_build_request, map_designer_config_request, map_direct_launch_options,
+        map_dump_request, map_extensions_request, map_launch_request, map_load_request,
+        map_syntax_request, map_test_request, resolve_junit_output,
     };
     use crate::cli::args::{
         ArtifactsArgs, BuildArgs, Command, DesignerConfigSyntaxArgs, DesignerModulesSyntaxArgs,
@@ -2965,6 +2993,44 @@ mod tests {
 
         assert_eq!(dump_error.kind(), UseCaseErrorKind::Validation);
         assert_eq!(launch_error.kind(), UseCaseErrorKind::Validation);
+    }
+
+    #[test]
+    fn rejects_wait_timeout_that_cannot_form_a_deadline() {
+        let error = map_direct_launch_options(
+            LaunchTargetRequest::thin_client(),
+            &DirectLaunchOptionsArgs {
+                common: LaunchOptionsArgs::default(),
+                stderr_output: Some("stderr.log".to_owned()),
+                wait_for_exit: true,
+                wait_timeout_ms: Some(u64::MAX),
+            },
+            false,
+        )
+        .expect_err("extreme wait timeout must be rejected");
+
+        assert_eq!(error.kind(), UseCaseErrorKind::Validation);
+        assert!(error.message().contains("--wait-timeout-ms"));
+    }
+
+    #[test]
+    fn maps_normal_positive_wait_timeout() {
+        let launch = map_direct_launch_options(
+            LaunchTargetRequest::thin_client(),
+            &DirectLaunchOptionsArgs {
+                common: LaunchOptionsArgs::default(),
+                stderr_output: Some("stderr.log".to_owned()),
+                wait_for_exit: true,
+                wait_timeout_ms: Some(30_000),
+            },
+            false,
+        )
+        .expect("normal wait timeout must remain valid");
+
+        assert_eq!(
+            launch.external_epf_wait.map(|wait| wait.timeout_ms),
+            Some(30_000)
+        );
     }
 
     #[test]

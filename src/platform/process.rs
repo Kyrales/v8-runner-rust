@@ -154,11 +154,18 @@ impl ManagedSpawnResult {
                 .timeout
                 .is_some_and(|timeout| started.elapsed() >= timeout)
             {
-                terminate_child_group_and_wait(
+                if let Err(source) = terminate_child_group_and_wait(
                     &mut spawned,
                     policy.graceful_shutdown_timeout,
                     &self.rendered_command,
-                )?;
+                ) {
+                    return Err(ProcessError::TimedOutCleanupFailed {
+                        cmd: self.rendered_command.clone(),
+                        timeout_ms: u64::try_from(policy.timeout.unwrap_or_default().as_millis())
+                            .unwrap_or(u64::MAX),
+                        source: Box::new(source),
+                    });
+                }
                 return Ok(ManagedProcessOutcome {
                     exit_code: None,
                     timed_out: true,
@@ -266,6 +273,13 @@ pub enum ProcessError {
     #[error("failed to terminate process tree '{cmd}': {source}")]
     TerminationFailed { cmd: String, source: std::io::Error },
 
+    #[error("process timed out '{cmd}' after {timeout_ms}ms; cleanup failed: {source}")]
+    TimedOutCleanupFailed {
+        cmd: String,
+        timeout_ms: u64,
+        source: Box<ProcessError>,
+    },
+
     #[error("failed to write stdout log '{path}': {source}")]
     StdoutLogIo {
         path: PathBuf,
@@ -286,6 +300,22 @@ pub enum ProcessError {
 
     #[error("managed process spawn is not supported for '{cmd}'")]
     ManagedSpawnUnsupported { cmd: String },
+}
+
+impl ProcessError {
+    pub const fn timed_out(&self) -> bool {
+        match self {
+            Self::TimedOut { .. } | Self::TimedOutCleanupFailed { .. } => true,
+            Self::SpawnFailed { .. }
+            | Self::StartupCheckFailed { .. }
+            | Self::ExitedEarly { .. }
+            | Self::TerminationFailed { .. }
+            | Self::StdoutLogIo { .. }
+            | Self::StderrLogIo { .. }
+            | Self::Cancelled { .. }
+            | Self::ManagedSpawnUnsupported { .. } => false,
+        }
+    }
 }
 
 /// Boundary for synchronous and detached process execution.
@@ -1216,10 +1246,31 @@ mod tests {
     }
 
     #[test]
+    fn timeout_cleanup_failure_retains_timeout_semantics_and_diagnostics() {
+        let error = ProcessError::TimedOutCleanupFailed {
+            cmd: "1cv8c ENTERPRISE".to_owned(),
+            timeout_ms: 25,
+            source: Box::new(ProcessError::TerminationFailed {
+                cmd: "1cv8c ENTERPRISE".to_owned(),
+                source: std::io::Error::other("taskkill failed"),
+            }),
+        };
+
+        assert!(error.timed_out());
+        assert!(error.to_string().contains("taskkill failed"));
+        assert!(matches!(
+            error,
+            ProcessError::TimedOutCleanupFailed { source, .. }
+                if matches!(*source, ProcessError::TerminationFailed { .. })
+        ));
+    }
+
+    #[test]
     fn detached_modes_require_standard_handle_isolation() {
         assert!(ProcessIoMode::Detached.requires_standard_handle_isolation());
         assert!(ProcessIoMode::ManagedDetached.requires_standard_handle_isolation());
         assert!(!ProcessIoMode::Captured.requires_standard_handle_isolation());
+        assert!(!ProcessIoMode::ManagedWait.requires_standard_handle_isolation());
     }
 
     #[cfg(unix)]
@@ -1460,7 +1511,7 @@ mod tests {
             ManagedSpawnMode::Detached,
         ) {
             Ok(managed) => {
-                managed.terminate();
+                managed.terminate().expect("terminate managed process");
                 panic!("expected managed startup probe to detect early exit");
             }
             Err(error) => error,
@@ -1638,7 +1689,7 @@ mod tests {
             .expect("spawn managed");
 
         let child_pid = read_pid(&child_pid_path);
-        managed.terminate();
+        managed.terminate().expect("terminate managed process");
         if !wait_for_process_exit(child_pid, Duration::from_secs(2)) {
             let cleanup = terminate_windows_process_tree_for_test(child_pid);
             panic!(
@@ -1681,7 +1732,7 @@ mod tests {
             ManagedSpawnMode::Detached,
         ) {
             Ok(managed) => {
-                managed.terminate();
+                managed.terminate().expect("terminate managed process");
                 panic!("expected managed startup probe to detect early exit");
             }
             Err(error) => error,
