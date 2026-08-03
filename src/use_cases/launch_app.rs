@@ -114,7 +114,8 @@ pub fn execute(
         )) {
             Ok(outcome) => outcome,
             Err(error) => {
-                let message = error.to_string();
+                let (external_epf_wait, message) =
+                    external_epf_wait_failure_result(pid, plan, &error);
                 let result = LaunchResult {
                     ok: false,
                     mode,
@@ -123,14 +124,7 @@ pub fn execute(
                     platform_resolution,
                     message: Some(message.clone()),
                     mcp_readiness: None,
-                    external_epf_wait: Some(ExternalEpfWaitResult {
-                        pid,
-                        execute_path: plan.execute_path,
-                        exit_code: None,
-                        timed_out: false,
-                        output_path: plan.output_path,
-                        stderr_path: plan.stderr_path.display().to_string(),
-                    }),
+                    external_epf_wait: Some(external_epf_wait),
                 };
                 return Err(UseCaseFailure::with_payload(AppError::from(error), result));
             }
@@ -279,6 +273,24 @@ struct ExternalEpfWaitPlan {
     execute_path: String,
     output_path: String,
     stderr_path: std::path::PathBuf,
+}
+
+fn external_epf_wait_failure_result(
+    pid: u32,
+    plan: ExternalEpfWaitPlan,
+    error: &crate::platform::process::ProcessError,
+) -> (ExternalEpfWaitResult, String) {
+    (
+        ExternalEpfWaitResult {
+            pid,
+            execute_path: plan.execute_path,
+            exit_code: None,
+            timed_out: error.timed_out(),
+            output_path: plan.output_path,
+            stderr_path: plan.stderr_path.display().to_string(),
+        },
+        error.to_string(),
+    )
 }
 
 fn external_epf_wait_plan(
@@ -492,13 +504,16 @@ fn build_client_mcp_payload(
 
 #[cfg(test)]
 mod tests {
-    use super::{execute, platform_resolution};
+    use super::{
+        execute, external_epf_wait_failure_result, platform_resolution, ExternalEpfWaitPlan,
+    };
     use crate::config::model::{
         AppConfig, BuildConfig, BuilderBackend, EnterpriseToolConfig, PlatformToolConfig,
         SourceFormat, SourceSetConfig, SourceSetPurpose, TestsConfig, ToolExtensionArtifactConfig,
         ToolExtensionConfig, ToolExtensionInput, ToolsConfig,
     };
     use crate::platform::locator::{ResolutionSource, UtilityLocation, UtilityType};
+    use crate::platform::process::ProcessError;
     use crate::use_cases::context::{CommandName, ExecutionContext};
     use crate::use_cases::request::{
         ClientMcpMode, ClientMcpOptionsRequest, LaunchRequest, LaunchTargetRequest,
@@ -560,6 +575,31 @@ mod tests {
             assert_eq!(json["source"], expected_source);
             assert!(json["version"].is_null());
         }
+    }
+
+    #[test]
+    fn timeout_cleanup_failure_payload_retains_timeout_truth_and_diagnostics() {
+        let error = ProcessError::TimedOutCleanupFailed {
+            cmd: "1cv8c ENTERPRISE".to_owned(),
+            timeout_ms: 25,
+            source: Box::new(ProcessError::TerminationFailed {
+                cmd: "1cv8c ENTERPRISE".to_owned(),
+                source: std::io::Error::other("taskkill failed"),
+            }),
+        };
+        let (result, message) = external_epf_wait_failure_result(
+            42,
+            ExternalEpfWaitPlan {
+                timeout_ms: 25,
+                execute_path: "tool.epf".to_owned(),
+                output_path: "output.log".to_owned(),
+                stderr_path: PathBuf::from("stderr.log"),
+            },
+            &error,
+        );
+
+        assert!(result.timed_out);
+        assert!(message.contains("taskkill failed"));
     }
 
     fn sample_config(base_path: &Path, work_path: &Path, platform_path: &Path) -> AppConfig {

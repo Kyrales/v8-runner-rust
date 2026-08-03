@@ -1022,7 +1022,7 @@ mod tests {
     use crate::use_cases::request::{
         BuildRequest, ClientMcpAddonRequest, ClientMcpMode, DesignerClientScope, DumpModeRequest,
         DumpRequest, LaunchRequest, LaunchTargetRequest, SyntaxExtensionScope, SyntaxRequest,
-        SyntaxTargetRequest, TestRequest, TestScopeRequest,
+        SyntaxTargetRequest, TestBuildPolicy, TestRequest, TestScopeRequest,
     };
     use crate::use_cases::result::{UseCaseError, UseCaseErrorKind, UseCaseFailure, UseCaseResult};
 
@@ -1269,6 +1269,8 @@ mod tests {
         assert_eq!(requests[0].1.full, true);
         assert_eq!(requests[0].1.scope, TestScopeRequest::All);
         assert_eq!(requests[0].1.execution.profile.kind, RunnerKind::YaXUnit);
+        assert_eq!(requests[0].1.build_policy, TestBuildPolicy::BuildFirst);
+        assert_eq!(requests[0].1.junit_output, None);
     }
 
     #[test]
@@ -1305,6 +1307,8 @@ mod tests {
         assert_eq!(requests[0].1.scope, TestScopeRequest::All);
         assert_eq!(requests[0].1.execution.profile.kind, RunnerKind::Vanessa);
         assert_eq!(requests[0].1.execution.profile.id, "acceptance");
+        assert_eq!(requests[0].1.build_policy, TestBuildPolicy::BuildFirst);
+        assert_eq!(requests[0].1.junit_output, None);
         assert_eq!(
             requests[0].1.execution.launch.c.as_deref(),
             Some("StartFeaturePlayer;VAParams={params_path}")
@@ -1450,6 +1454,8 @@ mod tests {
                 name: "Smoke".to_owned()
             }
         );
+        assert_eq!(requests[0].1.build_policy, TestBuildPolicy::BuildFirst);
+        assert_eq!(requests[0].1.junit_output, None);
     }
 
     #[test]

@@ -144,6 +144,28 @@ mod tests {
     }
 
     #[test]
+    fn enterprise_timeout_cleanup_failure_keeps_typed_diagnostics() {
+        let (kind, app_error, interruption, status) = enterprise_error_kind(
+            EnterpriseError::Spawn(ProcessError::TimedOutCleanupFailed {
+                cmd: "1cv8c ENTERPRISE".to_owned(),
+                timeout_ms: 500,
+                source: Box::new(ProcessError::TerminationFailed {
+                    cmd: "1cv8c ENTERPRISE".to_owned(),
+                    source: std::io::Error::other("cleanup failed"),
+                }),
+            }),
+        );
+
+        assert_eq!(kind, None);
+        assert!(matches!(
+            app_error,
+            AppError::PlatformProcess(ProcessError::TimedOutCleanupFailed { .. })
+        ));
+        assert!(interruption.is_some());
+        assert_eq!(status, ExecutionStatus::TimedOut);
+    }
+
+    #[test]
     fn failed_enterprise_completion_keeps_typed_failure_without_process_result() {
         let (_kind, _error, interruption, _status) =
             enterprise_error_kind(EnterpriseError::Spawn(ProcessError::TimedOut {
@@ -575,6 +597,17 @@ pub(super) fn enterprise_error_kind(
                 "run",
                 false,
                 "enterprise test run timed out",
+            )),
+            ExecutionStatus::TimedOut,
+        ),
+        EnterpriseError::Spawn(process_error @ ProcessError::TimedOutCleanupFailed { .. }) => (
+            None,
+            AppError::PlatformProcess(process_error),
+            Some(process_interruption_details(
+                ProcessInterruptionReason::TimedOut,
+                "run",
+                false,
+                "enterprise test run timed out and cleanup failed",
             )),
             ExecutionStatus::TimedOut,
         ),

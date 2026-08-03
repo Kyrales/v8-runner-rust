@@ -1216,4 +1216,18 @@ mod tests {
         assert!(rendered.contains("    profile: 'all'\n"));
         assert!(rendered.contains("source-set:\n  - name: main\n"));
     }
+
+    #[test]
+    fn adds_missing_timeout_without_replacing_configured_vanessa_defaults() {
+        let content = "workPath: build\ntests:\n  va:\n    params_path: custom/params.json\n    profile: smoke\n    profiles:\n      smoke:\n        feature_path: custom/features\nsource-set:\n  - name: main\n";
+
+        let rendered =
+            insert_missing_vanessa_tests_fields_text(content, false, true).expect("render config");
+
+        assert!(rendered.contains("  execution_timeout_seconds: 3600\n"));
+        assert!(rendered.contains("tests:\n  va:\n"));
+        assert!(rendered.contains("    params_path: custom/params.json\n    profile: smoke\n"));
+        assert!(rendered.contains("        feature_path: custom/features\n"));
+        assert!(!rendered.contains("profile: 'all'"));
+    }
 }
