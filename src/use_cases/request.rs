@@ -47,12 +47,20 @@ pub struct LoadRequest {
 }
 
 /// Transport-neutral request for the `test` use case.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TestBuildPolicy {
+    BuildFirst,
+    Skip,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TestRequest {
     /// Shared runner execution block reused by future test/package scenarios.
     pub execution: ScenarioExecutionRequest,
     /// When `true`, the use case may request a full build before test execution.
     pub full: bool,
+    /// Whether the test coordinator prepares the infobase from configured sources.
+    pub build_policy: TestBuildPolicy,
     /// Optional destination for exporting the runner's JUnit report.
     pub junit_output: Option<PathBuf>,
     /// Selected test scope. Module targets require a non-empty module name.
@@ -83,6 +91,17 @@ impl TestRequest {
             launch: LaunchOptions::default(),
         }
     }
+}
+
+pub(crate) fn effective_test_timeouts(
+    legacy_total_seconds: u64,
+    runner_timeouts: &ExecutionTimeouts,
+) -> ExecutionTimeouts {
+    let mut timeouts = runner_timeouts.clone();
+    if timeouts.total_ms.is_none() {
+        timeouts.total_ms = Some(legacy_total_seconds.saturating_mul(1_000));
+    }
+    timeouts
 }
 
 /// Transport-neutral test scope.
@@ -195,10 +214,10 @@ pub struct SyntaxRequest {
 pub enum SyntaxTargetRequest {
     DesignerConfig(DesignerConfigSyntaxRequest),
     DesignerModules(DesignerModulesSyntaxRequest),
-    /// Runs EDT validation for selected source-sets or all EDT source-sets when empty.
+    /// Runs EDT validation for selected projects or all EDT projects when empty.
     Edt {
         projects: Vec<String>,
-        exception_file: Option<std::path::PathBuf>,
+        exception_file: Option<PathBuf>,
     },
 }
 
@@ -616,6 +635,7 @@ pub struct ClientMcpOptionsRequest {
     pub config_path: Option<String>,
     pub port: Option<u16>,
     pub addon: Option<ClientMcpAddonRequest>,
+    pub wait_ready: bool,
 }
 
 /// Transport-neutral request for the `launch` use case.

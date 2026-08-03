@@ -1,5 +1,5 @@
 use std::path::{Path, PathBuf};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use serde_json::json;
@@ -7,9 +7,10 @@ use tokio_util::sync::CancellationToken;
 
 use crate::cli::args::{
     ArtifactsArgs, BuildArgs, Command, ConvertArgs, DesignerConfigSyntaxArgs,
-    DesignerModulesSyntaxArgs, DumpArgs, ExtensionsArgs, LaunchArgs, LaunchOptionsArgs, LoadArgs,
-    SyntaxArgs, SyntaxTarget, TestArgs, TestRunner, TestScope, TestVaArgs, TestYaxunitArgs,
-    ToolsArgs, ToolsCommand, ToolsDownloadArgs, ToolsDownloadCommand,
+    DesignerModulesSyntaxArgs, DirectLaunchOptionsArgs, DumpArgs, ExtensionsArgs, LaunchArgs,
+    LaunchOptionsArgs, LoadArgs, SyntaxArgs, SyntaxTarget, TestArgs, TestLaunchOptionsArgs,
+    TestRunner, TestScope, TestVaArgs, TestYaxunitArgs, ToolsArgs, ToolsCommand, ToolsDownloadArgs,
+    ToolsDownloadCommand,
 };
 use crate::cli::output::{
     failure_envelope, pre_dispatch_error_envelope, print_command_use_case_error, with_cli_error,
@@ -25,8 +26,7 @@ use crate::domain::build::{BuildMode, BuildResult};
 use crate::domain::convert::{ConvertDirection, ConvertResult, ConvertScope};
 use crate::domain::dump::{DumpMode, DumpResult};
 use crate::domain::execution::{
-    ExecutionError, ExecutionInterruptionDetails, ExecutionOutcome, ExecutionStepStatus,
-    ExecutionTimeouts, StepResult,
+    ExecutionError, ExecutionInterruptionDetails, ExecutionOutcome, ExecutionStepStatus, StepResult,
 };
 use crate::domain::init::{InitResult, InitStep, InitStepStatus};
 use crate::domain::issue::{Issue, IssueSeverity};
@@ -35,8 +35,8 @@ use crate::domain::load::{
     CompatibilityState, LoadExecutionMetadata, LoadMode, LoadResult, LoadTargetKind,
 };
 use crate::domain::runner::{
-    ExecutionPolicy, LaunchClientModeRequest, LaunchOptions, RunnerKind, RunnerOutputFormat,
-    RunnerProfile,
+    launch_key_alias_matches, ExecutionPolicy, ExternalEpfWaitOptions, LaunchClientModeRequest,
+    LaunchOptions, RunnerKind, RunnerOutputFormat, RunnerProfile,
 };
 use crate::domain::syntax::{SyntaxCheckResult, SyntaxCheckStatus};
 use crate::domain::test::{RetainedPaths, TestReport, TestRunResult, TestStatus, TestTarget};
@@ -63,17 +63,20 @@ use crate::use_cases::init_project;
 use crate::use_cases::launch_app;
 use crate::use_cases::load_artifact;
 use crate::use_cases::request::{
-    ArtifactsModeRequest, ArtifactsRequest, BuildRequest, ClientMcpAddonRequest, ClientMcpMode,
-    ClientMcpOptionsRequest, ConfigureExtensionsRequest, ConvertRequest, ConvertScopeRequest,
-    DesignerClientScope, DesignerClientScopes, DesignerConfigCheck, DesignerConfigChecks,
-    DesignerConfigSyntaxRequest, DesignerModulesSyntaxRequest, DumpRequest, InitRequest,
-    LaunchRequest, LoadRequest, SyntaxExtensionScope, SyntaxRequest, SyntaxTargetRequest,
-    TestRequest, TestScopeRequest, ToolsDownloadRequest,
+    effective_test_timeouts, ArtifactsModeRequest, ArtifactsRequest, BuildRequest,
+    ClientMcpAddonRequest, ClientMcpMode, ClientMcpOptionsRequest, ConfigureExtensionsRequest,
+    ConvertRequest, ConvertScopeRequest, DesignerClientScope, DesignerClientScopes,
+    DesignerConfigCheck, DesignerConfigChecks, DesignerConfigSyntaxRequest,
+    DesignerModulesSyntaxRequest, DumpRequest, InitRequest, LaunchRequest, LoadRequest,
+    SyntaxExtensionScope, SyntaxRequest, SyntaxTargetRequest, TestRequest, TestScopeRequest,
+    ToolsDownloadRequest,
 };
 use crate::use_cases::result::{UseCaseError, UseCaseErrorKind};
 use crate::use_cases::run_tests;
 use crate::use_cases::tools_download;
 use crate::use_cases::transport::dispatch_with_workspace_lock;
+
+const EXTERNAL_EPF_WAIT_CLEANUP_MARGIN: Duration = Duration::from_millis(500);
 
 /// Executes a parsed CLI command by mapping it into transport-neutral requests and
 /// rendering the resulting command output.
@@ -88,6 +91,7 @@ pub fn execute_command(
     let _signal_guard = CliSignalGuard::install(cancellation.clone());
     match command {
         Command::Version => unreachable!("version command is handled outside cli::execute"),
+        Command::Bootstrap(_) => unreachable!("bootstrap command is handled outside cli::execute"),
         Command::Config(_) => unreachable!("config commands are handled outside cli::execute"),
         Command::Tools(args) => execute_tools(
             config,
@@ -170,6 +174,7 @@ pub fn execute_command(
 pub fn command_name(command: &Command) -> CommandName {
     match command {
         Command::Version => unreachable!("version command does not map to execution use cases"),
+        Command::Bootstrap(_) => CommandName::Bootstrap,
         Command::Config(_) => unreachable!("config commands do not map to execution use cases"),
         Command::Tools(ToolsArgs {
             command: ToolsCommand::Download(_),
@@ -727,7 +732,7 @@ fn execute_launch(
 ) -> Result<(), UseCaseError> {
     let request = map_launch_request(args)
         .map_err(|error| render_pre_dispatch_error(presenter, CommandName::Launch, error))?;
-    let context = cli_context(config, CommandName::Launch, cancellation);
+    let context = launch_cli_context(config, &request, cancellation);
     let started = Instant::now();
     with_cli_workspace_lock(
         config,
@@ -750,13 +755,29 @@ fn execute_launch(
             Err(failure) => {
                 let error = failure.error;
                 if presenter.is_json() {
-                    presenter.print_envelope(&failure_envelope(
-                        CommandName::Launch.as_str(),
-                        started.elapsed().as_millis() as u64,
-                        json!({ "message": error.message() }),
-                        &error,
-                    ));
+                    match failure.payload {
+                        Some(result) => presenter.print_envelope(&failure_envelope(
+                            CommandName::Launch.as_str(),
+                            started.elapsed().as_millis() as u64,
+                            result,
+                            &error,
+                        )),
+                        None => presenter.print_envelope(&failure_envelope(
+                            CommandName::Launch.as_str(),
+                            started.elapsed().as_millis() as u64,
+                            json!({ "message": error.message() }),
+                            &error,
+                        )),
+                    }
                 } else {
+                    if let Some(result) = failure.payload.as_ref() {
+                        render_launch_text_with_status(
+                            result,
+                            presenter,
+                            TimelineStatus::Failed,
+                            "Launch failed",
+                        );
+                    }
                     presenter.print_error(&error.to_string());
                 }
                 Err(error)
@@ -854,6 +875,11 @@ fn map_test_request(
     primary_config_path: Option<&Path>,
 ) -> Result<TestRequest, UseCaseError> {
     let client_mode = map_test_client_mode(args.client_mode.as_deref())?;
+    let build_policy = if args.no_build {
+        crate::use_cases::request::TestBuildPolicy::Skip
+    } else {
+        crate::use_cases::request::TestBuildPolicy::BuildFirst
+    };
     match &args.runner {
         TestRunner::Yaxunit(TestYaxunitArgs {
             junit_output,
@@ -863,6 +889,7 @@ fn map_test_request(
             Ok(TestRequest {
                 execution: build_yaxunit_execution(config, &args.launch, client_mode)?,
                 full: args.full,
+                build_policy,
                 junit_output: resolve_junit_output(junit_output.as_deref(), primary_config_path)?,
                 scope,
             })
@@ -870,6 +897,7 @@ fn map_test_request(
         TestRunner::Va(_) => Ok(TestRequest {
             execution: build_vanessa_execution(config, &args.launch, client_mode)?,
             full: args.full,
+            build_policy,
             junit_output: None,
             scope: TestScopeRequest::All,
         }),
@@ -981,7 +1009,7 @@ fn map_yaxunit_scope(scope: &TestScope) -> Result<TestScopeRequest, UseCaseError
 
 fn build_yaxunit_execution(
     config: &AppConfig,
-    launch_args: &LaunchOptionsArgs,
+    launch_args: &TestLaunchOptionsArgs,
     client_mode: Option<LaunchClientModeRequest>,
 ) -> Result<crate::domain::runner::ScenarioExecutionRequest, UseCaseError> {
     validate_test_launch_options(launch_args)?;
@@ -998,7 +1026,7 @@ fn build_yaxunit_execution(
 
 fn build_vanessa_execution(
     config: &AppConfig,
-    launch_args: &LaunchOptionsArgs,
+    launch_args: &TestLaunchOptionsArgs,
     client_mode: Option<LaunchClientModeRequest>,
 ) -> Result<crate::domain::runner::ScenarioExecutionRequest, UseCaseError> {
     validate_test_launch_options(launch_args)?;
@@ -1061,25 +1089,7 @@ fn build_vanessa_execution(
     Ok(execution)
 }
 
-fn map_test_launch_options(args: &LaunchOptionsArgs) -> Result<LaunchOptions, UseCaseError> {
-    if args.c.is_some() {
-        return Err(UseCaseError::new(
-            UseCaseErrorKind::Validation,
-            "--c is not supported for test; it is reserved for the internal runner payload",
-        ));
-    }
-    if args.execute.is_some() {
-        return Err(UseCaseError::new(
-            UseCaseErrorKind::Validation,
-            "--execute is not supported for test; it is reserved for the internal runner payload",
-        ));
-    }
-    if args.output.is_some() {
-        return Err(UseCaseError::new(
-            UseCaseErrorKind::Validation,
-            "--output is not supported for test; the platform log path is managed internally",
-        ));
-    }
+fn map_test_launch_options(args: &TestLaunchOptionsArgs) -> Result<LaunchOptions, UseCaseError> {
     Ok(LaunchOptions {
         c: None,
         execute: None,
@@ -1087,16 +1097,11 @@ fn map_test_launch_options(args: &LaunchOptionsArgs) -> Result<LaunchOptions, Us
         out: None,
         internal_out: None,
         raw_args: args.raw_keys.clone(),
+        external_epf_wait: None,
     })
 }
 
-fn validate_test_launch_options(args: &LaunchOptionsArgs) -> Result<(), UseCaseError> {
-    if args.c.is_some() || args.execute.is_some() || args.output.is_some() {
-        return Err(UseCaseError::new(
-            UseCaseErrorKind::Validation,
-            "test accepts only --use-privileged-mode and raw launch keys; /C, /Execute, and /Out are managed by the runner",
-        ));
-    }
+fn validate_test_launch_options(args: &TestLaunchOptionsArgs) -> Result<(), UseCaseError> {
     if args
         .raw_keys
         .iter()
@@ -1110,17 +1115,6 @@ fn validate_test_launch_options(args: &LaunchOptionsArgs) -> Result<(), UseCaseE
     Ok(())
 }
 
-fn effective_test_timeouts(
-    legacy_total_seconds: u64,
-    runner_timeouts: &ExecutionTimeouts,
-) -> ExecutionTimeouts {
-    let mut timeouts = runner_timeouts.clone();
-    if timeouts.total_ms.is_none() {
-        timeouts.total_ms = Some(legacy_total_seconds.saturating_mul(1_000));
-    }
-    timeouts
-}
-
 fn cli_context(
     config: &AppConfig,
     command: CommandName,
@@ -1128,6 +1122,27 @@ fn cli_context(
 ) -> ExecutionContext {
     ExecutionContext::cli(command)
         .with_deadline(Some(Instant::now() + config.execution_timeout_duration()))
+        .with_cancellation(cancellation)
+}
+
+fn launch_cli_context(
+    config: &AppConfig,
+    request: &LaunchRequest,
+    cancellation: CancellationToken,
+) -> ExecutionContext {
+    let timeout = request
+        .launch
+        .external_epf_wait
+        .as_ref()
+        .map(|wait| {
+            config.execution_timeout_duration().max(
+                Duration::from_millis(wait.timeout_ms)
+                    .saturating_add(EXTERNAL_EPF_WAIT_CLEANUP_MARGIN),
+            )
+        })
+        .unwrap_or_else(|| config.execution_timeout_duration());
+    ExecutionContext::cli(CommandName::Launch)
+        .with_deadline(Some(Instant::now() + timeout))
         .with_cancellation(cancellation)
 }
 
@@ -1335,10 +1350,11 @@ fn map_launch_request(args: &LaunchArgs) -> Result<LaunchRequest, UseCaseError> 
             || args.mcp_port.is_some()
             || args.mcp_mode.is_some()
             || args.mcp_scenario.is_some()
+            || args.wait_ready
         {
             return Err(UseCaseError::new(
                 UseCaseErrorKind::Validation,
-                "--mcp-config, --mcp-port, --mode, and MCP_SCENARIO are supported only for `launch mcp`",
+                "--mcp-config, --mcp-port, --mode, --wait-ready, and MCP_SCENARIO are supported only for `launch mcp`",
             ));
         }
         None
@@ -1352,20 +1368,65 @@ fn map_launch_request(args: &LaunchArgs) -> Result<LaunchRequest, UseCaseError> 
 
 fn map_direct_launch_options(
     target: crate::use_cases::request::LaunchTargetRequest,
-    args: &LaunchOptionsArgs,
+    args: &DirectLaunchOptionsArgs,
     is_client_mcp: bool,
 ) -> Result<LaunchOptions, UseCaseError> {
     if is_client_mcp {
-        return map_mcp_launch_options(args);
+        if args.wait_for_exit || args.wait_timeout_ms.is_some() || args.stderr_output.is_some() {
+            return Err(UseCaseError::new(
+                UseCaseErrorKind::Validation,
+                "--wait-for-exit, --wait-timeout-ms, and --stderr-output are supported only for direct `launch thin`",
+            ));
+        }
+        return map_mcp_launch_options(&args.common);
     }
     let _ = target;
+    let common = &args.common;
+    let external_epf_wait = match (
+        args.wait_for_exit,
+        args.wait_timeout_ms,
+        &args.stderr_output,
+    ) {
+        (false, None, None) => None,
+        (false, _, _) => {
+            return Err(UseCaseError::new(
+                UseCaseErrorKind::Validation,
+                "--wait-timeout-ms and --stderr-output require --wait-for-exit",
+            ));
+        }
+        (true, Some(timeout_ms), Some(stderr_output)) => {
+            if timeout_ms == 0 {
+                return Err(UseCaseError::new(
+                    UseCaseErrorKind::Validation,
+                    "--wait-timeout-ms must be greater than or equal to 1",
+                ));
+            }
+            Some(ExternalEpfWaitOptions {
+                timeout_ms,
+                stderr_output: stderr_output.clone(),
+            })
+        }
+        (true, None, _) => {
+            return Err(UseCaseError::new(
+                UseCaseErrorKind::Validation,
+                "--wait-for-exit requires --wait-timeout-ms",
+            ));
+        }
+        (true, _, None) => {
+            return Err(UseCaseError::new(
+                UseCaseErrorKind::Validation,
+                "--wait-for-exit requires --stderr-output",
+            ));
+        }
+    };
     Ok(LaunchOptions {
-        c: args.c.clone(),
-        execute: args.execute.clone(),
-        use_privileged_mode: args.use_privileged_mode,
-        out: args.output.clone(),
+        c: common.c.clone(),
+        execute: common.execute.clone(),
+        use_privileged_mode: common.use_privileged_mode,
+        out: common.output.clone(),
         internal_out: None,
-        raw_args: args.raw_keys.clone(),
+        raw_args: common.raw_keys.clone(),
+        external_epf_wait,
     })
 }
 
@@ -1394,6 +1455,7 @@ fn map_mcp_launch_options(args: &LaunchOptionsArgs) -> Result<LaunchOptions, Use
         out: args.output.clone(),
         internal_out: None,
         raw_args: args.raw_keys.clone(),
+        external_epf_wait: None,
     })
 }
 
@@ -1428,6 +1490,7 @@ fn map_mcp_options(args: &LaunchArgs) -> Result<ClientMcpOptionsRequest, UseCase
         config_path: args.mcp_config.clone(),
         port: args.mcp_port,
         addon,
+        wait_ready: args.wait_ready,
     })
 }
 
@@ -1446,19 +1509,9 @@ fn map_mcp_client_mode(mode: Option<&str>) -> Result<ClientMcpMode, UseCaseError
 }
 
 fn is_reserved_raw_launch_key(raw: &str) -> bool {
-    let normalized = raw
-        .trim_start()
-        .trim_start_matches(['/', '-'])
-        .to_ascii_lowercase();
-    normalized == "c"
-        || normalized.starts_with("c\"")
-        || normalized.starts_with("c=")
-        || normalized == "execute"
-        || normalized.starts_with("execute\"")
-        || normalized.starts_with("execute=")
-        || normalized == "out"
-        || normalized.starts_with("out\"")
-        || normalized.starts_with("out=")
+    ["c", "execute", "out"]
+        .iter()
+        .any(|key| launch_key_alias_matches(raw, key))
 }
 
 #[derive(Debug, Serialize)]
@@ -2275,6 +2328,20 @@ fn render_syntax_status(status: SyntaxCheckStatus) -> &'static str {
 }
 
 fn render_launch_text(result: &LaunchResult, presenter: &Presenter) {
+    render_launch_text_with_status(
+        result,
+        presenter,
+        TimelineStatus::Succeeded,
+        "Launch completed successfully",
+    );
+}
+
+fn render_launch_text_with_status(
+    result: &LaunchResult,
+    presenter: &Presenter,
+    status: TimelineStatus,
+    label: &'static str,
+) {
     let mut details = vec![
         format!("mode: {}", render_launch_mode(&result.mode)),
         format!("binary: {}", result.binary.display()),
@@ -2289,12 +2356,23 @@ fn render_launch_text(result: &LaunchResult, presenter: &Presenter) {
     if let Some(pid) = result.pid {
         details.push(format!("pid: {pid}"));
     }
-    single_timeline(
-        presenter,
-        TimelineStatus::Succeeded,
-        "Launch completed successfully",
-        details,
-    );
+    if let Some(readiness) = &result.mcp_readiness {
+        details.push(format!("mcp endpoint: {}", readiness.url));
+        details.push(format!(
+            "mcp ready: {}",
+            if readiness.ok { "yes" } else { "no" }
+        ));
+        if !readiness.tools.is_empty() {
+            details.push(format!("mcp tools: {}", readiness.tools.join(", ")));
+        }
+        if !readiness.missing_tools.is_empty() {
+            details.push(format!(
+                "missing mcp tools: {}",
+                readiness.missing_tools.join(", ")
+            ));
+        }
+    }
+    single_timeline(presenter, status, label, details);
 }
 
 fn render_launch_mode(mode: &LaunchMode) -> &'static str {
@@ -2434,15 +2512,16 @@ fn status_label(status: &TestStatus) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_load_envelope, command_name, execute_command, junit_export_path,
-        map_artifacts_request_with_config, map_build_request, map_designer_config_request,
-        map_dump_request, map_extensions_request, map_launch_request, map_load_request,
-        map_syntax_request, map_test_request, render_test_step_label, resolve_junit_output,
+        build_load_envelope, command_name, execute_command, map_artifacts_request_with_config,
+        map_build_request, map_designer_config_request, map_dump_request, map_extensions_request,
+        map_launch_request, map_load_request, map_syntax_request, map_test_request,
+        resolve_junit_output,
     };
     use crate::cli::args::{
         ArtifactsArgs, BuildArgs, Command, DesignerConfigSyntaxArgs, DesignerModulesSyntaxArgs,
-        DumpArgs, ExtensionsArgs, LaunchArgs, LaunchOptionsArgs, LoadArgs, SyntaxArgs,
-        SyntaxTarget, TestArgs, TestRunner, TestScope, TestVaArgs, TestYaxunitArgs,
+        DirectLaunchOptionsArgs, DumpArgs, ExtensionsArgs, LaunchArgs, LaunchOptionsArgs, LoadArgs,
+        SyntaxArgs, SyntaxTarget, TestArgs, TestLaunchOptionsArgs, TestRunner, TestScope,
+        TestVaArgs, TestYaxunitArgs,
     };
     use crate::cli::output::pre_dispatch_error_envelope;
     use crate::config::model::{
@@ -2450,9 +2529,7 @@ mod tests {
         TestsConfig, ToolsConfig,
     };
     use crate::domain::artifacts::ArtifactBuildMode;
-    use crate::domain::execution::{
-        ExecutionOutcome, ExecutionStatus, ExecutionStepKind, StepResult,
-    };
+    use crate::domain::execution::{ExecutionOutcome, ExecutionStatus};
     use crate::domain::load::{
         CompatibilityState, LoadExecutionMetadata, LoadMode, LoadResult, LoadTargetKind,
     };
@@ -2464,7 +2541,7 @@ mod tests {
     use crate::use_cases::request::{
         ArtifactsModeRequest, ClientMcpAddonRequest, ClientMcpMode, ClientMcpOptionsRequest,
         DesignerClientScope, DesignerConfigCheck, DumpModeRequest, LaunchRequest,
-        LaunchTargetRequest, SyntaxTargetRequest, TestScopeRequest,
+        LaunchTargetRequest, SyntaxTargetRequest, TestBuildPolicy, TestScopeRequest,
     };
     use crate::use_cases::result::{UseCaseError, UseCaseErrorKind};
     use crate::use_cases::workspace_lock::workspace_lock_path;
@@ -2488,11 +2565,10 @@ mod tests {
 
     #[test]
     fn preserves_absolute_junit_output() {
-        let absolute = if cfg!(windows) {
-            PathBuf::from(r"C:\reports\junit.xml")
-        } else {
-            PathBuf::from("/reports/junit.xml")
-        };
+        #[cfg(windows)]
+        let absolute = PathBuf::from(r"C:\reports\junit.xml");
+        #[cfg(not(windows))]
+        let absolute = PathBuf::from("/reports/junit.xml");
 
         let resolved = resolve_junit_output(
             Some(absolute.as_path()),
@@ -2523,29 +2599,6 @@ mod tests {
     }
 
     #[test]
-    fn renders_export_junit_step_label() {
-        assert_eq!(
-            render_test_step_label("export_junit"),
-            "export JUnit report"
-        );
-    }
-
-    #[test]
-    fn finds_successful_junit_export_path_without_treating_it_as_a_warning() {
-        let path = Path::new("reports/junit.xml").display().to_string();
-        let steps = vec![
-            StepResult::succeeded("export_junit", ExecutionStepKind::Publish, 1)
-                .with_target(path.clone())
-                .with_message(format!("JUnit report exported to {path}")),
-        ];
-
-        assert_eq!(junit_export_path(&steps), Some(path.as_str()));
-        assert!(super::should_hide_success_test_diagnostic(&format!(
-            "JUnit report exported to {path}"
-        )));
-    }
-
-    #[test]
     fn maps_test_module_request() {
         let work = tempdir().expect("tempdir");
         let config = sample_config(work.path());
@@ -2553,8 +2606,9 @@ mod tests {
             &config,
             &TestArgs {
                 full: true,
+                no_build: false,
                 client_mode: None,
-                launch: LaunchOptionsArgs::default(),
+                launch: TestLaunchOptionsArgs::default(),
                 runner: TestRunner::Yaxunit(TestYaxunitArgs {
                     junit_output: None,
                     scope: TestScope::Module {
@@ -2567,6 +2621,7 @@ mod tests {
         .expect("request");
 
         assert!(request.full);
+        assert_eq!(request.build_policy, TestBuildPolicy::BuildFirst);
         assert_eq!(
             request.scope,
             TestScopeRequest::Module {
@@ -2576,36 +2631,26 @@ mod tests {
     }
 
     #[test]
-    fn maps_relative_junit_output_from_config_file_not_base_path() {
+    fn maps_no_build_yaxunit_request() {
         let work = tempdir().expect("tempdir");
-        let mut config = sample_config(work.path());
-        config.base_path = work.path().join("different-base-path");
-        let primary_config_path = work.path().join("config").join("v8project.yaml");
-
+        let config = sample_config(work.path());
         let request = map_test_request(
             &config,
             &TestArgs {
                 full: false,
+                no_build: true,
                 client_mode: None,
-                launch: LaunchOptionsArgs::default(),
+                launch: TestLaunchOptionsArgs::default(),
                 runner: TestRunner::Yaxunit(TestYaxunitArgs {
-                    junit_output: Some(PathBuf::from("reports/junit.xml")),
+                    junit_output: None,
                     scope: TestScope::All,
                 }),
             },
-            Some(primary_config_path.as_path()),
+            None,
         )
         .expect("request");
 
-        assert_eq!(
-            request.junit_output,
-            Some(work.path().join("config/reports/junit.xml"))
-        );
-        assert!(!request
-            .junit_output
-            .as_deref()
-            .expect("JUnit output")
-            .starts_with(&config.base_path));
+        assert_eq!(request.build_policy, TestBuildPolicy::Skip);
     }
 
     #[test]
@@ -2616,8 +2661,9 @@ mod tests {
             &config,
             &TestArgs {
                 full: false,
+                no_build: false,
                 client_mode: None,
-                launch: LaunchOptionsArgs::default(),
+                launch: TestLaunchOptionsArgs::default(),
                 runner: TestRunner::Yaxunit(TestYaxunitArgs {
                     junit_output: None,
                     scope: TestScope::Module {
@@ -2665,8 +2711,9 @@ mod tests {
             &config,
             &TestArgs {
                 full: false,
+                no_build: false,
                 client_mode: None,
-                launch: LaunchOptionsArgs::default(),
+                launch: TestLaunchOptionsArgs::default(),
                 runner: TestRunner::Va(TestVaArgs::default()),
             },
             None,
@@ -2675,8 +2722,24 @@ mod tests {
 
         assert_eq!(request.execution.profile.kind, RunnerKind::Vanessa);
         assert_eq!(request.execution.profile.id, "smoke");
+        assert_eq!(request.build_policy, TestBuildPolicy::BuildFirst);
         assert_eq!(request.scope, TestScopeRequest::All);
         assert_eq!(request.execution.timeouts.total_ms, Some(300_000));
+
+        let no_build_request = map_test_request(
+            &config,
+            &TestArgs {
+                full: false,
+                no_build: true,
+                client_mode: None,
+                launch: TestLaunchOptionsArgs::default(),
+                runner: TestRunner::Va(TestVaArgs::default()),
+            },
+            None,
+        )
+        .expect("no-build request");
+
+        assert_eq!(no_build_request.build_policy, TestBuildPolicy::Skip);
     }
 
     #[test]
@@ -2751,15 +2814,19 @@ mod tests {
                 target: "thin".to_owned(),
                 mcp_scenario: None,
                 mcp_mode: None,
-                launch: LaunchOptionsArgs {
-                    c: Some("Command".to_owned()),
-                    execute: Some("tool.epf".to_owned()),
-                    use_privileged_mode: true,
-                    output: Some("launch.log".to_owned()),
-                    raw_keys: vec!["/WA-".to_owned(), "/DisplayAllFunctions".to_owned()],
+                launch: DirectLaunchOptionsArgs {
+                    common: LaunchOptionsArgs {
+                        c: Some("Command".to_owned()),
+                        execute: Some("tool.epf".to_owned()),
+                        use_privileged_mode: true,
+                        output: Some("launch.log".to_owned()),
+                        raw_keys: vec!["/WA-".to_owned(), "/DisplayAllFunctions".to_owned()],
+                    },
+                    ..DirectLaunchOptionsArgs::default()
                 },
                 mcp_config: None,
                 mcp_port: None,
+                wait_ready: false,
             })
             .expect("request"),
             LaunchRequest {
@@ -2771,6 +2838,7 @@ mod tests {
                     out: Some("launch.log".to_owned()),
                     internal_out: None,
                     raw_args: vec!["/WA-".to_owned(), "/DisplayAllFunctions".to_owned()],
+                    external_epf_wait: None,
                 },
                 client_mcp: None,
             }
@@ -2780,9 +2848,10 @@ mod tests {
                 target: "ordinary".to_owned(),
                 mcp_scenario: None,
                 mcp_mode: None,
-                launch: LaunchOptionsArgs::default(),
+                launch: DirectLaunchOptionsArgs::default(),
                 mcp_config: None,
                 mcp_port: None,
+                wait_ready: false,
             })
             .expect("request")
             .target,
@@ -2793,9 +2862,10 @@ mod tests {
                 target: "thin".to_owned(),
                 mcp_scenario: None,
                 mcp_mode: None,
-                launch: LaunchOptionsArgs::default(),
+                launch: DirectLaunchOptionsArgs::default(),
                 mcp_config: None,
                 mcp_port: None,
+                wait_ready: false,
             })
             .expect("request")
             .target,
@@ -2806,9 +2876,10 @@ mod tests {
                 target: "mcp".to_owned(),
                 mcp_scenario: Some("va".to_owned()),
                 mcp_mode: Some("ordinary".to_owned()),
-                launch: LaunchOptionsArgs::default(),
+                launch: DirectLaunchOptionsArgs::default(),
                 mcp_config: Some("C:\\tmp\\mcp-conf.json".to_owned()),
                 mcp_port: Some(123),
+                wait_ready: true,
             })
             .expect("request"),
             LaunchRequest {
@@ -2820,11 +2891,13 @@ mod tests {
                     out: None,
                     internal_out: None,
                     raw_args: Vec::new(),
+                    external_epf_wait: None,
                 },
                 client_mcp: Some(ClientMcpOptionsRequest {
                     config_path: Some("C:\\tmp\\mcp-conf.json".to_owned()),
                     port: Some(123),
                     addon: Some(ClientMcpAddonRequest::VanessaAutomation),
+                    wait_ready: true,
                 }),
             }
         );
@@ -2883,9 +2956,10 @@ mod tests {
             target: "garbage".to_owned(),
             mcp_scenario: None,
             mcp_mode: None,
-            launch: LaunchOptionsArgs::default(),
+            launch: DirectLaunchOptionsArgs::default(),
             mcp_config: None,
             mcp_port: None,
+            wait_ready: false,
         })
         .expect_err("launch mode should be rejected");
 
@@ -3091,8 +3165,9 @@ mod tests {
             &config,
             &Command::Test(TestArgs {
                 full: false,
+                no_build: false,
                 client_mode: None,
-                launch: LaunchOptionsArgs::default(),
+                launch: TestLaunchOptionsArgs::default(),
                 runner: TestRunner::Yaxunit(TestYaxunitArgs {
                     junit_output: None,
                     scope: TestScope::All,
@@ -3126,9 +3201,10 @@ mod tests {
                 target: "garbage".to_owned(),
                 mcp_scenario: None,
                 mcp_mode: None,
-                launch: LaunchOptionsArgs::default(),
+                launch: DirectLaunchOptionsArgs::default(),
                 mcp_config: None,
                 mcp_port: None,
+                wait_ready: false,
             }),
             None,
             &presenter,
@@ -3155,8 +3231,9 @@ mod tests {
             &config,
             &Command::Test(TestArgs {
                 full: false,
+                no_build: false,
                 client_mode: None,
-                launch: LaunchOptionsArgs::default(),
+                launch: TestLaunchOptionsArgs::default(),
                 runner: TestRunner::Yaxunit(TestYaxunitArgs {
                     junit_output: None,
                     scope: TestScope::Module {

@@ -11,21 +11,26 @@ settings before CLI overrides.
 - `builder`: `DESIGNER` or `IBCMD`.
 - `infobase.connection`: often `File=build/ib` for local automation.
 - `source-set`: ordered configuration and extension sources.
-- `tools.platform.path` or `tools.platform.version`: 1C platform discovery hints.
+- `tools.platform.path`, `version`, and `strict`: platform discovery hints. `path` is always an
+  explicit-only boundary with no default-root or `PATH` fallback. Without `path`, `version` filters
+  normal discovery. With `path`, `version` is ignored unless `strict: true`; strict path+version
+  resolution rejects unknown or mismatched versions and pins sibling utilities to one canonical root.
 - `tools.edt_cli.path`, `version`, and `interactive-mode`: EDT CLI discovery and execution mode.
 - `tests.yaxunit` and `tests.va`: test runner configuration.
 - `tools.client_mcp`, `tools.va`, and `tools.enterprise`: launch and client-side MCP integration hints.
 - `tools.client_mcp.extension`: optional tool extension prepared by `build`; it is not a project `source-set`.
+- `tools.client_mcp.wait_ready_timeout_ms`: optional readiness timeout for `launch mcp --wait-ready`; falls back to `execution_timeout` and is still capped by the command deadline.
 
 ## Format And Backend Rules
 
 - `format=DESIGNER`, `builder=DESIGNER`: supports init, build, extensions, dump, Designer syntax checks, tests, make/load/artifact workflows if configured.
-- `format=DESIGNER`, `builder=IBCMD`: supports init, build, extensions, dump with a limited backend and only file infobases.
+- `format=DESIGNER`, `builder=IBCMD`: supports init, build, extensions, and dump for file infobases and server infobases with `infobase.dbms`.
 - `format=EDT`, `builder=DESIGNER`: supports init, build through EDT export to Designer files, EDT syntax checks, extensions, and tests.
 - `format=EDT`, `builder=IBCMD`: supports init and build through EDT export to Designer files followed by IBCMD import/apply; requires a file infobase.
 - `extensions` supports Designer and EDT projects, but only extension `source-set` entries are actionable.
 - `syntax designer-config` and `syntax designer-modules` require Designer format with Designer backend.
 - `syntax edt` requires EDT format with Designer backend.
+- IBCMD dump uses project-local standalone-server data under `workPath/ibcmd-data`.
 - `dump --mode partial` with IBCMD degrades to incremental dump and must be called out in user-facing summaries.
 - `convert` is CLI-only, repo-aware, uses configured `source-set`, does not use `builder`, and does not require an infobase.
 - `load` supports `.cf` and `.cfe` only for `format=DESIGNER`, `builder=DESIGNER`.

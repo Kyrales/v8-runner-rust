@@ -47,6 +47,8 @@ pub struct Cli {
 pub enum Command {
     /// Print application version
     Version,
+    /// Create a v8-runner project from an existing infobase
+    Bootstrap(BootstrapArgs),
     /// Generate project configuration and autodetect source-sets
     Config(ConfigArgs),
     /// Download YaXUnit, Vanessa Automation, and client MCP tool assets
@@ -59,7 +61,7 @@ pub enum Command {
     Build(BuildArgs),
     /// Apply built release artifacts to the infobase
     Load(LoadArgs),
-    /// Build first, then run YaXUnit or Vanessa Automation tests
+    /// Run YaXUnit or Vanessa Automation tests, building first by default
     Test(TestArgs),
     /// Dump infobase state back to project files
     Dump(DumpArgs),
@@ -74,6 +76,42 @@ pub enum Command {
     Launch(LaunchArgs),
     /// Serve Model Context Protocol transports
     Mcp(McpArgs),
+}
+
+#[derive(Args, Debug)]
+#[command(next_help_heading = "Command options")]
+pub struct BootstrapArgs {
+    /// Project directory to create. Defaults to the current directory.
+    #[arg(long)]
+    pub project_dir: Option<String>,
+
+    /// Existing infobase connection string used as bootstrap source
+    #[arg(long)]
+    pub connection: String,
+
+    /// 1C:Enterprise platform version written to project config
+    #[arg(long)]
+    pub platform_version: String,
+
+    /// Local platform binary, bin directory, or installation root
+    #[arg(long)]
+    pub platform_path: Option<String>,
+
+    /// Infobase user name stored in v8project.local.yaml
+    #[arg(long)]
+    pub user: Option<String>,
+
+    /// Infobase password stored in v8project.local.yaml
+    #[arg(long)]
+    pub password: Option<String>,
+
+    /// Source directory for the dumped main configuration
+    #[arg(long, default_value = "src/configuration")]
+    pub source_dir: String,
+
+    /// Overwrite generated config/local config/source targets
+    #[arg(long)]
+    pub force: bool,
 }
 
 #[derive(Args, Debug)]
@@ -209,15 +247,30 @@ pub struct TestArgs {
     #[arg(long, global = true)]
     pub full: bool,
 
+    /// Run tests against the configured prepared infobase without building sources first
+    #[arg(long, global = true)]
+    pub no_build: bool,
+
     /// Client mode used for enterprise launch during test execution
     #[arg(long = "client-mode", value_parser = ["designer", "thin", "thick", "ordinary"])]
     pub client_mode: Option<String>,
 
     #[command(flatten)]
-    pub launch: LaunchOptionsArgs,
+    pub launch: TestLaunchOptionsArgs,
 
     #[command(subcommand)]
     pub runner: TestRunner,
+}
+
+#[derive(Args, Debug, Clone, Default, PartialEq, Eq)]
+#[command(next_help_heading = "Command options")]
+pub struct TestLaunchOptionsArgs {
+    /// Enables `/UsePrivilegedMode`
+    #[arg(long = "use-privileged-mode")]
+    pub use_privileged_mode: bool,
+    /// Additional raw launch arguments appended after typed launch keys
+    #[arg(long = "raw-key")]
+    pub raw_keys: Vec<String>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -294,7 +347,7 @@ pub struct DumpArgs {
     #[arg(long)]
     pub extension: Option<String>,
 
-    /// Objects for partial dump (TYPE:NAME)
+    /// Objects for partial dump. Use canonical TYPE:NAME selectors; legacy TYPE.NAME selectors are accepted for compatibility.
     #[arg(long = "object")]
     pub objects: Vec<String>,
 }
@@ -344,10 +397,9 @@ pub enum SyntaxTarget {
         /// EDT source-set names from v8project.yaml
         #[arg(long = "project")]
         projects: Vec<String>,
-
         /// File with syntax issue exception lines
         #[arg(long = "exception-file")]
-        exception_file: Option<std::path::PathBuf>,
+        exception_file: Option<PathBuf>,
     },
 }
 
@@ -367,15 +419,19 @@ pub struct LaunchArgs {
     pub mcp_mode: Option<String>,
 
     #[command(flatten)]
-    pub launch: LaunchOptionsArgs,
+    pub launch: DirectLaunchOptionsArgs,
 
     /// JSON config path for onec-client-mcp-devkit `/C runMcp=<FILE>`
     #[arg(long = "mcp-config")]
     pub mcp_config: Option<String>,
 
-    /// Port override for onec-client-mcp-devkit `/C` payload.
+    /// Port override for onec-client-mcp-devkit `/C ...;mcpPort=<PORT>`
     #[arg(long = "mcp-port")]
     pub mcp_port: Option<u16>,
+
+    /// Wait until the client MCP HTTP endpoint is initialized and tools/list succeeds
+    #[arg(long = "wait-ready")]
+    pub wait_ready: bool,
 }
 
 #[derive(Args, Debug, Clone, Default, PartialEq, Eq)]
@@ -396,6 +452,22 @@ pub struct LaunchOptionsArgs {
     /// Additional raw launch arguments appended after typed launch keys
     #[arg(long = "raw-key")]
     pub raw_keys: Vec<String>,
+}
+
+#[derive(Args, Debug, Clone, Default, PartialEq, Eq)]
+#[command(next_help_heading = "Command options")]
+pub struct DirectLaunchOptionsArgs {
+    #[command(flatten)]
+    pub common: LaunchOptionsArgs,
+    /// Capture client stderr to this path while waiting for an external EPF to exit
+    #[arg(long = "stderr-output")]
+    pub stderr_output: Option<String>,
+    /// Wait for a direct external EPF launch to exit
+    #[arg(long = "wait-for-exit")]
+    pub wait_for_exit: bool,
+    /// Maximum wait time in milliseconds for --wait-for-exit
+    #[arg(long = "wait-timeout-ms")]
+    pub wait_timeout_ms: Option<u64>,
 }
 
 #[derive(Args, Debug)]
@@ -509,11 +581,11 @@ pub struct DesignerModulesSyntaxArgs {
 #[cfg(test)]
 mod tests {
     use super::{
-        ArtifactsArgs, Cli, Command, ConvertArgs, ExtensionsArgs, LaunchArgs, LaunchOptionsArgs,
-        LoadArgs, McpCommand, McpServeTransport, SyntaxTarget, TestRunner, TestScope,
+        ArtifactsArgs, Cli, Command, ConvertArgs, DirectLaunchOptionsArgs, ExtensionsArgs,
+        LaunchArgs, LoadArgs, McpCommand, McpServeTransport, SyntaxTarget, TestLaunchOptionsArgs,
+        TestRunner, TestScope,
     };
     use clap::Parser;
-    use std::path::PathBuf;
 
     #[test]
     fn syntax_config_extension_conflicts_with_all_extensions() {
@@ -649,38 +721,34 @@ mod tests {
     }
 
     #[test]
-    fn parses_junit_output_only_for_yaxunit() {
+    fn parses_no_build_with_yaxunit_junit_output() {
         let cli = Cli::try_parse_from([
             "v8-runner",
             "test",
+            "--no-build",
             "yaxunit",
             "--junit-output",
             "reports/junit.xml",
             "all",
         ])
-        .expect("parse YaXUnit JUnit output");
+        .expect("parse combined prepared-infobase JUnit command");
 
         match cli.command {
-            Command::Test(args) => match args.runner {
-                TestRunner::Yaxunit(yaxunit) => {
-                    assert_eq!(
-                        yaxunit.junit_output,
-                        Some(PathBuf::from("reports/junit.xml"))
-                    );
+            Command::Test(args) => {
+                assert!(args.no_build);
+                match args.runner {
+                    TestRunner::Yaxunit(yaxunit) => {
+                        assert_eq!(
+                            yaxunit.junit_output,
+                            Some(std::path::PathBuf::from("reports/junit.xml"))
+                        );
+                        assert!(matches!(yaxunit.scope, TestScope::All));
+                    }
+                    _ => panic!("unexpected test runner"),
                 }
-                _ => panic!("unexpected test runner"),
-            },
+            }
             _ => panic!("unexpected command"),
         }
-
-        let result = Cli::try_parse_from([
-            "v8-runner",
-            "test",
-            "va",
-            "--junit-output",
-            "reports/junit.xml",
-        ]);
-        assert!(result.is_err());
     }
 
     #[test]
@@ -690,10 +758,23 @@ mod tests {
         match cli.command {
             Command::Test(args) => {
                 assert!(matches!(args.runner, TestRunner::Va(_)));
-                assert_eq!(args.launch, LaunchOptionsArgs::default());
+                assert_eq!(args.launch, TestLaunchOptionsArgs::default());
             }
             _ => panic!("unexpected command"),
         }
+    }
+
+    #[test]
+    fn rejects_junit_output_for_vanessa() {
+        let result = Cli::try_parse_from([
+            "v8-runner",
+            "test",
+            "va",
+            "--junit-output",
+            "reports/junit.xml",
+        ]);
+
+        assert!(result.is_err());
     }
 
     #[test]
@@ -732,8 +813,6 @@ mod tests {
         let cli = Cli::try_parse_from([
             "v8-runner",
             "test",
-            "--c",
-            "RunUnitTests=config.json",
             "--use-privileged-mode",
             "--raw-key",
             "/WA-",
@@ -746,11 +825,8 @@ mod tests {
             Command::Test(args) => {
                 assert_eq!(
                     args.launch,
-                    LaunchOptionsArgs {
-                        c: Some("RunUnitTests=config.json".to_owned()),
-                        execute: None,
+                    TestLaunchOptionsArgs {
                         use_privileged_mode: true,
-                        output: None,
                         raw_keys: vec!["/WA-".to_owned()],
                     }
                 );
@@ -787,17 +863,19 @@ mod tests {
                 mcp_mode,
                 mcp_config,
                 mcp_port,
+                wait_ready,
             }) => {
                 assert_eq!(target, "ordinary");
-                assert_eq!(launch.c.as_deref(), Some("DoWork"));
-                assert_eq!(launch.execute.as_deref(), Some("tool.epf"));
-                assert!(launch.use_privileged_mode);
-                assert_eq!(launch.output.as_deref(), Some("launch.log"));
-                assert_eq!(launch.raw_keys, vec!["/WA-", "/DisplayAllFunctions"]);
+                assert_eq!(launch.common.c.as_deref(), Some("DoWork"));
+                assert_eq!(launch.common.execute.as_deref(), Some("tool.epf"));
+                assert!(launch.common.use_privileged_mode);
+                assert_eq!(launch.common.output.as_deref(), Some("launch.log"));
+                assert_eq!(launch.common.raw_keys, vec!["/WA-", "/DisplayAllFunctions"]);
                 assert_eq!(mcp_scenario, None);
                 assert_eq!(mcp_mode, None);
                 assert_eq!(mcp_config, None);
                 assert_eq!(mcp_port, None);
+                assert!(!wait_ready);
             }
             _ => panic!("unexpected command"),
         }
@@ -836,13 +914,15 @@ mod tests {
                 mcp_mode,
                 mcp_config,
                 mcp_port,
+                wait_ready,
             }) => {
                 assert_eq!(target, "designer");
-                assert_eq!(launch, LaunchOptionsArgs::default());
+                assert_eq!(launch, DirectLaunchOptionsArgs::default());
                 assert_eq!(mcp_scenario, None);
                 assert_eq!(mcp_mode, None);
                 assert_eq!(mcp_config, None);
                 assert_eq!(mcp_port, None);
+                assert!(!wait_ready);
             }
             _ => panic!("unexpected command"),
         }
@@ -861,6 +941,7 @@ mod tests {
             "mcp-conf.json",
             "--mcp-port",
             "9876",
+            "--wait-ready",
         ])
         .expect("parse launch");
 
@@ -872,13 +953,15 @@ mod tests {
                 mcp_mode,
                 mcp_config,
                 mcp_port,
+                wait_ready,
             }) => {
                 assert_eq!(target, "mcp");
-                assert_eq!(launch, LaunchOptionsArgs::default());
+                assert_eq!(launch, DirectLaunchOptionsArgs::default());
                 assert_eq!(mcp_scenario.as_deref(), Some("va"));
                 assert_eq!(mcp_mode.as_deref(), Some("ordinary"));
                 assert_eq!(mcp_config.as_deref(), Some("mcp-conf.json"));
                 assert_eq!(mcp_port, Some(9876));
+                assert!(wait_ready);
             }
             _ => panic!("unexpected command"),
         }

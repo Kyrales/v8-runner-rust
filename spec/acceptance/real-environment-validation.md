@@ -2,15 +2,17 @@
 
 ## Цель
 
-Начиная с `2026-04-22`, source of truth для real-env happy-path является GitHub Actions workflow [`ci.yml`](../.github/workflows/ci.yml), а локальные скрипты в `scripts/test/*` остаются helper/entrypoint-слоем для этого workflow.
+Начиная с `2026-04-22`, source of truth для real-env happy-path является GitHub Actions workflow [`ci.yml`](../.github/workflows/ci.yml) с matrix на `ubuntu-latest` и `windows-latest`, а локальные скрипты в `scripts/test/*` остаются helper/entrypoint-слоем для этого workflow.
 
-Обязательный smoke-контур:
+Обязательный smoke-контур для обеих ОС один и тот же, когда для matrix OS настроены platform bundle secrets:
 
 1. `build`
 2. `syntax/check`
 3. `test` Rust/CLI/MCP-контракта
 4. `package`
 5. `deploy-ready artifacts`
+
+Если OS-specific bundle secrets отсутствуют, workflow оставляет blocking Rust/non-live checks и явно soft-skips real 1C package/deploy-ready smoke через `live_available=false`.
 
 Под `deploy-ready artifacts` в этом репозитории понимается только публикация и проверка наличия/непустоты следующих файлов:
 
@@ -43,13 +45,17 @@ bash scripts/test/ci-rust.sh
 
 Поведение:
 
-- `V8_RUNNER_CI_SCOPE=contract` или `full` запускает `cargo test --locked`
+- `V8_RUNNER_CI_SCOPE=contract` запускает `cargo test --locked` на Linux, а на Windows — `cargo check --locked --all-targets`, проверку наличия и точечный запуск регрессий detached/managed-detached stdio EOF, пока Windows test suite не hardened
+- `V8_RUNNER_CI_SCOPE=full` всегда запускает `cargo test --locked`
 - `V8_RUNNER_CI_SCOPE=runtime-locks` запускает только lock-focused regression subset
-- `V8_RUNNER_CI_SCOPE=happy-path` запускает обязательную цепочку `build -> syntax/check -> test -> package -> deploy-ready artifacts`
+- `V8_RUNNER_CI_SCOPE=happy-path` запускает Rust/non-live цепочку `build -> cargo check`, затем `live-cli-fixture`; `cargo test` пропускается только при явном `V8TR_CI_SKIP_DUPLICATE_RUST_TESTS=1`, когда этот же workflow полагается на contract job для full Linux test coverage
+- CLI regression обязан покрывать совместную команду `test --no-build yaxunit --junit-output <PATH> all`: build пропущен, prepared file/server ИБ используется, JUnit опубликован byte-identical; отсутствие `1Cv8.1CD` удаляет stale target и завершает команду до запуска платформы.
+- CLI launch regression обязан покрывать `launch thin --wait-for-exit` с typed `/C` payload, external EPF, `/Out`, stderr и bounded timeout; `/C` и payload передаются двумя аргументами.
+- EDT regression сохраняет `syntax edt --exception-file <PATH>` и проверяет legacy, line-scoped и return-type-order варианты исключений.
 
-### 2. Mandatory happy-path
+### 2. Mandatory Linux/Windows happy-path
 
-Назначение: обязательный smoke на trusted контексте. Blocking GitHub Actions runner сейчас `ubuntu-latest`; Windows full-test/live path остается TODO до hardening существующих Unix-assumptive тестов и helper-фикстур.
+Назначение: одинаково обязательный smoke для `Linux` и `Windows` на trusted контексте при настроенных OS-specific bundle secrets. Без них workflow явно сообщает degraded coverage и оставляет blocking только Rust/non-live части.
 
 Canonical entrypoint:
 
@@ -61,18 +67,27 @@ V8_RUNNER_CI_SCOPE=happy-path bash scripts/test/ci-rust.sh
 
 1. `cargo build --locked --bin v8-runner`
 2. `cargo check --locked --all-targets`
-3. `cargo test --locked`
+3. `cargo test --locked`, unless `V8TR_CI_SKIP_DUPLICATE_RUST_TESTS=1`
 4. `bash scripts/test/live-cli-fixture.sh`
 
-`scripts/test/live-cli-fixture.sh` в mandatory профиле обязан выполнить стадии:
+`scripts/test/live-cli-fixture.sh` в mandatory профиле обязан выполнить одинаковые стадии для обеих ОС, когда `V8TR_DESIGNER_REAL_CONFIG` материализован:
 
 1. `init/setup infobase`
 2. `build --full-rebuild`
-3. `syntax designer-config`
-4. `syntax designer-modules`
-5. `test`
-6. `make` для `.cf/.cfe/.epf/.erf`
-7. проверку, что все deploy-ready артефакты существуют и не пусты
+3. incremental `build` без изменений
+4. Designer-only partial `build --source-set <configuration>` после изменения существующего `.bsl` файла с кириллическим путём
+5. `syntax designer-config`
+6. `syntax designer-modules`
+7. `test`
+8. `make` для `.cf/.cfe/.epf/.erf`
+9. проверку, что все deploy-ready артефакты существуют и не пусты
+
+Partial smoke contract:
+
+- partial stage запускается только для `builder: DESIGNER`, потому что проверяет Designer `/LoadConfigFromFiles -partial -listFile`;
+- изменяемый `.bsl` файл должен резолвиться внутри скопированного fixture workspace;
+- JSON build result для configuration source-set должен содержать successful step с mode object exactly `{"partial":{"file_count":N}}`, где `N > 0`;
+- byte-level контракт самого `listFile` проверяется unit/regression тестами `change_detection::partial_load`, а trusted smoke подтверждает, что созданный partial-list принимается реальным Designer в Linux/Windows happy-path.
 
 ### 3. Non-blocking live contours
 
@@ -86,18 +101,20 @@ V8_RUNNER_CI_SCOPE=happy-path bash scripts/test/ci-rust.sh
 
 ## Gating contract
 
-Mandatory happy-path должен быть blocking только для:
+Mandatory happy-path должен быть blocking live-smoke только для:
 
 - `master`
 - trusted branches
 - same-repo PR
+- OS-specific platform bundle secrets configured for the matrix OS
 
 Для fork PR live jobs не должны становиться blocking. В этом репозитории это выражено workflow-файлом `.github/workflows/ci.yml` и тем же env hook-контрактом:
 
 - mandatory designer smoke требует `V8TR_DESIGNER_REAL_CONFIG`
 - workflow может разрешить soft-skip только через `V8TR_DESIGNER_ALLOW_MISSING_CONFIG=1`
 - без этого hook `scripts/test/live-cli-fixture.sh` падает, если `V8TR_DESIGNER_REAL_CONFIG` не задан
-- trusted path устанавливает 1С из OS-specific bundle secret, материализует dedicated `format: DESIGNER` + `builder: DESIGNER` config, запускает `ibsrv` sidecar на том же file-infobase path и только потом вызывает canonical entrypoint `V8_RUNNER_CI_SCOPE=happy-path bash scripts/test/ci-rust.sh`
+- trusted path with configured OS-specific bundle secrets устанавливает 1С, материализует dedicated `format: DESIGNER` + `builder: DESIGNER` config, запускает `ibsrv` sidecar на том же file-infobase path и только потом вызывает canonical entrypoint `V8_RUNNER_CI_SCOPE=happy-path bash scripts/test/ci-rust.sh`
+- trusted path without those secrets emits a GitHub Actions notice with `live_available=false`, sets `V8TR_DESIGNER_ALLOW_MISSING_CONFIG=1` and `V8TR_CI_SKIP_DUPLICATE_RUST_TESTS=1`, and keeps Rust build/check plus Linux contract tests blocking while the live smoke is skipped
 - fork PR и Dependabot не получают install/bootstrap/upload path: workflow передает только `V8TR_DESIGNER_ALLOW_MISSING_CONFIG=1`, а upload deploy-ready артефактов остаётся trusted-only
 
 ## Контракт `live-cli-fixture`
@@ -158,9 +175,9 @@ python3 scripts/test/live-mcp-http.py
 bash scripts/test/live-cli-ibcmd.sh
 ```
 
-### GitHub Actions
+### GitHub Actions matrix
 
-Blocking path использует entrypoint:
+Для `ubuntu-latest` и `windows-latest` blocking использует один и тот же entrypoint:
 
 ```bash
 V8_RUNNER_CI_SCOPE=happy-path bash scripts/test/ci-rust.sh
@@ -168,9 +185,9 @@ V8_RUNNER_CI_SCOPE=happy-path bash scripts/test/ci-rust.sh
 
 Текущая реализация workflow wiring:
 
-- `.github/workflows/ci.yml` публикует два job: `contract` и `happy-path`
-- `contract` запускает `bash scripts/test/ci-rust.sh` с `V8_RUNNER_CI_SCOPE=contract`
-- `happy-path` запускает `V8_RUNNER_CI_SCOPE=happy-path bash scripts/test/ci-rust.sh`; без platform bundle secrets workflow передает `V8TR_DESIGNER_ALLOW_MISSING_CONFIG=1`, поэтому Rust build/check/test остаются blocking, а live fixture завершается soft-skip
+- `.github/workflows/ci.yml` публикует два matrix job: `contract` и `happy-path`
+- `contract` всегда запускает `bash scripts/test/ci-rust.sh` с `V8_RUNNER_CI_SCOPE=contract`
+- `happy-path` всегда запускает `V8_RUNNER_CI_SCOPE=happy-path bash scripts/test/ci-rust.sh`
 - trusted path использует `scripts/test/ci-platform-install.sh`, `scripts/test/ci-designer-config.sh` и `scripts/test/ci-ibsrv.sh`
 - upload deploy-ready артефактов делает только trusted happy-path после успешной non-empty validation в `live-cli-fixture.sh`
 
@@ -194,17 +211,17 @@ Windows runner contract for this helper layer is explicit:
 
 | Контур | Linux | Windows | Blocking | Build | Syntax/check | Test | Package | Deploy-ready artifacts |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `ci-rust contract` | yes | planned | yes | Rust | Rust | Rust | no | no |
-| `ci-rust happy-path` | yes | planned | yes on trusted | Rust + real 1C | real | Rust by default; real 1C opt-in | real | real |
+| `ci-rust contract` | yes | yes | yes | Rust | Rust | Linux full tests; Windows compile/check smoke | no | no |
+| `ci-rust happy-path` | yes | yes | yes for Rust/non-live checks; live smoke is blocking when OS bundle secrets exist | Rust + real 1C when available | real when available | Rust test repeats unless `V8TR_CI_SKIP_DUPLICATE_RUST_TESTS=1`; real 1C opt-in | real when available | real when available |
 | `live-mcp-http` | optional | optional | no | real via MCP | real via MCP | real via MCP | n/a | n/a |
 | `live-cli-ibcmd` | optional | optional | no | real (`IBCMD`) | n/a | n/a | diagnostic dump/export only | n/a |
 | `live-cli-designer` | optional | optional | no | real (`DESIGNER`) | real | real opt-in | real | real |
 
 ## Ограничения и TODO hooks
 
-- Workflow `.github/workflows/ci.yml` уже зафиксировал contract/gating/upload wiring, но сам не умеет скачивать vendor installer публично: trusted path ожидает готовый platform bundle по секретному URL и обязательному SHA256.
+- Workflow `.github/workflows/ci.yml` уже зафиксировал contract/gating/upload wiring, но сам не умеет скачивать vendor installer публично: trusted live path ожидает готовый platform bundle по секретному URL и обязательному SHA256. Если OS-specific URL/SHA256 secrets отсутствуют, workflow явно сообщает degraded coverage через notice и soft-skips live smoke; восстановление blocking live coverage требует добавить соответствующую пару secrets.
+- Windows CI currently provides compile/check smoke, not full `cargo test`, until Windows-specific path, fake-binary, ACL, and process-lifecycle tests are hardened. Owner: CI contract docs in this file. Exit criterion: switch Windows contract back to `cargo test --locked` after those failure groups pass on `windows-latest`.
 - `ibsrv` в workflow запускается как sidecar на том же `--db-path`, который зашит в dedicated file-based Designer config; сам CLI harness по текущему контракту остаётся file-connection oriented и не переключается на server connection.
 - `live-cli-fixture` по умолчанию не запускает 1С test-stage; `va`, `yaxunit-all` и `module` остаются opt-in режимами для стендов, где установлен и проверен соответствующий headless runner.
 - `live-mcp-http` и `live-cli-ibcmd` остаются отдельными non-blocking контурами.
-- Mandatory designer smoke requires `V8TR_DESIGNER_REAL_CONFIG`; `V8TR_DESIGNER_ALLOW_MISSING_CONFIG=1` is reserved for fork/non-blocking soft-skip contexts.
-- Windows GitHub Actions full-test/live path is intentionally not blocking yet; current TODO is to remove Unix-only path and fake-executable assumptions from tests before re-enabling Windows as blocking.
+- Mandatory designer smoke requires `V8TR_DESIGNER_REAL_CONFIG`; `V8TR_DESIGNER_ALLOW_MISSING_CONFIG=1` is reserved for fork/non-blocking soft-skip contexts and for trusted CI matrix entries where the OS-specific platform bundle secrets are not configured.

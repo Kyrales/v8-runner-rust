@@ -276,6 +276,33 @@ fn setup_project(
     )
 }
 
+enum FileInfobaseState {
+    Prepared,
+    MissingMarker,
+}
+
+fn configure_file_infobase(config_path: &Path, infobase_path: &Path, state: FileInfobaseState) {
+    fs::create_dir_all(infobase_path).expect("infobase directory");
+    if matches!(state, FileInfobaseState::Prepared) {
+        fs::write(infobase_path.join("1Cv8.1CD"), "prepared").expect("infobase marker");
+    }
+    let config = fs::read_to_string(config_path).expect("config");
+    fs::write(
+        config_path,
+        config.replace("File=/tmp/ib", &format!("File={}", infobase_path.display())),
+    )
+    .expect("updated config");
+}
+
+fn configure_server_infobase(config_path: &Path) {
+    let config = fs::read_to_string(config_path).expect("config");
+    fs::write(
+        config_path,
+        config.replace("File=/tmp/ib", "Srvr=cluster:1541;Ref=prepared"),
+    )
+    .expect("updated config");
+}
+
 fn setup_project_with_report_mode(
     report: FakeJunitReport<'_>,
     timeout_seconds: u64,
@@ -528,6 +555,125 @@ fn test_all_full_json_runs_build_first_and_returns_report() {
         "ok"
     );
     assert_eq!(payload["data"]["retained_paths"], Value::Null);
+}
+
+#[test]
+fn test_no_build_yaxunit_publishes_junit_from_prepared_infobase() {
+    let (dir, config_path, build_calls, test_calls, _captured_config) = setup_project(
+        "work",
+        JUNIT_SMOKE_REPORT_FIXTURE,
+        "12:00:00.000 [INF] ok",
+        0,
+        false,
+        5,
+        None,
+    );
+    configure_file_infobase(
+        &config_path,
+        &dir.path().join("prepared-ib"),
+        FileInfobaseState::Prepared,
+    );
+    let external_output = config_path
+        .parent()
+        .expect("config parent")
+        .join("reports/prepared.xml");
+
+    let output = v8_runner_command()
+        .args([
+            "--config",
+            &config_path.display().to_string(),
+            "--json-message",
+            "test",
+            "--no-build",
+            "yaxunit",
+            "--junit-output",
+            "reports/prepared.xml",
+            "all",
+        ])
+        .output()
+        .expect("run");
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!build_calls.exists(), "no-build must not invoke Designer");
+    assert!(test_calls.exists(), "test engine must run");
+    assert_eq!(
+        fs::read(&external_output).expect("exported JUnit"),
+        JUNIT_SMOKE_REPORT_FIXTURE.as_bytes()
+    );
+    let payload: Value = serde_json::from_slice(&output.stdout).expect("json");
+    let build_step = payload["steps"]
+        .as_array()
+        .expect("steps")
+        .iter()
+        .find(|step| step["name"] == "build")
+        .expect("build step");
+    assert_eq!(build_step["status"], "skipped");
+    assert_eq!(payload["data"]["retained_paths"], Value::Null);
+}
+
+#[test]
+fn test_no_build_missing_infobase_removes_stale_junit_before_preflight() {
+    let (dir, config_path, build_calls, test_calls, _captured_config) =
+        setup_project("work", JUNIT_SMOKE_REPORT_FIXTURE, "", 0, false, 5, None);
+    configure_file_infobase(
+        &config_path,
+        &dir.path().join("missing-marker-ib"),
+        FileInfobaseState::MissingMarker,
+    );
+    let target = config_path.parent().expect("parent").join("stale.xml");
+    fs::write(&target, b"stale").expect("stale report");
+
+    let output = v8_runner_command()
+        .args([
+            "--config",
+            &config_path.display().to_string(),
+            "--json-message",
+            "test",
+            "--no-build",
+            "yaxunit",
+            "--junit-output",
+            "stale.xml",
+            "all",
+        ])
+        .output()
+        .expect("run");
+
+    assert!(!output.status.success());
+    assert!(!target.exists());
+    assert!(!build_calls.exists());
+    assert!(!test_calls.exists());
+    let payload: Value = serde_json::from_slice(&output.stdout).expect("json");
+    assert_eq!(
+        payload["data"]["execution"]["errors"][0]["code"],
+        "infobase_unavailable"
+    );
+}
+
+#[test]
+fn test_no_build_accepts_server_infobase_without_file_preflight() {
+    let (_dir, config_path, build_calls, test_calls, _captured_config) =
+        setup_project("work", JUNIT_SMOKE_REPORT_FIXTURE, "", 0, false, 5, None);
+    configure_server_infobase(&config_path);
+
+    let output = v8_runner_command()
+        .args([
+            "--config",
+            &config_path.display().to_string(),
+            "test",
+            "--no-build",
+            "yaxunit",
+            "all",
+        ])
+        .output()
+        .expect("run");
+
+    assert!(output.status.success());
+    assert!(!build_calls.exists());
+    assert!(test_calls.exists());
 }
 
 #[test]
@@ -1141,6 +1287,41 @@ fn test_rejects_reserved_raw_launch_payloads() {
     assert_ne!(output.status.code(), Some(0));
     assert!(!test_calls.exists());
     assert!(String::from_utf8_lossy(&output.stderr).contains("does not support raw /C"));
+}
+
+#[test]
+fn test_va_no_build_skips_build_for_prepared_infobase() {
+    let (dir, config_path, build_calls, test_calls, _captured_params) =
+        setup_va_project(JUNIT_SMOKE_REPORT_FIXTURE, &[]);
+    configure_file_infobase(
+        &config_path,
+        &dir.path().join("prepared-va-ib"),
+        FileInfobaseState::Prepared,
+    );
+
+    let output = v8_runner_command()
+        .args([
+            "--config",
+            &config_path.display().to_string(),
+            "--json-message",
+            "test",
+            "--no-build",
+            "va",
+        ])
+        .output()
+        .expect("run");
+
+    assert!(output.status.success());
+    assert!(!build_calls.exists());
+    assert!(test_calls.exists());
+    let payload: Value = serde_json::from_slice(&output.stdout).expect("json");
+    let build_step = payload["steps"]
+        .as_array()
+        .expect("steps")
+        .iter()
+        .find(|step| step["name"] == "build")
+        .expect("build step");
+    assert_eq!(build_step["status"], "skipped");
 }
 
 #[test]

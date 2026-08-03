@@ -17,7 +17,6 @@ use crate::platform::locator::UtilityType;
 use crate::platform::result::PlatformCommandResult;
 use crate::platform::utilities::PlatformUtilities;
 use crate::support::error::AppError;
-use crate::support::fs::clean_dir;
 use crate::support::temp::platform_logs_dir;
 #[cfg(test)]
 use crate::use_cases::context::CommandName;
@@ -471,6 +470,27 @@ fn run_edt_syntax(
         }
     };
 
+    let exceptions = match load_syntax_exceptions(exception_file) {
+        Ok(exceptions) => exceptions,
+        Err(error) => {
+            let app_error = AppError::Runtime(error);
+            let message = app_error.to_string();
+            return Err(SyntaxExecutionFailure::with_payload(
+                app_error,
+                failed_result(
+                    "edt",
+                    SyntaxCheckStatus::ToolFailed,
+                    -1,
+                    started,
+                    vec![],
+                    None,
+                    Some(message),
+                    None,
+                ),
+            ));
+        }
+    };
+
     let log_dir = match platform_logs_dir(&config.work_path) {
         Ok(dir) => dir,
         Err(error) => {
@@ -516,58 +536,14 @@ fn run_edt_syntax(
             ));
         }
     };
-    let exceptions = match load_syntax_exceptions(exception_file) {
-        Ok(exceptions) => exceptions,
-        Err(error) => {
-            let app_error = AppError::Runtime(error);
-            let message = app_error.to_string();
-            return Err(SyntaxExecutionFailure::with_payload(
-                app_error,
-                failed_result(
-                    "edt",
-                    SyntaxCheckStatus::ToolFailed,
-                    -1,
-                    started,
-                    vec![],
-                    None,
-                    Some(message),
-                    None,
-                ),
-            ));
-        }
-    };
 
     let edt_binary = location.path;
-    let syntax_workspace = match prepare_edt_syntax_workspace(&config.work_path) {
-        Ok(workspace) => workspace,
-        Err(error) => {
-            let app_error = AppError::Runtime(format!(
-                "failed to prepare EDT syntax workspace '{}': {error}",
-                config.work_path.join("edt-syntax-workspace").display()
-            ));
-            let message = app_error.to_string();
-            return Err(SyntaxExecutionFailure::with_payload(
-                app_error,
-                failed_result(
-                    "edt",
-                    SyntaxCheckStatus::ToolFailed,
-                    -1,
-                    started,
-                    vec![],
-                    None,
-                    Some(message),
-                    None,
-                ),
-            ));
-        }
-    };
     let interactive_dsl = if config.tools.edt_cli.interactive_mode {
-        let mut options = EdtSessionHostOptions::for_cli_command(config);
-        options.workspace = syntax_workspace.clone();
-        match EdtSessionManager::for_config(config, options) {
+        match EdtSessionManager::for_config(config, EdtSessionHostOptions::for_cli_command(config))
+        {
             Ok(manager) => match EdtDsl::new_shared_session(
                 edt_binary.clone(),
-                syntax_workspace.clone(),
+                config.work_path.join("edt-workspace"),
                 Arc::new(manager),
                 Duration::from_millis(config.tools.edt_cli.startup_timeout_ms),
                 Duration::from_millis(config.tools.edt_cli.command_timeout_ms),
@@ -643,7 +619,7 @@ fn run_edt_syntax(
         } else {
             EdtDsl::new(
                 edt_binary.clone(),
-                syntax_workspace.clone(),
+                config.work_path.join("edt-workspace"),
                 utilities.runner_for(UtilityType::EdtCli),
             )
             .with_timeout(context.edt_timeout())
@@ -821,19 +797,12 @@ fn resolve_edt_source_sets<'a>(
 
     if !unknown.is_empty() {
         return Err(AppError::Validation(format!(
-            "unknown EDT source-set(s): {}",
+            "unknown EDT project(s): {}",
             unknown.join(", ")
         )));
     }
 
     Ok(selected)
-}
-
-fn prepare_edt_syntax_workspace(work_path: &Path) -> std::io::Result<PathBuf> {
-    let workspace = work_path.join("edt-syntax-workspace");
-    clean_dir(&workspace)?;
-    std::fs::create_dir_all(&workspace)?;
-    Ok(workspace)
 }
 
 #[derive(Default)]
@@ -1163,19 +1132,19 @@ fn summarize_issues(issues: &[Issue]) -> SyntaxIssueSummary {
     summary
 }
 
-fn issue_severity(issue: &Issue) -> &IssueSeverity {
-    match issue {
-        Issue::Module(issue) => &issue.severity,
-        Issue::Object(issue) => &issue.severity,
-        Issue::Edt(issue) => &issue.severity,
-    }
-}
-
 fn render_issue_severity(severity: &IssueSeverity) -> &'static str {
     match severity {
         IssueSeverity::Error => "ERROR",
         IssueSeverity::Warning => "WARNING",
         IssueSeverity::Info => "INFO",
+    }
+}
+
+fn issue_severity(issue: &Issue) -> &IssueSeverity {
+    match issue {
+        Issue::Module(issue) => &issue.severity,
+        Issue::Object(issue) => &issue.severity,
+        Issue::Edt(issue) => &issue.severity,
     }
 }
 
@@ -1269,23 +1238,22 @@ mod tests {
     };
     use crate::use_cases::result::UseCaseErrorKind;
     use std::fs;
-    #[cfg(unix)]
-    use std::os::unix::fs::PermissionsExt;
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
     use std::time::{Duration, Instant};
     use tempfile::tempdir;
 
     fn make_executable(path: &Path) {
         #[cfg(unix)]
         {
+            use std::os::unix::fs::PermissionsExt;
+
             let mut perms = fs::metadata(path).expect("metadata").permissions();
             perms.set_mode(0o755);
             fs::set_permissions(path, perms).expect("chmod");
         }
+
         #[cfg(not(unix))]
-        {
-            let _ = path;
-        }
+        let _ = path;
     }
 
     fn write_script(path: &Path, body: &str) {
@@ -1294,6 +1262,14 @@ mod tests {
         }
         fs::write(path, format!("#!/bin/sh\n{body}\n")).expect("write");
         make_executable(path);
+    }
+
+    fn utility_path(dir: &Path, name: &str) -> PathBuf {
+        if cfg!(windows) {
+            dir.join(format!("{name}.exe"))
+        } else {
+            dir.join(name)
+        }
     }
 
     fn write_designer_script(
@@ -1407,6 +1383,7 @@ mod tests {
             tools: ToolsConfig {
                 platform: crate::config::model::PlatformToolConfig {
                     path: Some(platform_path.to_path_buf()),
+                    strict: false,
                     version: None,
                 },
                 enterprise: Default::default(),
@@ -1485,7 +1462,7 @@ mod tests {
                 path: "ОбщийМодуль.Другой.Модуль".to_owned(),
                 line: None,
                 column: None,
-                message: "Новая ошибка".to_owned(),
+                message: "Другая ошибка".to_owned(),
                 severity: IssueSeverity::Error,
                 check: None,
             }),
@@ -1515,10 +1492,7 @@ mod tests {
                 column: None,
                 message: "Возможно Поле указано в описании".to_owned(),
                 severity: IssueSeverity::Info,
-                check: Some(
-                    "com.e1c.v8codestyle.bsl:doc-comment-field-in-description-suggestion"
-                        .to_owned(),
-                ),
+                check: Some("com.e1c.v8codestyle.bsl:doc-comment-field-definition".to_owned()),
             }),
             Issue::Edt(EdtIssue {
                 path: "ОбщийМодуль.КалендарныеГрафики.Модуль".to_owned(),
@@ -1526,10 +1500,7 @@ mod tests {
                 column: None,
                 message: "Возможно Поле указано в описании".to_owned(),
                 severity: IssueSeverity::Info,
-                check: Some(
-                    "com.e1c.v8codestyle.bsl:doc-comment-field-in-description-suggestion"
-                        .to_owned(),
-                ),
+                check: Some("com.e1c.v8codestyle.bsl:doc-comment-field-definition".to_owned()),
             }),
         ];
         let mut exceptions = SyntaxExceptions::default();
@@ -1639,7 +1610,7 @@ mod tests {
         let dir = tempdir().expect("tempdir");
         let base = dir.path().join("base");
         let work = dir.path().join("work");
-        let binary = dir.path().join("platform").join("bin").join("1cv8");
+        let binary = utility_path(&dir.path().join("platform").join("bin"), "1cv8");
         fs::create_dir_all(&base).expect("base");
         fs::create_dir_all(&work).expect("work");
         write_designer_script(&binary, None, None, 0);
@@ -1660,7 +1631,7 @@ mod tests {
         let dir = tempdir().expect("tempdir");
         let base = dir.path().join("base");
         let work = dir.path().join("work");
-        let binary = dir.path().join("platform").join("bin").join("1cv8");
+        let binary = utility_path(&dir.path().join("platform").join("bin"), "1cv8");
         fs::create_dir_all(&base).expect("base");
         fs::create_dir_all(&work).expect("work");
         write_designer_script(
@@ -1696,7 +1667,7 @@ mod tests {
         let dir = tempdir().expect("tempdir");
         let base = dir.path().join("base");
         let work = dir.path().join("work");
-        let binary = dir.path().join("platform").join("bin").join("1cv8");
+        let binary = utility_path(&dir.path().join("platform").join("bin"), "1cv8");
         fs::create_dir_all(&base).expect("base");
         fs::create_dir_all(&work).expect("work");
         write_designer_script(&binary, None, Some("license error"), 1);
@@ -1728,7 +1699,7 @@ mod tests {
         let dir = tempdir().expect("tempdir");
         let base = dir.path().join("base");
         let work = dir.path().join("work");
-        let binary = dir.path().join("platform").join("bin").join("1cv8");
+        let binary = utility_path(&dir.path().join("platform").join("bin"), "1cv8");
         fs::create_dir_all(&base).expect("base");
         fs::create_dir_all(&work).expect("work");
         write_script(&binary, "exit 101");
@@ -1757,7 +1728,7 @@ mod tests {
         let work = dir.path().join("work");
         let main_dir = base.join("main-edt");
         let ext_dir = base.join("ext-edt");
-        let binary = dir.path().join("edt").join("1cedtcli");
+        let binary = utility_path(&dir.path().join("edt"), "1cedtcli");
         fs::create_dir_all(&work).expect("work");
         fs::create_dir_all(&main_dir).expect("main");
         fs::create_dir_all(&ext_dir).expect("ext");
@@ -1781,43 +1752,14 @@ mod tests {
         assert!(result.platform_log_path.is_none());
     }
 
-    #[cfg(unix)]
     #[test]
-    fn syntax_edt_uses_clean_syntax_workspace_instead_of_build_workspace() {
+    fn syntax_edt_rejects_unknown_project_names() {
         let dir = tempdir().expect("tempdir");
         let base = dir.path().join("base");
         let work = dir.path().join("work");
         let main_dir = base.join("main-edt");
         let ext_dir = base.join("ext-edt");
-        let binary = dir.path().join("edt").join("1cedtcli");
-        let calls_log = dir.path().join("edt.calls.log");
-        let stale_marker = work.join("edt-syntax-workspace").join("stale.marker");
-        fs::create_dir_all(&work).expect("work");
-        fs::create_dir_all(&main_dir).expect("main");
-        fs::create_dir_all(&ext_dir).expect("ext");
-        fs::create_dir_all(stale_marker.parent().expect("stale parent")).expect("syntax ws");
-        fs::write(&stale_marker, "stale").expect("stale marker");
-        write_edt_script_with_calls(&binary, &calls_log);
-        let config = sample_edt_config(&base, &work, &binary);
-        let args = edt_args(vec!["main".to_owned()]);
-
-        let result = run_syntax(&config, &args).expect("clean run");
-
-        assert_eq!(result.status, SyntaxCheckStatus::Clean);
-        assert!(!stale_marker.exists());
-        let calls = fs::read_to_string(&calls_log).expect("calls");
-        assert!(calls.contains("edt-syntax-workspace"));
-        assert!(!calls.contains("edt-workspace"));
-    }
-
-    #[test]
-    fn syntax_edt_rejects_unknown_source_set_names() {
-        let dir = tempdir().expect("tempdir");
-        let base = dir.path().join("base");
-        let work = dir.path().join("work");
-        let main_dir = base.join("main-edt");
-        let ext_dir = base.join("ext-edt");
-        let binary = dir.path().join("edt").join("1cedtcli");
+        let binary = utility_path(&dir.path().join("edt"), "1cedtcli");
         fs::create_dir_all(&work).expect("work");
         fs::create_dir_all(&main_dir).expect("main");
         fs::create_dir_all(&ext_dir).expect("ext");
@@ -1831,7 +1773,7 @@ mod tests {
         assert!(failure
             .error
             .to_string()
-            .contains("unknown EDT source-set(s): unknown"));
+            .contains("unknown EDT project(s): unknown"));
     }
 
     #[cfg(unix)]
@@ -1842,7 +1784,7 @@ mod tests {
         let work = dir.path().join("work");
         let main_dir = base.join("main-edt");
         let ext_dir = base.join("ext-edt");
-        let binary = dir.path().join("edt").join("1cedtcli");
+        let binary = utility_path(&dir.path().join("edt"), "1cedtcli");
         fs::create_dir_all(&work).expect("work");
         fs::create_dir_all(&main_dir).expect("main");
         fs::create_dir_all(&ext_dir).expect("ext");
@@ -1862,6 +1804,7 @@ mod tests {
         assert_eq!(result.exit_code, 17);
     }
 
+    #[cfg(unix)]
     #[test]
     fn syntax_edt_uses_mcp_timeout_budget_for_subprocess() {
         let dir = tempdir().expect("tempdir");
@@ -1869,7 +1812,7 @@ mod tests {
         let work = dir.path().join("work");
         let main_dir = base.join("main-edt");
         let ext_dir = base.join("ext-edt");
-        let binary = dir.path().join("edt").join("1cedtcli");
+        let binary = utility_path(&dir.path().join("edt"), "1cedtcli");
         fs::create_dir_all(&work).expect("work");
         fs::create_dir_all(&main_dir).expect("main");
         fs::create_dir_all(&ext_dir).expect("ext");
@@ -1892,6 +1835,7 @@ mod tests {
         assert_eq!(payload.exit_code, -1);
     }
 
+    #[cfg(unix)]
     #[test]
     fn syntax_edt_recomputes_remaining_budget_for_each_project_in_one_shot_mode() {
         let dir = tempdir().expect("tempdir");
@@ -1899,7 +1843,7 @@ mod tests {
         let work = dir.path().join("work");
         let main_dir = base.join("main-edt");
         let ext_dir = base.join("ext-edt");
-        let binary = dir.path().join("edt").join("1cedtcli");
+        let binary = utility_path(&dir.path().join("edt"), "1cedtcli");
         fs::create_dir_all(&work).expect("work");
         fs::create_dir_all(&main_dir).expect("main");
         fs::create_dir_all(&ext_dir).expect("ext");
@@ -1929,7 +1873,7 @@ mod tests {
         let work = dir.path().join("work");
         let main_dir = base.join("main-edt");
         let ext_dir = base.join("ext-edt");
-        let binary = dir.path().join("edt").join("1cedtcli");
+        let binary = utility_path(&dir.path().join("edt"), "1cedtcli");
         let calls_log = dir.path().join("edt-calls.log");
         fs::create_dir_all(&work).expect("work");
         fs::create_dir_all(&main_dir).expect("main");
@@ -1955,7 +1899,7 @@ mod tests {
         let work = dir.path().join("work");
         let main_dir = base.join("main-edt");
         let ext_dir = base.join("ext-edt");
-        let binary = dir.path().join("edt").join("1cedtcli");
+        let binary = utility_path(&dir.path().join("edt"), "1cedtcli");
         let calls_log = dir.path().join("edt-calls.log");
         fs::create_dir_all(&work).expect("work");
         fs::create_dir_all(&main_dir).expect("main");
@@ -1979,7 +1923,7 @@ mod tests {
         let dir = tempdir().expect("tempdir");
         let base = dir.path().join("base");
         let work_file = dir.path().join("work-file");
-        let binary = dir.path().join("platform").join("bin").join("1cv8");
+        let binary = utility_path(&dir.path().join("platform").join("bin"), "1cv8");
         fs::create_dir_all(&base).expect("base");
         fs::write(&work_file, "not a directory").expect("work file");
         write_designer_script(&binary, None, None, 0);

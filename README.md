@@ -32,6 +32,12 @@ cargo build --release
 
 Команда компилирует `v8-runner` в `target/release/v8-runner`.
 
+Для готовой сборки откройте GitHub Release нужной версии и выберите архив под платформу:
+Linux `x86_64-musl`, Windows `x86_64`, macOS `x86_64` или `aarch64`. Перед распаковкой
+проверьте соседний файл `<archive>.sha256` командой `sha256sum -c <archive>.sha256`
+(на macOS — `shasum -a 256 -c <archive>.sha256`). Архив содержит бинарник, `README.md`,
+`LICENSE` и примеры конфигурации.
+
 ### Создайте стартовый config (конфиг) в текущем репозитории:
 
 ```bash
@@ -44,6 +50,19 @@ overlay в `.gitignore`, если он еще не указан.
 
 Machine-local пути, credentials и настройки инструментов можно вынести в `v8project.local.yaml`
 рядом с основным конфигом. Этот файл применяется автоматически и должен оставаться вне Git.
+
+### Или создайте проект из существующей информационной базы:
+
+```bash
+v8-runner bootstrap \
+  --connection "File=/path/to/ib" \
+  --platform-version 8.3.27
+```
+
+Команда создает `v8project.yaml`, локальный overlay, `.gitignore` и выгружает основную
+конфигурацию в `src/configuration`. Credentials передавайте через `--user` и `--password`; они
+попадают только в `v8project.local.yaml`. Автоматическое обнаружение расширений этим bootstrap
+slice не выполняется.
 
 ### Загрузите тестовые и MCP-инструменты:
 
@@ -103,19 +122,50 @@ v8-runner syntax edt --project <SOURCE_SET> --exception-file tools/syntax-check-
 v8-runner test yaxunit all
 ```
 
+Для уже подготовленной файловой или серверной ИБ можно явно пропустить build:
+
+```bash
+v8-runner test --no-build yaxunit all
+```
+
+JUnit-отчёт YAxUnit можно атомарно опубликовать во внешний путь; относительный путь считается
+от каталога основного `v8project.yaml`. Флаг совместим с подготовленной ИБ:
+
+```bash
+v8-runner test --no-build yaxunit --junit-output build/test-results/yaxunit.xml all
+```
+
+Внешний файл получает исходные проверенные байты отчёта и публикуется также при ненулевом
+результате тестов. Флаг доступен только для YAxUnit.
+
+Для файловой ИБ этот режим до запуска 1С проверяет наличие `1Cv8.1CD`.
+Проверка конфигурации не требует наличия project source-set: нужны только настройки ИБ,
+платформы и выбранного test engine. Для server connection отдельный portable preflight без
+запуска платформы пока недоступен, поэтому соединение проверяет сам test engine.
+
 ### Или тесты Vanessa Automation:
 
 ```bash
 v8-runner test va
 ```
 
-Команда сначала выполняет `build`, затем запускает полный набор YAxUnit-тестов.
+По умолчанию команда сначала выполняет `build`, затем запускает настроенный профиль Vanessa
+Automation. Для подготовленной ИБ используйте `v8-runner test --no-build va`.
 
-Для отладки и написания тестов Vanessa Automation запустите ее в режиме MCP
+Для отладки и написания тестов Vanessa Automation запустите ее в режиме MCP и, если агенту нужно
+сразу подключаться к endpoint, дождитесь готовности:
 
 ```bash
-v8-runner launch mcp va
+v8-runner launch mcp va --mcp-port 1550 --wait-ready
 ```
+
+Для функциональных `.feature`-сценариев, приемки и задач Vanessa Automation используйте
+`test va`, MCP `run_all_tests` с `runner=vanessa` или `launch mcp va --wait-ready`; голый
+`launch mcp` предназначен только для client MCP без загрузки Vanessa.
+
+Для автоматизации `v8-runner --json-message launch ...` сохраняет поле `binary` и добавляет
+canonical `platform_resolution` (path, version, source и installation root). Эта metadata
+публикуется только для результата `launch`, а не для всех команд.
 
 ### Поднимите MCP transport (MCP-транспорт) для AI-агентов:
 
@@ -133,7 +183,7 @@ v8-runner mcp serve stdio
 
 | Зона | Команды | Что делает |
 | --- | --- | --- |
-| Project setup (настройка проекта) | `config init`, `tools download`, `init`, `extensions`, `build` | Создает config, скачивает инструменты, готовит ИБ, обновляет расширения и загружает исходники |
+| Project setup (настройка проекта) | `bootstrap`, `config init`, `tools download`, `init`, `extensions`, `build` | Создает проект/config, скачивает инструменты, готовит ИБ, обновляет расширения и загружает исходники |
 | Verification (проверка) | `syntax`, `test` | Запускает syntax checks, YAxUnit и Vanessa Automation |
 | File materialization (материализация файлов) | `dump`, `convert`, `load`, `make`, `artifacts` | Выгружает, конвертирует, загружает и публикует `.cf`, `.cfe`, `.epf`, `.erf` |
 | Direct launch (прямой запуск) | `launch <designer|thin|thick|ordinary>`, `launch mcp [va]` | Запускает 1C clients (клиенты 1С), Designer и MCP/Vanessa сценарии |

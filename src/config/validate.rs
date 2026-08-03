@@ -163,6 +163,9 @@ pub enum ConfigValidationError {
     #[error("tools.client_mcp.port must be greater than or equal to 1")]
     InvalidMcpClientPort,
 
+    #[error("tools.client_mcp.wait_ready_timeout_ms must be between 1 and 86400000 milliseconds")]
+    InvalidMcpClientWaitReadyTimeout,
+
     #[error("tools.client_mcp.extension.name must be a safe non-empty extension name: {0}")]
     InvalidToolExtensionName(String),
 
@@ -191,7 +194,8 @@ pub fn validate(config: &AppConfig) -> Result<(), ConfigValidationError> {
     validate_work_path(&config.work_path)?;
     validate_matrix(config)?;
     validate_source_sets(config)?;
-    validate_connection(config)?;
+    validate_connection_contract(config)?;
+    validate_ibcmd_server_dbms(config)?;
     validate_platform_version(config)?;
     validate_build_config(config)?;
     validate_execution_timeout(config)?;
@@ -210,12 +214,27 @@ pub fn validate_tools_download_bootstrap(config: &AppConfig) -> Result<(), Confi
     validate_base_path(&config.base_path)?;
     validate_work_path(&config.work_path)?;
     validate_matrix(config)?;
-    validate_connection(config)?;
+    validate_connection_contract(config)?;
+    validate_ibcmd_server_dbms(config)?;
     validate_platform_version(config)?;
     validate_build_config(config)?;
     validate_execution_timeout(config)?;
     validate_mcp_config(config)?;
     validate_edt_cli_config(config)?;
+    Ok(())
+}
+
+/// Validate only the configuration required to run tests against a prepared infobase.
+///
+/// Source trees and build tooling are intentionally excluded because `test --no-build`
+/// is a consumer of an immutable infobase and must remain independent of build inputs.
+pub fn validate_prepared_test(config: &AppConfig) -> Result<(), ConfigValidationError> {
+    validate_base_path(&config.base_path)?;
+    validate_work_path(&config.work_path)?;
+    validate_connection_contract(config)?;
+    validate_platform_version(config)?;
+    validate_execution_timeout(config)?;
+    validate_test_config(config)?;
     Ok(())
 }
 
@@ -584,7 +603,7 @@ fn validate_source_set_name(name: &str) -> Result<(), ConfigValidationError> {
     Ok(())
 }
 
-fn validate_connection(config: &AppConfig) -> Result<(), ConfigValidationError> {
+fn validate_connection_contract(config: &AppConfig) -> Result<(), ConfigValidationError> {
     if config.infobase.connection.trim().is_empty() {
         return Err(ConfigValidationError::EmptyConnection);
     }
@@ -597,6 +616,14 @@ fn validate_connection(config: &AppConfig) -> Result<(), ConfigValidationError> 
         return Ok(());
     }
 
+    Ok(())
+}
+
+fn validate_ibcmd_server_dbms(config: &AppConfig) -> Result<(), ConfigValidationError> {
+    let is_file_connection = config.v8_connection().file_path().is_some();
+    if is_file_connection {
+        return Ok(());
+    }
     if config.builder != BuilderBackend::Ibcmd {
         return Ok(());
     }
@@ -830,6 +857,15 @@ fn validate_mcp_config(config: &AppConfig) -> Result<(), ConfigValidationError> 
 
     if config.tools.client_mcp.port == Some(0) {
         return Err(ConfigValidationError::InvalidMcpClientPort);
+    }
+
+    if config
+        .tools
+        .client_mcp
+        .wait_ready_timeout_ms
+        .is_some_and(|timeout| !(1..=86_400_000).contains(&timeout))
+    {
+        return Err(ConfigValidationError::InvalidMcpClientWaitReadyTimeout);
     }
 
     Ok(())
@@ -1121,6 +1157,7 @@ mod tests {
             tools: ToolsConfig {
                 platform: PlatformToolConfig {
                     path: None,
+                    strict: false,
                     version: Some("8.3.25".to_owned()),
                 },
                 ..ToolsConfig::default()
@@ -1158,6 +1195,7 @@ mod tests {
             tools: ToolsConfig {
                 platform: PlatformToolConfig {
                     path: None,
+                    strict: false,
                     version: Some("8.3".to_owned()),
                 },
                 ..ToolsConfig::default()
@@ -1195,6 +1233,7 @@ mod tests {
             tools: ToolsConfig {
                 platform: PlatformToolConfig {
                     path: None,
+                    strict: false,
                     version: Some("8".to_owned()),
                 },
                 ..ToolsConfig::default()
@@ -2403,6 +2442,14 @@ mod tests {
         config.tools.client_mcp.port = Some(0);
         let err = validate(&config).expect_err("expected invalid MCP client port");
         assert!(matches!(err, ConfigValidationError::InvalidMcpClientPort));
+
+        config.tools.client_mcp.port = Some(1);
+        config.tools.client_mcp.wait_ready_timeout_ms = Some(0);
+        let err = validate(&config).expect_err("expected invalid MCP readiness timeout");
+        assert!(matches!(
+            err,
+            ConfigValidationError::InvalidMcpClientWaitReadyTimeout
+        ));
     }
 
     #[test]

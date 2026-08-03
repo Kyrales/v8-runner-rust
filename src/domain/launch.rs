@@ -13,7 +13,66 @@ pub struct LaunchResult {
     pub pid: Option<u32>,
     /// Selected binary path used to spawn the process.
     pub binary: PathBuf,
+    /// Canonical platform installation metadata for the selected binary.
+    pub platform_resolution: PlatformResolution,
     /// Human-readable launch summary.
+    pub message: Option<String>,
+    /// Client-side MCP endpoint readiness details when readiness was requested.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mcp_readiness: Option<McpReadinessResult>,
+    /// Direct external EPF wait outcome when explicitly requested.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub external_epf_wait: Option<ExternalEpfWaitResult>,
+}
+
+/// Observed outcome of an opt-in bounded external EPF client launch.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExternalEpfWaitResult {
+    pub pid: u32,
+    pub execute_path: String,
+    pub exit_code: Option<i32>,
+    pub timed_out: bool,
+    pub output_path: String,
+    pub stderr_path: String,
+}
+
+/// Canonical platform installation metadata exposed by `launch` JSON results.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlatformResolution {
+    /// Absolute canonical path to the selected executable.
+    pub path: PathBuf,
+    /// Platform version inferred from the canonical installation path, when known.
+    pub version: Option<String>,
+    /// Discovery source used for the selected executable.
+    pub source: PlatformResolutionSource,
+    /// Absolute canonical root shared by platform utilities from this installation.
+    pub installation_root: PathBuf,
+}
+
+/// Typed discovery sources exposed by `launch` resolution metadata.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PlatformResolutionSource {
+    /// The configured utility or installation hint.
+    Explicit,
+    /// An operating-system-specific default installation root.
+    DefaultRoot,
+    /// A directory captured from `PATH` when the locator was created.
+    Path,
+}
+
+/// Result of probing a client-side MCP endpoint after launch.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpReadinessResult {
+    /// `true` when initialize and tools/list succeeded and required tools were present.
+    pub ok: bool,
+    /// Probed HTTP endpoint URL.
+    pub url: String,
+    /// Tool names returned by `tools/list`.
+    pub tools: Vec<String>,
+    /// Required tool names that were not returned by `tools/list`.
+    pub missing_tools: Vec<String>,
+    /// Human-readable readiness summary.
     pub message: Option<String>,
 }
 
