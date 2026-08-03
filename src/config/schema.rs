@@ -230,6 +230,13 @@ fn add_numeric_runtime_bounds(schema: &mut Value) {
     );
     for def in ["ClientMcpToolSchema", "PartialClientMcpToolSchema"] {
         set_numeric_bounds(schema, &[def], "port", Some(1), None);
+        set_numeric_bounds(
+            schema,
+            &[def],
+            "wait_ready_timeout_ms",
+            Some(1),
+            Some(86_400_000),
+        );
     }
     for name in ["max_sessions", "idle_ttl_secs"] {
         set_numeric_bounds(schema, &["McpHttpSchema"], name, Some(1), None);
@@ -619,10 +626,13 @@ struct PartialToolsSchema {
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct PlatformToolSchema {
-    /// Platform binary, installation `bin` directory, or platform root discovery hint.
+    /// Platform binary, installation `bin` directory, or platform root discovery hint. When set, platform discovery uses only this path and never falls back to default roots or PATH.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     path: Option<PathBuf>,
-    /// Platform version requirement used for discovery.
+    /// Enforce `version` for a configured `path`. Without `path`, `version` is applied to normal default-root and PATH discovery.
+    #[serde(default)]
+    strict: bool,
+    /// Platform version requirement. Without `path`, it filters normal discovery; with `path`, it is ignored unless `strict` is true.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     version: Option<String>,
 }
@@ -691,6 +701,9 @@ struct ClientMcpToolSchema {
     /// Default port passed to onec-client-mcp-devkit.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     port: Option<u16>,
+    /// Optional wait-ready timeout in milliseconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    wait_ready_timeout_ms: Option<u64>,
     /// Optional tool extension prepared by `build` for client MCP launches.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     extension: Option<ToolExtensionSchema>,
@@ -702,6 +715,9 @@ struct PartialClientMcpToolSchema {
     /// Machine-local default port passed to onec-client-mcp-devkit.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     port: Option<u16>,
+    /// Machine-local wait-ready timeout in milliseconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    wait_ready_timeout_ms: Option<u64>,
     /// Machine-local override or reset for the client MCP tool extension.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "PartialToolExtensionSchema")]
@@ -1028,6 +1044,7 @@ struct ExecutionTimeoutsSchema {
 #[cfg(test)]
 mod tests {
     use crate::config::loader::load_config;
+    use crate::support::path::normalize_windows_verbatim_path;
 
     use super::{
         local_config_schema_json, main_config_schema_json, schema_json_pretty,
@@ -1093,6 +1110,12 @@ mod tests {
         );
         assert_property_description_contains(
             &main_schema,
+            &["ClientMcpToolSchema"],
+            "wait_ready_timeout_ms",
+            "wait-ready timeout",
+        );
+        assert_property_description_contains(
+            &main_schema,
             &["ToolExtensionSchema"],
             "source",
             "Source-backed extension input",
@@ -1122,6 +1145,12 @@ mod tests {
             &["PartialClientMcpToolSchema"],
             "extension",
             "Machine-local override",
+        );
+        assert_property_description_contains(
+            &local_schema,
+            &["PartialClientMcpToolSchema"],
+            "wait_ready_timeout_ms",
+            "Machine-local wait-ready timeout",
         );
     }
 
@@ -1229,6 +1258,90 @@ mod tests {
 
         assert_schema_valid(&main_config_schema_json(), &config);
         assert_config_loader_ok(&config);
+    }
+
+    #[test]
+    fn platform_strict_main_schema_allows_path_to_come_from_local_overlay() {
+        let strict_without_path = format!(
+            "{}tools:\n  platform:\n    strict: true\n",
+            minimal_project_config_without_base_path()
+        );
+        let strict_with_null_path = format!(
+            "{}tools:\n  platform:\n    path: null\n    strict: true\n",
+            minimal_project_config_without_base_path()
+        );
+        let non_strict_without_path = format!(
+            "{}tools:\n  platform:\n    strict: false\n",
+            minimal_project_config_without_base_path()
+        );
+
+        assert_schema_valid(&main_config_schema_json(), &strict_without_path);
+        assert_schema_valid(&main_config_schema_json(), &strict_with_null_path);
+        assert_schema_valid(&main_config_schema_json(), &non_strict_without_path);
+    }
+
+    #[test]
+    fn local_schema_accepts_strict_platform_override_when_main_config_supplies_path() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("Configuration.xml"), "<Configuration/>").expect("xml");
+        let config_path = dir.path().join("v8project.yaml");
+        std::fs::write(
+            &config_path,
+            format!(
+                "{}tools:\n  platform:\n    path: platform/bin\n",
+                minimal_project_config_without_base_path()
+            ),
+        )
+        .expect("config");
+        let overlay = "tools:\n  platform:\n    strict: true\n";
+        std::fs::write(dir.path().join("v8project.local.yaml"), overlay).expect("overlay");
+
+        assert_schema_valid(&local_config_schema_json(), overlay);
+
+        let config = load_config(config_path.to_str(), None).expect("load merged config");
+        assert!(config.tools.platform.strict);
+        assert_eq!(
+            config.tools.platform.path.as_deref(),
+            Some(
+                normalize_windows_verbatim_path(
+                    &std::fs::canonicalize(dir.path())
+                        .expect("canonical config dir")
+                        .join("platform/bin"),
+                )
+                .as_path()
+            )
+        );
+    }
+
+    #[test]
+    fn local_schema_can_supply_path_for_strict_primary_platform_config() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("Configuration.xml"), "<Configuration/>").expect("xml");
+        let config_path = dir.path().join("v8project.yaml");
+        let primary = format!(
+            "{}tools:\n  platform:\n    strict: true\n",
+            minimal_project_config_without_base_path()
+        );
+        std::fs::write(&config_path, &primary).expect("config");
+        let overlay = "tools:\n  platform:\n    path: platform/bin\n";
+        std::fs::write(dir.path().join("v8project.local.yaml"), overlay).expect("overlay");
+
+        assert_schema_valid(&main_config_schema_json(), &primary);
+        assert_schema_valid(&local_config_schema_json(), overlay);
+
+        let config = load_config(config_path.to_str(), None).expect("load merged config");
+        assert!(config.tools.platform.strict);
+        assert_eq!(
+            config.tools.platform.path.as_deref(),
+            Some(
+                normalize_windows_verbatim_path(
+                    &std::fs::canonicalize(dir.path())
+                        .expect("canonical config dir")
+                        .join("platform/bin"),
+                )
+                .as_path()
+            )
+        );
     }
 
     #[test]
@@ -1355,6 +1468,14 @@ mod tests {
                 minimal_project_config_without_base_path()
             ),
             format!(
+                "{}tools:\n  client_mcp:\n    wait_ready_timeout_ms: 0\n",
+                minimal_project_config_without_base_path()
+            ),
+            format!(
+                "{}tools:\n  client_mcp:\n    wait_ready_timeout_ms: 86400001\n",
+                minimal_project_config_without_base_path()
+            ),
+            format!(
                 "{}tools:\n  edt_cli:\n    startup_timeout_ms: 0\n",
                 minimal_project_config_without_base_path()
             ),
@@ -1401,6 +1522,8 @@ mod tests {
 
         for overlay in [
             "tools:\n  client_mcp:\n    port: 0\n",
+            "tools:\n  client_mcp:\n    wait_ready_timeout_ms: 0\n",
+            "tools:\n  client_mcp:\n    wait_ready_timeout_ms: 86400001\n",
             "mcp:\n  http:\n    max_sessions: 0\n",
             "tests:\n  execution_timeout_seconds: 0\n",
             "tests:\n  yaxunit:\n    timeouts:\n      total_ms: 0\n",
@@ -1413,13 +1536,13 @@ mod tests {
     #[test]
     fn schemas_and_loader_accept_supported_runtime_sections() {
         let config = format!(
-            "{}execution_timeout: 300000\nbuild:\n  partialLoadThreshold: 20\ntools:\n  client_mcp:\n    port: 9874\n  edt_cli:\n    startup_timeout_ms: 300000\n    command_timeout_ms: 300000\nmcp:\n  http:\n    bind_address: '127.0.0.1:3000'\n    path: /mcp\n    stateful_sessions: true\n    max_sessions: 64\n    idle_ttl_secs: 900\n  execution:\n    max_concurrent_calls: 1\n    shutdown_grace_period_secs: 30\ntests:\n  execution_timeout_seconds: 300\n  yaxunit:\n    timeouts:\n      startup_ms: 300000\n      run_ms: 300000\n      total_ms: 300000\n  va:\n    fail_fast: false\n    timeouts:\n      startup_ms: 300000\n      run_ms: 300000\n      total_ms: 300000\n",
+            "{}execution_timeout: 300000\nbuild:\n  partialLoadThreshold: 20\ntools:\n  client_mcp:\n    port: 9874\n    wait_ready_timeout_ms: 300000\n  edt_cli:\n    startup_timeout_ms: 300000\n    command_timeout_ms: 300000\nmcp:\n  http:\n    bind_address: '127.0.0.1:3000'\n    path: /mcp\n    stateful_sessions: true\n    max_sessions: 64\n    idle_ttl_secs: 900\n  execution:\n    max_concurrent_calls: 1\n    shutdown_grace_period_secs: 30\ntests:\n  execution_timeout_seconds: 300\n  yaxunit:\n    timeouts:\n      startup_ms: 300000\n      run_ms: 300000\n      total_ms: 300000\n  va:\n    fail_fast: false\n    timeouts:\n      startup_ms: 300000\n      run_ms: 300000\n      total_ms: 300000\n",
             minimal_project_config_without_base_path()
         );
         assert_schema_valid(&main_config_schema_json(), &config);
         assert_config_loader_ok(&config);
 
-        let overlay = "workPath: local-work\ninfobase:\n  user: Admin\n  password: secret\ntools:\n  client_mcp:\n    port: 9874\nmcp:\n  http:\n    max_sessions: 64\n  execution:\n    max_concurrent_calls: 1\ntests:\n  execution_timeout_seconds: 300\n";
+        let overlay = "workPath: local-work\ninfobase:\n  user: Admin\n  password: secret\ntools:\n  client_mcp:\n    port: 9874\n    wait_ready_timeout_ms: 300000\nmcp:\n  http:\n    max_sessions: 64\n  execution:\n    max_concurrent_calls: 1\ntests:\n  execution_timeout_seconds: 300\n";
         assert_schema_valid(&local_config_schema_json(), overlay);
         assert_overlay_loader_ok(overlay);
     }

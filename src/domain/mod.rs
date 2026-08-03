@@ -2,6 +2,8 @@
 pub mod artifact;
 /// Artifact build/export domain models.
 pub mod artifacts;
+/// Bootstrap domain models.
+pub mod bootstrap;
 /// Build domain models.
 pub mod build;
 /// Config bootstrap domain models.
@@ -22,6 +24,8 @@ pub mod issue;
 pub mod launch;
 /// Artifact load/import domain models.
 pub mod load;
+/// Canonical selectors for partial dumps.
+pub mod partial_dump_selector;
 /// Shared runner models.
 pub mod runner;
 /// Source set domain models.

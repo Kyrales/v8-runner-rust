@@ -24,8 +24,35 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  verify:
+    name: Verify release ref
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout release ref
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Verify tag matches Cargo package version
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${{ github.event.inputs.tag || github.ref_name }}"
+          version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n 1)"
+          test -n "${version}"
+          test "${tag}" = "v${version}"
+
+      - name: Check formatting and tests
+        run: |
+          cargo fmt --all -- --check
+          cargo test --locked --all-targets --all-features
+
   build:
     name: Build ${{ matrix.artifact_name }}
+    needs: verify
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -98,6 +125,7 @@ jobs:
           mkdir -p "${package_dir}"
           cp "${binary_path}" "${package_dir}/"
           cp README.md "${package_dir}/"
+          cp LICENSE "${package_dir}/"
           cp -R examples "${package_dir}/examples"
 
           if [[ "${{ runner.os }}" != "Windows" ]]; then

@@ -21,6 +21,7 @@ CLI help, доверяйте текущему коду и затем синхр�
 | Сценарий | Поддерживаемые комбинации | Примечания |
 | --- | --- | --- |
 | `version` | Работает без существующего конфига | Печатает имя приложения и версию; с `--json-message` возвращает JSON envelope |
+| `bootstrap` | Работает без существующего конфига | Создаёт проект из существующей ИБ: config, local overlay, `.gitignore`, `src/configuration` |
 | `config init` | Работает без существующего конфига | Создаёт `v8project.yaml`, sibling `v8project.local.yaml`, `.gitignore` entry, autodetect-ит supported `source-set` и aggregate external roots |
 | `tools download <tool>` | CLI-only загрузка latest releases | Загружает выбранный YAxUnit, Vanessa Automation single или onec-client-mcp-devkit; обновляет local overlay для Vanessa/client MCP и при `yaxunit --sources` добавляет YAxUnit как `source-set` `tests` |
 | `init` | `format=DESIGNER` + `builder=DESIGNER` | Создаёт файловую ИБ через Designer; server connection остаётся manual prerequisite |
@@ -29,9 +30,10 @@ CLI help, доверяйте текущему коду и затем синхр�
 | `extensions` | `format=DESIGNER` или `format=EDT` | Обновляет свойства extension `source-set` |
 | `build` | `format=DESIGNER` + `builder=DESIGNER|IBCMD` | Выполняет incremental/full загрузку в ИБ |
 | `build` | `format=EDT` + `builder=DESIGNER|IBCMD` | Экспортирует изменённые EDT `source-set`, затем грузит generated Designer output |
-| `test` | Та же матрица, что и у `build` | Всегда сначала запускает `build` |
+| `test` | Та же матрица, что и у `build` | По умолчанию запускает `build` |
+| `test --no-build` | Подготовленная file/server ИБ; source-set и build tooling не требуются | Запускает выбранный test engine без build |
 | `dump` | `format=DESIGNER` + `builder=DESIGNER` | Полная, инкрементальная или object-scoped partial выгрузка |
-| `dump` | `format=DESIGNER` + `builder=IBCMD` | Полная и инкрементальная выгрузка; `partial` деградирует в incremental с warning |
+| `dump` | `format=DESIGNER` + `builder=IBCMD` | Полная и инкрементальная выгрузка; `partial` деградирует в incremental с warning; standalone-server state изолирован в `workPath/ibcmd-data` |
 | `dump` | `format=EDT` + `builder=DESIGNER|IBCMD` | Reverse sync из ИБ через internal Designer snapshot и EDT import |
 | `convert` | CLI-only repo-aware конвертация текущих `source-set` | Не использует `builder` и не требует ИБ |
 | `load` | `format=DESIGNER` + `builder=DESIGNER` | Загрузка `.cf` / `.cfe` артефактов в ИБ |
@@ -95,6 +97,20 @@ v8-runner config init [--force] [--output <FILE>] [--connection <CONNECTION>] [-
 - Для external roots создаёт aggregate `source-set` только при однородной классификации каталога.
 - Не пишет synthetic `CONFIGURATION`: отсутствие конфигурационного source-set это validation error.
 - Для `--builder IBCMD` найденные external roots считаются validation error.
+
+### `bootstrap`
+
+```bash
+v8-runner bootstrap --connection <CONNECTION> --platform-version <VERSION> [--project-dir <DIR>] [--source-dir <DIR>] [--user <USER>] [--password <PASSWORD>] [--platform-path <PATH>] [--force]
+```
+
+- Работает до загрузки `v8project.yaml` и предназначен для пустого project directory.
+- Создаёт `v8project.yaml`, schema-modelined `v8project.local.yaml`, `.gitignore` entry и
+  `source-set main` типа `CONFIGURATION`.
+- Выгружает основную конфигурацию из указанной ИБ в `src/configuration` через Designer full dump.
+- `--connection` не должен содержать embedded credentials; используйте `--user` и `--password`.
+  Эти значения пишутся только в `v8project.local.yaml`.
+- Не обнаруживает и не выгружает расширения автоматически.
 
 ### `init`
 
@@ -178,23 +194,27 @@ v8-runner build [--source-set <NAME>] [--full-rebuild]
 ### `test`
 
 ```bash
-v8-runner test yaxunit [--full] [--junit-output <PATH>] all
-v8-runner test yaxunit [--full] [--junit-output <PATH>] module <NAME>
-v8-runner test va
-v8-runner test va --feature login --filter-tag @smoke
+v8-runner test [--full] [--no-build] yaxunit [--junit-output <PATH>] all
+v8-runner test [--full] [--no-build] yaxunit [--junit-output <PATH>] module <NAME>
+v8-runner test [--no-build] va
+v8-runner test [--no-build] va --feature login --filter-tag @smoke
 ```
 
-- Всегда сначала запускает `build`.
+- По умолчанию сначала запускает `build`. `--no-build` отмечает build-step как `skipped` и
+  запускает тесты на подготовленной ИБ; для file connection до запуска платформы требуется
+  `<infobase>/1Cv8.1CD`, для server connection доступность подтверждается запуском test engine.
+- В `--no-build` source-set и build tooling не проходят filesystem/layout validation: исходники
+  configuration могут отсутствовать. Валидация ИБ, платформы и настроек test engine сохраняется.
+- `--no-build` является CLI-only контрактом; MCP `run_all_tests` сохраняет build-first поведение.
+- `--junit-output <PATH>` доступен только для YAxUnit и совместим с `--no-build`. Относительный
+  путь разрешается от каталога основного `v8project.yaml`; после валидации исходные байты JUnit
+  публикуются атомарно, в том числе при ненулевом результате тестов.
 - `test yaxunit module <NAME>` требует непустое имя модуля.
-- `--junit-output <PATH>` сохраняет оригинальный полный JUnit XML YAxUnit для команд `all` и
-  `module`; относительный путь разрешается от каталога основного `v8project.yaml`.
-- При корректном JUnit отчёт сохраняется и при падениях тестов. Параметр `--full` управляет только
-  представлением результата в выводе `v8-runner` и не изменяет экспортируемый XML.
-- Целевой файл публикуется атомарно. При запуске с `--junit-output` прежний отчёт удаляется заранее,
-  поэтому при отсутствии нового корректного JUnit устаревший файл не остаётся.
 - `test va` использует профиль из `tests.va.profile`; `--feature`, `--filter-tag`,
   `--ignore-tag` и `--scenario-filter` переопределяют соответствующие списки выбранного профиля
   только для текущего запуска.
+- Для функциональных `.feature`-сценариев и приемки используйте Vanessa Automation: CLI
+  `test va` или MCP `run_all_tests` с `runner=vanessa`, а не дефолтный YaXUnit-runner.
 - `--full` включает полный вывод успешных кейсов и расширенные stack traces.
 - `tests.*.timeouts.total_ms` остаётся активным пользовательским контрактом таймаутов.
 
@@ -203,7 +223,7 @@ v8-runner test va --feature login --filter-tag @smoke
 ```bash
 v8-runner syntax designer-config [FLAGS]
 v8-runner syntax designer-modules [FLAGS]
-v8-runner syntax edt [--project <SOURCE_SET>...] [--exception-file <PATH>]
+v8-runner syntax edt [--project <SOURCE_SET>...]
 ```
 
 `designer-config`:
@@ -221,10 +241,8 @@ v8-runner syntax edt [--project <SOURCE_SET>...] [--exception-file <PATH>]
 `edt`:
 
 - Только `builder=DESIGNER`, `format=EDT`.
-- Повторяемый `--project`; значение выбирается из `source-set[].name` в `v8project.yaml`.
-- Без `--project` использует все EDT source-set из конфига.
-- `--exception-file` читает legacy-файл исключений: каждая непустая строка исключает
-  совпавшую EDT issue после нормализации регистра, пробелов и пунктуации.
+- Повторяемый `--project` выбирает EDT source-set по его `name` в `v8project.yaml`.
+- Без `--project` использует все поддерживаемые EDT source-set из конфига.
 
 ## Файлы и артефакты
 
@@ -235,6 +253,14 @@ v8-runner dump --mode <full|incremental|partial> [--source-set <NAME>] [--extens
 ```
 
 - `partial` требует хотя бы один `--object`.
+- Канонический ввод селектора — `TYPE:NAME` (например, `Catalog:Items`); для
+  совместимости принимается и `TYPE.NAME`. Переданный селектор сохраняется в JSON как
+  `data.selectors[*].requested`, а в списке Designer и как
+  `data.selectors[*].normalized` используется нормализованный `TYPE.NAME`.
+- До запуска платформы CLI валидирует синтаксис селектора: непустые `TYPE` и `NAME`,
+  ровно один разделитель `:` или `.`, без управляющих символов. В `builder=DESIGNER`
+  существование metadata root type проверяет Designer; `builder=IBCMD` не использует object list,
+  потому что деградирует в incremental.
 - `builder=DESIGNER` поддерживает true object-scoped partial.
 - `builder=IBCMD` не умеет object-scoped partial; запрос деградирует в incremental с warning.
 - `format=EDT` использует internal Designer snapshot под `workPath/designer/<sourceSetName>`,
@@ -284,7 +310,7 @@ v8-runner artifacts --output <TARGET> [--source-set <NAME>] [--extension <NAME>]
 
 ```bash
 v8-runner launch <designer|thin|thick|ordinary> [FLAGS]
-v8-runner launch mcp [va] [--mode <thin|thick|ordinary>] [FLAGS]
+v8-runner launch mcp [va] [--mode <thin|thick|ordinary>] [--wait-ready] [FLAGS]
 ```
 
 - Для обычного запуска (`designer`/`thin`/`thick`/`ordinary`) режим задаётся позиционным
@@ -298,19 +324,39 @@ v8-runner launch mcp [va] [--mode <thin|thick|ordinary>] [FLAGS]
   и добавляет `/RunModeOrdinaryApplication`.
 - `launch mcp va` дополнительно запускает Vanessa Automation из `tools.va` через `/Execute <epf>`
   и передаёт `VAParams=<runtime params>` без `StartFeaturePlayer`.
-- Любой управляемый runner payload для ключа `/C` передаётся отдельным аргументом
-  после `/C`: это касается `launch --c`, `launch mcp`, `test yaxunit` и `test va`.
+- Для интерактивной отладки и написания функциональных `.feature`-сценариев используйте
+  `launch mcp va --wait-ready`; голый `launch mcp` поднимает client MCP без Vanessa tools.
+- Любой управляемый runner payload для ключа `/C` передаётся как значение отдельного
+  аргумента `/C`: это касается `launch --c`, `launch mcp`, `test yaxunit` и `test va`.
+  На уровне process argv это два элемента: `/C` и `<payload>`; shell-подобная запись
+  `/C <payload>` в документации не означает один склеенный аргумент.
 - Для `mcp` доступны typed flags `--mcp-config <FILE>` и `--mcp-port <PORT>`;
   итоговый payload: `/C runMcp[=<FILE>][;mcpPort=<PORT>]`.
 - Если `--mcp-port` не указан, используется `tools.client_mcp.port` из `v8project.yaml`.
+- `--wait-ready` ждёт `http://127.0.0.1:<port>/mcp`, выполняет MCP `initialize`,
+  `notifications/initialized` и `tools/list`, а в JSON-результате возвращает `mcp_readiness`
+  со списком tools. Для `launch mcp va --wait-ready` дополнительно проверяется наличие
+  Vanessa tools: `load_features`, `open_feature_file`, `run_scenario`, `get_test_results`,
+  `connect_test_client`.
+- Timeout ожидания задаётся `tools.client_mcp.wait_ready_timeout_ms`; если он не задан,
+  используется общий `execution_timeout`. Фактическое ожидание всё равно ограничено общим
+  command deadline, поэтому для более длинного ожидания нужно увеличить и `execution_timeout`.
 - Если настроено `tools.client_mcp.extension`, `launch mcp` не устанавливает и не обновляет его;
   подготовка выполняется командой `v8-runner build`.
 - `--mcp-config` не должен содержать `;`, потому что `/C` payload разделяется точкой с запятой.
 - `launch mcp` не принимает `--c` и `--execute`, потому что `/C` управляется командой.
+- Для локальной проверки external EPF используйте только `launch thin --execute <file.epf> --output <out> --stderr-output <stderr> --wait-for-exit --wait-timeout-ms <ms>`: это opt-in bounded wait с JSON-полями PID, execute path, exit code/timeout и заявленными artifact paths. Timeout считается CLI failure и возвращает error envelope с payload после остановки группы процесса. Ненулевой exit code external EPF возвращается в JSON как наблюдаемый результат; вызывающий runtime gate обязан проверить `external_epf_wait.exit_code`. Обычный `launch` остаётся асинхронным. В wait-режиме запрещены raw `/C`, `/Execute` и `/Out` (включая configured additional launch keys).
 - `launch mcp` принимает общие launch flags `--use-privileged-mode`, `--output` и `--raw-key`, но
   `--raw-key` не может задавать `/C`, `/Execute` или `/Out`.
 - Для `designer`/`thin`/`thick`/`ordinary` дополнительные typed flags: `--c`, `--execute`, `--use-privileged-mode`, `--output`,
   повторяемый `--raw-key`.
+- Platform discovery использует `tools.platform.path` как explicit-only границу: если path задан,
+  default roots и `PATH` не используются. `tools.platform.version` без path фильтрует обычный
+  поиск; вместе с path проверяется только при `tools.platform.strict: true`, а при
+  `strict: false` игнорируется.
+- JSON-результат именно `launch` содержит legacy `binary` и `platform_resolution` с canonical
+  `path`, `version` (или `null`), `source` (`explicit`, `default-root` или `path`) и
+  `installation_root`. Это не общий metadata contract для остальных команд.
 
 ### `mcp serve`
 
@@ -324,16 +370,20 @@ v8-runner mcp serve http
 - Business failures возвращаются внутри tool result payload.
 - Transport/internal failures остаются MCP-native.
 - Все tool calls разделяют `mcp.execution.max_concurrent_calls`.
+- Если пользователь просит функциональные `.feature`-сценарии, приемку или Vanessa Automation,
+  агент должен выбирать `run_all_tests` с `runner=vanessa` либо `launch_app` с
+  `utilityType=mcp`, `mcpScenario=va` и `waitReady=true`; bare `utilityType=mcp` не загружает
+  Vanessa.
 
 ### Опубликованные MCP tools
 
 | Инструмент | Основные поля запроса | Примечания |
 | --- | --- | --- |
 | `build_project` | `fullRebuild`, `sourceSet` | `fullRebuild=false`; `sourceSet` omitted значит все source-set |
-| `run_all_tests` | `full` | Компактный вывод по умолчанию |
+| `run_all_tests` | `full`, `runner`, `profile`, `feature`, `filterTag`, `ignoreTag`, `scenarioFilter` | Компактный вывод по умолчанию; `runner=vanessa` запускает Vanessa Automation с выбранным профилем и фильтрами |
 | `run_module_tests` | `moduleName`, `full` | Отклоняет пустой `moduleName` |
 | `dump_config` | `mode`, `extension`, `objects` | Пустой `mode` нормализуется в `INCREMENTAL` |
-| `launch_app` | `utilityType` | Поддерживает алиасы `designer`, `thin`, `thick` и русские алиасы |
+| `launch_app` | `utilityType`, `mcpScenario`, `mode`, `mcpConfig`, `mcpPort`, `waitReady` | `utilityType=mcp` запускает client MCP; `mcpScenario=va` загружает Vanessa Automation; остальные MCP-поля доступны только для `utilityType=mcp` |
 | `check_syntax_edt` | `projectName` | Пустой `projectName` значит “все EDT-проекты” |
 | `check_syntax_designer_config` | Designer-config flags в `camelCase` | Область расширений нормализуется в service layer |
 | `check_syntax_designer_modules` | Designer-modules flags в `camelCase` | Область расширений нормализуется в service layer |
@@ -345,6 +395,7 @@ v8-runner mcp serve http
 - `workPath/hash-storages/`: persisted change-detection state.
 - `workPath/edt-workspace/`: общий EDT workspace для `init`.
 - `workPath/convert/edt-workspace/`: отдельный EDT workspace для `convert`.
+- `workPath/ibcmd-data/`: изолированный standalone-server data directory для IBCMD dump; это runtime state `v8-runner`, его можно удалить, когда нет активных CLI/MCP команд проекта.
 - `workPath/logs/platform/`: platform logs.
 - `workPath/logs/mcp/actions.log`: MCP action log.
 - `workPath/temp/`: временные run artifacts и диагностические файлы.

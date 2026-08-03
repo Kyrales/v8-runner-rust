@@ -166,6 +166,17 @@ impl AppConfig {
     pub fn execution_timeout_duration(&self) -> Duration {
         Duration::from_millis(self.execution_timeout.max(1))
     }
+
+    /// Returns the client MCP wait-ready timeout as a duration.
+    pub fn client_mcp_wait_ready_timeout_duration(&self) -> Duration {
+        Duration::from_millis(
+            self.tools
+                .client_mcp
+                .wait_ready_timeout_ms
+                .unwrap_or(self.execution_timeout)
+                .max(1),
+        )
+    }
 }
 
 fn default_format() -> SourceFormat {
@@ -281,8 +292,11 @@ impl Default for McpConfig {
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 #[serde(default, rename_all = "snake_case")]
 pub struct ClientMcpToolConfig {
-    /// Default port passed to onec-client-mcp-devkit via `/C` payload.
+    /// Default port passed to onec-client-mcp-devkit via `/C ...;mcpPort=<PORT>`.
     pub port: Option<u16>,
+
+    /// Optional wait-ready timeout in milliseconds. Defaults to `execution_timeout` when unset.
+    pub wait_ready_timeout_ms: Option<u64>,
 
     /// Optional tool extension prepared by `build` for client MCP launches.
     pub extension: Option<ToolExtensionConfig>,
@@ -539,6 +553,15 @@ pub struct PlatformToolConfig {
     /// directory, or to a platform root that contains versioned subdirectories.
     pub path: Option<PathBuf>,
 
+    /// Enforce `version` for a configured `path`.
+    ///
+    /// `path` is always an explicit-only search boundary. When `strict` is `false`,
+    /// `version` is ignored for that path; when `strict` is `true`, the executable
+    /// found inside the path must match `version`. Without `path`, `version` is
+    /// applied to normal default-root and PATH discovery.
+    #[serde(default)]
+    pub strict: bool,
+
     /// Platform version requirement in `major.minor`, `major.minor.patch`, or
     /// `major.minor.patch.build` format.
     ///
@@ -636,4 +659,19 @@ const fn default_edt_cli_startup_timeout_ms() -> u64 {
 
 const fn default_edt_cli_command_timeout_ms() -> u64 {
     300_000
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PlatformToolConfig;
+
+    #[test]
+    fn platform_strict_defaults_to_false_and_deserializes_true() {
+        let default = PlatformToolConfig::default();
+        assert!(!default.strict);
+
+        let configured: PlatformToolConfig =
+            serde_yaml::from_str("strict: true\n").expect("deserialize strict platform config");
+        assert!(configured.strict);
+    }
 }

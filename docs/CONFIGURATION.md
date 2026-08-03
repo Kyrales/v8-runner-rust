@@ -151,6 +151,7 @@ tools:
     epf_path: /path/to/vanessa.epf
   platform:
     path: /opt/1cv8/x86_64
+    strict: true
     version: 8.3.27.1859
   enterprise:
     additional-launch-keys:
@@ -247,6 +248,10 @@ tests:
   va:
     params_path: /home/user/project/.local/va-params.json
 ```
+
+Путь внешней публикации JUnit не хранится в YAML: задавайте его для конкретного запуска через
+`test yaxunit --junit-output <PATH>`. Относительный путь считается от каталога основного
+`v8project.yaml`; опция может использоваться вместе с `test --no-build`.
 
 ## Обязательный контракт
 
@@ -405,6 +410,9 @@ runtime identity и не добавляет отдельное поле конф
 
 `v8-runner test va --feature`, `--filter-tag`, `--ignore-tag` и `--scenario-filter`
 переопределяют соответствующие списки выбранного профиля только для текущего CLI-запуска.
+Для функциональных `.feature`-сценариев и приемки агенты должны использовать `test va` или MCP
+`run_all_tests` с `runner=vanessa`; дефолтный MCP `run_all_tests` без `runner=vanessa` запускает
+YaXUnit.
 По умолчанию `fail_fast: false`.
 Для `СписокТеговОтбор` и `СписокТеговИсключение` в runtime `VAParams` runner удаляет один
 ведущий `@`, если он указан в `profiles.<name>.filter_tags`, `profiles.<name>.ignore_tags`,
@@ -445,10 +453,22 @@ runtime identity и не добавляет отдельное поле конф
 Поддержанные поля:
 
 - `port`, опциональный порт клиентского MCP-сервера onec-client-mcp-devkit.
+- `wait_ready_timeout_ms`, опциональный timeout для `launch mcp --wait-ready` и MCP
+  `launch_app.waitReady` в миллисекундах; если не задан, используется `execution_timeout`.
+  Эффективное ожидание дополнительно ограничено общим command deadline, поэтому значение больше
+  `execution_timeout` требует увеличить и глобальный `execution_timeout`.
 - `extension`, опциональное tool extension для клиентского MCP-сервера.
 
-`launch mcp` передаёт это значение как `mcpPort` внутри payload после `/C`
+`launch mcp` передаёт это значение как `mcpPort` внутри payload аргумента `/C runMcp...`
 если CLI не указал `--mcp-port`.
+`launch mcp --wait-ready` и MCP `launch_app` с `waitReady=true` используют этот порт для
+проверки `http://127.0.0.1:<port>/mcp`, если порт не передан явно.
+Ожидание готовности ограничивается `tools.client_mcp.wait_ready_timeout_ms`; без этой настройки
+используется общий `execution_timeout`. Общий command deadline остаётся верхней границей для
+readiness probing.
+Для Vanessa Automation MCP используйте `launch mcp va --wait-ready` или MCP `launch_app` с
+`utilityType=mcp`, `mcpScenario=va` и `waitReady=true`; bare `launch mcp` проверяет только client
+MCP endpoint и не гарантирует наличие Vanessa tools.
 
 `extension` поддерживает:
 
@@ -493,6 +513,26 @@ source-set build, а `launch mcp` и `launch mcp va` расширение не �
 - на каталог `bin`;
 - на корень установки с версиями.
 
+Относительный путь нормализуется относительно каталога primary `v8project.yaml`.
+Если `path` задан, поиск platform utilities ограничивается этим путём и не переходит к default
+roots или `PATH`, независимо от `strict`.
+
+### `tools.platform.strict`
+
+- Тип: boolean
+- Обязателен: нет
+- По умолчанию: `false`
+
+`strict` управляет проверкой `tools.platform.version` внутри configured `path`. Сам `path` всегда
+является explicit-only границей. При `strict: false` значение `version` для configured `path`
+игнорируется. При `strict: true` найденная внутри `path` utility обязана соответствовать
+`version`; неизвестная версия или несовпадение версии завершают команду ошибкой.
+
+Если `path` указывает на конкретный executable, поиск sibling utilities (`1cv8`, `1cv8c`,
+`ibcmd`) в `strict: false` идёт рядом с указанным файлом, а в `strict: true` — рядом с его
+canonical installation. При `strict: true` первая найденная platform utility фиксирует один
+canonical installation root; последующие `1cv8`, `1cv8c` и `ibcmd` выбираются только из этого root.
+
 ### `tools.platform.version`
 
 - Тип: строка
@@ -504,6 +544,17 @@ source-set build, а `launch mcp` и `launch mcp va` расширение не �
 - `8.3.27.1859`: требуется точное совпадение;
 - `8.3.20`: выбирается максимальная найденная сборка `8.3.20.*`;
 - `8.3`: выбирается максимальная найденная версия `8.3.*.*`.
+
+Матрица поведения:
+
+| Конфигурация | Поведение |
+| --- | --- |
+| `version`, без `path` | Поиск по default roots и `PATH` с проверкой версии. |
+| `path + version`, `strict: false` | Поиск только по `path`; `version` игнорируется. |
+| `path + version`, `strict: true` | Поиск только по `path`; версия обязана совпасть. |
+| `path`, без `version` | Поиск только по `path`; проверки версии нет. |
+| Без `path` и без `version` | Обычный поиск по default roots и `PATH`. |
+| `strict: true`, без `path` | Не создаёт boundary; с `version` работает как version-only поиск, без `version` не меняет обычный поиск. |
 
 ## `tools.enterprise`
 

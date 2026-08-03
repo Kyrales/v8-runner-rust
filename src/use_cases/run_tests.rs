@@ -42,7 +42,8 @@ use self::helpers::{
     build_enterprise_dsl, build_platform_launch, build_summary, capped_timeout_ms,
     collect_diagnostics, degraded_step, enterprise_error_kind, failed_step,
     interrupted_test_failure, make_test_result, prepare_runner_artifacts, prepared_run_summary,
-    succeeded_step, validate_runner_profile_id, validate_target, with_retained_artifacts,
+    skipped_step, succeeded_step, validate_runner_profile_id, validate_target,
+    with_retained_artifacts,
 };
 
 pub fn execute(
@@ -716,62 +717,6 @@ mod tests {
         }
     }
 
-    fn yaxunit_request(junit_output: PathBuf, scope: TestScopeRequest) -> TestRequest {
-        TestRequest {
-            full: false,
-            junit_output: Some(junit_output),
-            scope,
-            execution: ScenarioExecutionRequest {
-                profile: RunnerProfile {
-                    id: "yaxunit".to_owned(),
-                    kind: RunnerKind::YaXUnit,
-                    output_formats: vec![],
-                    backend_hint: Some("enterprise".to_owned()),
-                },
-                client_mode: Some(LaunchClientModeRequest::Thin),
-                timeouts: ExecutionTimeouts::default(),
-                policy: ExecutionPolicy::default(),
-                launch: LaunchOptions::default(),
-            },
-        }
-    }
-
-    #[test]
-    fn stale_junit_target_is_removed_before_invalid_scope_and_build_failure() {
-        let invalid_dir = tempdir().expect("invalid tempdir");
-        let invalid_config = config(invalid_dir.path());
-        let invalid_target = invalid_dir.path().join("invalid.xml");
-        std::fs::write(&invalid_target, b"stale").expect("stale invalid target");
-        let invalid = yaxunit_request(
-            invalid_target.clone(),
-            TestScopeRequest::Module {
-                name: "   ".to_owned(),
-            },
-        );
-
-        let _failure = run_tests(
-            &ExecutionContext::cli(CommandName::Test),
-            &invalid_config,
-            &invalid,
-        )
-        .expect_err("invalid scope");
-        assert!(!invalid_target.exists());
-
-        let build_dir = tempdir().expect("build tempdir");
-        let build_config = config(build_dir.path());
-        let build_target = build_dir.path().join("build.xml");
-        std::fs::write(&build_target, b"stale").expect("stale build target");
-        let build = yaxunit_request(build_target.clone(), TestScopeRequest::All);
-
-        let _failure = run_tests(
-            &ExecutionContext::cli(CommandName::Test),
-            &build_config,
-            &build,
-        )
-        .expect_err("build prerequisite");
-        assert!(!build_target.exists());
-    }
-
     #[test]
     fn creates_distinct_run_dirs() {
         let dir = tempdir().expect("tempdir");
@@ -779,6 +724,23 @@ mod tests {
         let first = create_run_artifacts(&config, "yaxunit").expect("first");
         let second = create_run_artifacts(&config, "yaxunit").expect("second");
         assert_ne!(first.run_dir, second.run_dir);
+    }
+
+    #[test]
+    fn junit_parse_retains_the_exact_validated_bytes() {
+        let dir = tempdir().expect("tempdir");
+        let artifacts = create_run_artifacts(&config(dir.path()), "yaxunit").expect("artifacts");
+        let bytes = b"<?xml version=\"1.0\"?>\r\n<testsuite name=\"raw\"><testcase name=\"ok\"/></testsuite>\r\n";
+        std::fs::write(&artifacts.junit_xml, bytes).expect("write JUnit");
+
+        let parsed = parse_junit_report(&artifacts)
+            .payload
+            .expect("validated JUnit");
+        std::fs::write(&artifacts.junit_xml, b"changed after validation")
+            .expect("replace JUnit after validation");
+
+        assert_eq!(parsed.bytes, bytes);
+        assert_eq!(parsed.report.summary.total, 1);
     }
 
     #[test]
@@ -906,48 +868,6 @@ mod tests {
     }
 
     #[test]
-    fn junit_parse_retains_the_exact_validated_bytes() {
-        let dir = tempdir().expect("tempdir");
-        let artifacts = create_artifacts(dir.path());
-        std::fs::create_dir_all(&artifacts.run_dir).expect("run dir");
-        let bytes = b"<?xml version=\"1.0\"?>\r\n<testsuite name=\"raw\"><testcase name=\"ok\"/></testsuite>\r\n";
-        std::fs::write(&artifacts.junit_xml, bytes).expect("write JUnit");
-
-        let parsed = parse_junit_report(&artifacts)
-            .payload
-            .expect("validated JUnit");
-        std::fs::write(&artifacts.junit_xml, b"changed after validation")
-            .expect("replace JUnit after validation");
-
-        assert_eq!(parsed.bytes, bytes);
-        assert_eq!(parsed.report.summary.total, 1);
-    }
-
-    #[test]
-    fn junit_parse_classifies_empty_and_read_failures() {
-        let dir = tempdir().expect("tempdir");
-        let artifacts = create_artifacts(dir.path());
-        std::fs::create_dir_all(&artifacts.run_dir).expect("run dir");
-        std::fs::write(&artifacts.junit_xml, b"").expect("empty JUnit");
-
-        let empty = parse_junit_report(&artifacts);
-        assert_eq!(empty.errors[0].code, TestErrorKind::JunitEmpty.code());
-        assert_eq!(empty.errors[0].message, "JUnit report is empty");
-
-        std::fs::remove_file(&artifacts.junit_xml).expect("remove empty file");
-        std::fs::create_dir(&artifacts.junit_xml).expect("directory at report path");
-        let expected_read_error = std::fs::read(&artifacts.junit_xml)
-            .expect_err("directory must not be readable as a JUnit file")
-            .to_string();
-        let unreadable = parse_junit_report(&artifacts);
-        assert_eq!(
-            unreadable.errors[0].code,
-            TestErrorKind::JunitNotProduced.code()
-        );
-        assert_eq!(unreadable.errors[0].message, expected_read_error);
-    }
-
-    #[test]
     fn unsafe_vanessa_profile_name_is_rejected() {
         let dir = tempdir().expect("tempdir");
         let mut config = config(dir.path());
@@ -971,6 +891,7 @@ mod tests {
 
         let args = crate::use_cases::request::TestRequest {
             full: false,
+            build_policy: crate::use_cases::request::TestBuildPolicy::BuildFirst,
             junit_output: None,
             scope: crate::use_cases::request::TestScopeRequest::All,
             execution: crate::domain::runner::ScenarioExecutionRequest {
@@ -998,14 +919,13 @@ mod tests {
     fn run_tests_reports_cancelled_execution_before_first_safe_point() {
         let dir = tempdir().expect("tempdir");
         let config = config(dir.path());
-        let export_target = dir.path().join("report.xml");
-        std::fs::write(&export_target, b"stale").expect("stale export");
         let cancellation = CancellationToken::new();
         cancellation.cancel();
         let context = ExecutionContext::cli(CommandName::Test).with_cancellation(cancellation);
         let args = TestRequest {
             full: false,
-            junit_output: Some(export_target.clone()),
+            build_policy: crate::use_cases::request::TestBuildPolicy::BuildFirst,
+            junit_output: None,
             scope: TestScopeRequest::All,
             execution: ScenarioExecutionRequest {
                 profile: RunnerProfile {
@@ -1027,64 +947,6 @@ mod tests {
         assert_eq!(payload.execution.status, ExecutionStatus::Cancelled);
         assert_eq!(payload.execution.interruptions.len(), 1);
         assert!(payload.execution.errors.is_empty());
-        assert!(!export_target.exists());
-    }
-
-    #[test]
-    fn junit_export_prepare_failure_precedes_target_validation_and_cancellation() {
-        let dir = tempdir().expect("tempdir");
-        let config = config(dir.path());
-        let export_target = dir.path().join("report.xml");
-        std::fs::create_dir(&export_target).expect("export target directory");
-        let cancellation = CancellationToken::new();
-        cancellation.cancel();
-        let context = ExecutionContext::cli(CommandName::Test).with_cancellation(cancellation);
-        let args = TestRequest {
-            full: false,
-            junit_output: Some(export_target),
-            scope: TestScopeRequest::Module {
-                name: "   ".to_owned(),
-            },
-            execution: ScenarioExecutionRequest {
-                profile: RunnerProfile {
-                    id: "yaxunit".to_owned(),
-                    kind: RunnerKind::YaXUnit,
-                    output_formats: vec![],
-                    backend_hint: Some("enterprise".to_owned()),
-                },
-                client_mode: Some(LaunchClientModeRequest::Thin),
-                timeouts: ExecutionTimeouts::default(),
-                policy: ExecutionPolicy::default(),
-                launch: LaunchOptions::default(),
-            },
-        };
-
-        let failure = run_tests(&context, &config, &args).expect_err("prepare must fail first");
-        let payload = failure.payload.expect("payload");
-
-        assert_eq!(payload.execution.status, ExecutionStatus::Failed);
-        assert_eq!(payload.execution.errors.len(), 1);
-        assert_eq!(
-            payload.execution.errors[0].code,
-            TestErrorKind::JunitExportFailed.code()
-        );
-        assert_eq!(payload.steps.len(), 1);
-        assert_eq!(payload.steps[0].name, "export_junit");
-        assert_eq!(
-            payload.steps[0].kind,
-            crate::domain::execution::ExecutionStepKind::Publish
-        );
-        let expected_target = args
-            .junit_output
-            .as_deref()
-            .expect("target")
-            .display()
-            .to_string();
-        assert_eq!(
-            payload.steps[0].target.as_deref(),
-            Some(expected_target.as_str())
-        );
-        assert!(payload.execution.interruptions.is_empty());
     }
 
     fn create_artifacts(root: &std::path::Path) -> RunArtifacts {

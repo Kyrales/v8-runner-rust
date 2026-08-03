@@ -2,16 +2,19 @@ use std::path::Path;
 use std::time::Duration;
 
 use crate::config::model::AppConfig;
-use crate::domain::launch::{LaunchMode, LaunchResult};
-use crate::domain::runner::LaunchOptions;
+use crate::domain::launch::{
+    ExternalEpfWaitResult, LaunchMode, LaunchResult, PlatformResolution, PlatformResolutionSource,
+};
+use crate::domain::runner::{launch_key_alias_matches, LaunchOptions};
 use crate::platform::enterprise::{
     build_launch_args, normalize_launch_payload_path, LaunchClientMode,
 };
-use crate::platform::locator::UtilityType;
-use crate::platform::process::ProcessRequest;
+use crate::platform::locator::{ResolutionSource, UtilityLocation, UtilityType, UtilityVersion};
+use crate::platform::process::{ManagedSpawnMode, ProcessRequest};
 use crate::platform::utilities::PlatformUtilities;
 use crate::support::error::AppError;
-use crate::use_cases::context::{ExecutionContext, ExecutionInterruption};
+use crate::use_cases::client_mcp_readiness;
+use crate::use_cases::context::{ExecutionContext, ExecutionInterruption, InterruptionSafetyClass};
 use crate::use_cases::launch_keys::vanessa_enterprise_launch_keys;
 use crate::use_cases::progress::log_live_stage;
 use crate::use_cases::request::{
@@ -67,40 +70,295 @@ pub fn execute(
 
     let launch = effective_launch_options(config, args)
         .map_err(|error| UseCaseFailure::without_payload(error))?;
+    let external_epf_wait =
+        external_epf_wait_plan(config, args, &launch).map_err(UseCaseFailure::without_payload)?;
+    let readiness_url = client_mcp_readiness_url(config, args)
+        .map_err(|error| UseCaseFailure::without_payload(error))?;
     let additional_launch_keys = effective_enterprise_launch_keys(config, args, &launch);
     let mut utilities = PlatformUtilities::from_config(config);
     let location = utilities
         .locate(utility)
         .map_err(|error| UseCaseFailure::without_payload(AppError::from(error)))?;
-    let process_args = build_launch_args(
-        client_mode,
-        &config.v8_connection(),
-        &additional_launch_keys,
-        &launch,
-    );
+    let platform_resolution = platform_resolution(&location);
+    let process_request = ProcessRequest {
+        program: location.path.clone(),
+        args: build_launch_args(
+            client_mode,
+            &config.v8_connection(),
+            &additional_launch_keys,
+            &launch,
+        ),
+        workdir: None,
+        stdout_log_path: None,
+        stderr_log_path: external_epf_wait
+            .as_ref()
+            .map(|plan| plan.stderr_path.clone()),
+        startup_probe: external_epf_wait
+            .as_ref()
+            .map(|_| None)
+            .unwrap_or(Some(LAUNCH_STARTUP_PROBE)),
+    };
 
     debug!("[Запуск] Приложение: {}", mode_label(args.target));
     log_live_stage("launch: start", "[Launch] starting client process");
-    let spawned = utilities
-        .runner_for(utility)
-        .spawn(&ProcessRequest {
-            program: location.path.clone(),
-            args: process_args,
-            workdir: None,
-            stdout_log_path: None,
-            stderr_log_path: None,
-            startup_probe: Some(LAUNCH_STARTUP_PROBE),
-        })
+    let runner = utilities.runner_for(utility);
+
+    if let Some(plan) = external_epf_wait {
+        let managed = runner
+            .spawn_managed(&process_request, ManagedSpawnMode::Wait)
+            .map_err(|error| UseCaseFailure::without_payload(AppError::from(error)))?;
+        let pid = managed.pid();
+        let outcome = match managed.wait_for_exit(&context.process_policy(
+            InterruptionSafetyClass::GracefulThenKill,
+            Some(Duration::from_millis(plan.timeout_ms)),
+        )) {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                let message = error.to_string();
+                let result = LaunchResult {
+                    ok: false,
+                    mode,
+                    pid: Some(pid),
+                    binary: location.path,
+                    platform_resolution,
+                    message: Some(message.clone()),
+                    mcp_readiness: None,
+                    external_epf_wait: Some(ExternalEpfWaitResult {
+                        pid,
+                        execute_path: plan.execute_path,
+                        exit_code: None,
+                        timed_out: false,
+                        output_path: plan.output_path,
+                        stderr_path: plan.stderr_path.display().to_string(),
+                    }),
+                };
+                return Err(UseCaseFailure::with_payload(AppError::from(error), result));
+            }
+        };
+        let message = if outcome.timed_out {
+            format!(
+                "External EPF client timed out after {}ms and was terminated",
+                plan.timeout_ms
+            )
+        } else {
+            format!(
+                "External EPF client exited with status {}",
+                outcome.exit_code.unwrap_or(-1)
+            )
+        };
+        let result = LaunchResult {
+            ok: !outcome.timed_out,
+            mode,
+            pid: Some(pid),
+            binary: location.path,
+            platform_resolution,
+            message: Some(message.clone()),
+            mcp_readiness: None,
+            external_epf_wait: Some(ExternalEpfWaitResult {
+                pid,
+                execute_path: plan.execute_path,
+                exit_code: outcome.exit_code,
+                timed_out: outcome.timed_out,
+                output_path: plan.output_path,
+                stderr_path: plan.stderr_path.display().to_string(),
+            }),
+        };
+        if outcome.timed_out {
+            return Err(UseCaseFailure::with_payload(
+                AppError::Runtime(message),
+                result,
+            ));
+        }
+        return Ok(result);
+    }
+
+    if let Some(url) = readiness_url {
+        let managed = runner
+            .spawn_managed(&process_request, ManagedSpawnMode::Detached)
+            .map_err(|error| UseCaseFailure::without_payload(AppError::from(error)))?;
+        let pid = managed.pid();
+        let binary = managed.binary().clone();
+        let mut result = LaunchResult {
+            ok: true,
+            mode,
+            pid: Some(pid),
+            binary: binary.clone(),
+            platform_resolution: platform_resolution.clone(),
+            message: Some(launch_message(config, args, &binary, pid)),
+            mcp_readiness: None,
+            external_epf_wait: None,
+        };
+        let required_tools = required_mcp_tools(args);
+        match client_mcp_readiness::wait_for_readiness(
+            context,
+            &url,
+            required_tools,
+            config.client_mcp_wait_ready_timeout_duration(),
+        ) {
+            Ok(readiness) => {
+                result.mcp_readiness = Some(readiness);
+                let _ = managed.detach();
+                return Ok(result);
+            }
+            Err(readiness) => {
+                let message = readiness
+                    .message
+                    .clone()
+                    .unwrap_or_else(|| "MCP endpoint did not become ready".to_owned());
+                let termination = managed.terminate();
+                result.ok = false;
+                result.message = Some(match &termination {
+                    Ok(()) => format!(
+                        "Launched {} via {} (pid {}) but {message}; process terminated",
+                        mode_label(args.target),
+                        binary.display(),
+                        pid
+                    ),
+                    Err(error) => format!(
+                        "Launched {} via {} (pid {}) but {message}; process cleanup failed: {error}",
+                        mode_label(args.target),
+                        binary.display(),
+                        pid
+                    ),
+                });
+                result.mcp_readiness = Some(readiness);
+                if let Err(error) = termination {
+                    return Err(UseCaseFailure::with_payload(AppError::from(error), result));
+                }
+                return Err(UseCaseFailure::with_payload(
+                    AppError::Runtime(message),
+                    result,
+                ));
+            }
+        }
+    }
+
+    let spawned = runner
+        .spawn(&process_request)
         .map_err(|error| UseCaseFailure::without_payload(AppError::from(error)))?;
 
-    let result = LaunchResult {
+    Ok(LaunchResult {
         ok: true,
         mode,
         pid: Some(spawned.pid),
         binary: spawned.binary.clone(),
+        platform_resolution,
         message: Some(launch_message(config, args, &spawned.binary, spawned.pid)),
+        mcp_readiness: None,
+        external_epf_wait: None,
+    })
+}
+
+fn platform_resolution(location: &UtilityLocation) -> PlatformResolution {
+    PlatformResolution {
+        path: location.path.clone(),
+        version: location.version.as_ref().map(utility_version_string),
+        source: match location.source {
+            ResolutionSource::Explicit => PlatformResolutionSource::Explicit,
+            ResolutionSource::DefaultRoot => PlatformResolutionSource::DefaultRoot,
+            ResolutionSource::Path => PlatformResolutionSource::Path,
+        },
+        installation_root: location.installation_root.clone(),
+    }
+}
+
+fn utility_version_string(version: &UtilityVersion) -> String {
+    match version {
+        UtilityVersion::Platform(version) => version.to_string(),
+        UtilityVersion::Edt(version) => version
+            .parts
+            .iter()
+            .map(u32::to_string)
+            .collect::<Vec<_>>()
+            .join("."),
+    }
+}
+
+struct ExternalEpfWaitPlan {
+    timeout_ms: u64,
+    execute_path: String,
+    output_path: String,
+    stderr_path: std::path::PathBuf,
+}
+
+fn external_epf_wait_plan(
+    config: &AppConfig,
+    args: &LaunchArgs,
+    launch: &LaunchOptions,
+) -> Result<Option<ExternalEpfWaitPlan>, AppError> {
+    let Some(wait) = &launch.external_epf_wait else {
+        return Ok(None);
     };
-    Ok(result)
+    if !matches!(
+        args.target,
+        LaunchTargetRequest::Enterprise(EnterpriseLaunchTarget::ThinClient)
+    ) {
+        return Err(AppError::Validation(
+            "--wait-for-exit is supported only for `launch thin`".to_owned(),
+        ));
+    }
+    let execute = launch.execute.as_deref().ok_or_else(|| {
+        AppError::Validation(
+            "--wait-for-exit requires an explicit --execute <external.epf>".to_owned(),
+        )
+    })?;
+    if !execute.to_ascii_lowercase().ends_with(".epf") {
+        return Err(AppError::Validation(
+            "--wait-for-exit requires --execute to name an external .epf file".to_owned(),
+        ));
+    }
+    let output_path = launch
+        .out
+        .clone()
+        .ok_or_else(|| AppError::Validation("--wait-for-exit requires --output".to_owned()))?;
+    if launch
+        .raw_args
+        .iter()
+        .chain(config.tools.enterprise.additional_launch_keys.iter())
+        .any(|raw| is_wait_reserved_raw_key(raw))
+    {
+        return Err(AppError::Validation(
+            "--wait-for-exit does not support raw /C, /Execute, or /Out launch keys".to_owned(),
+        ));
+    }
+    Ok(Some(ExternalEpfWaitPlan {
+        timeout_ms: wait.timeout_ms,
+        execute_path: normalize_launch_payload_path(Path::new(execute)),
+        output_path,
+        stderr_path: std::path::PathBuf::from(&wait.stderr_output),
+    }))
+}
+
+fn is_wait_reserved_raw_key(raw: &str) -> bool {
+    ["c", "execute", "out"]
+        .iter()
+        .any(|key| launch_key_alias_matches(raw, key))
+}
+
+fn client_mcp_readiness_url(
+    config: &AppConfig,
+    args: &LaunchArgs,
+) -> Result<Option<String>, AppError> {
+    let Some(client_mcp) = args.client_mcp.as_ref() else {
+        return Ok(None);
+    };
+    if !client_mcp.wait_ready {
+        return Ok(None);
+    }
+    let Some(port) = client_mcp.port.or(config.tools.client_mcp.port) else {
+        return Err(AppError::Validation(
+            "launch mcp --wait-ready requires --mcp-port or tools.client_mcp.port".to_owned(),
+        ));
+    };
+    Ok(Some(client_mcp_readiness::endpoint_url(port)))
+}
+
+fn required_mcp_tools(args: &LaunchArgs) -> &'static [&'static str] {
+    if is_client_mcp_va_launch(args) {
+        client_mcp_readiness::VANESSA_MCP_TOOLS
+    } else {
+        &[]
+    }
 }
 
 fn launch_message(config: &AppConfig, args: &LaunchArgs, binary: &Path, pid: u32) -> String {
@@ -234,18 +492,20 @@ fn build_client_mcp_payload(
 
 #[cfg(test)]
 mod tests {
-    use super::execute;
+    use super::{execute, platform_resolution};
     use crate::config::model::{
         AppConfig, BuildConfig, BuilderBackend, EnterpriseToolConfig, PlatformToolConfig,
         SourceFormat, SourceSetConfig, SourceSetPurpose, TestsConfig, ToolExtensionArtifactConfig,
         ToolExtensionConfig, ToolExtensionInput, ToolsConfig,
     };
+    use crate::platform::locator::{ResolutionSource, UtilityLocation, UtilityType};
     use crate::use_cases::context::{CommandName, ExecutionContext};
     use crate::use_cases::request::{
         ClientMcpMode, ClientMcpOptionsRequest, LaunchRequest, LaunchTargetRequest,
     };
     use std::fs;
     use std::path::{Path, PathBuf};
+    use std::time::{Duration, Instant};
     use tempfile::tempdir;
 
     #[cfg(unix)]
@@ -266,6 +526,42 @@ mod tests {
         make_executable(path);
     }
 
+    fn read_args_log(path: &Path) -> String {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut previous = None;
+        while Instant::now() < deadline {
+            if let Ok(args) = fs::read_to_string(path) {
+                if previous.as_ref().is_some_and(|last| last == &args) {
+                    return args;
+                }
+                previous = (!args.is_empty()).then_some(args);
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        fs::read_to_string(path).expect("args log")
+    }
+
+    #[test]
+    fn launch_resolution_serializes_all_sources_and_unknown_version_as_null() {
+        for (source, expected_source) in [
+            (ResolutionSource::Explicit, "explicit"),
+            (ResolutionSource::DefaultRoot, "default-root"),
+            (ResolutionSource::Path, "path"),
+        ] {
+            let resolution = platform_resolution(&UtilityLocation {
+                utility: UtilityType::V8,
+                path: PathBuf::from("/opt/1cv8/bin/1cv8"),
+                version: None,
+                source,
+                installation_root: PathBuf::from("/opt/1cv8"),
+            });
+            let json = serde_json::to_value(resolution).expect("resolution JSON");
+
+            assert_eq!(json["source"], expected_source);
+            assert!(json["version"].is_null());
+        }
+    }
+
     fn sample_config(base_path: &Path, work_path: &Path, platform_path: &Path) -> AppConfig {
         AppConfig {
             base_path: base_path.to_path_buf(),
@@ -283,6 +579,7 @@ mod tests {
             tools: ToolsConfig {
                 platform: PlatformToolConfig {
                     path: Some(platform_path.to_path_buf()),
+                    strict: false,
                     version: None,
                 },
                 enterprise: EnterpriseToolConfig::default(),
@@ -320,7 +617,7 @@ mod tests {
         .expect("launch succeeds");
 
         assert!(result.ok);
-        let args = fs::read_to_string(args_log).expect("args log");
+        let args = read_args_log(&args_log);
         assert!(args.contains("ENTERPRISE"));
         assert!(args.contains("/TESTMANAGER"));
     }
@@ -351,7 +648,7 @@ mod tests {
         .expect("launch succeeds");
 
         assert!(result.ok);
-        let args = fs::read_to_string(args_log).expect("args log");
+        let args = read_args_log(&args_log);
         assert!(args.contains("DESIGNER"));
         assert!(args.contains("/DisableStartupDialogs"));
         assert!(!args.contains("/TESTMANAGER"));
@@ -382,7 +679,7 @@ mod tests {
         .expect("launch succeeds");
 
         assert!(result.ok);
-        let args = fs::read_to_string(args_log).expect("args log");
+        let args = read_args_log(&args_log);
         assert!(args.contains("ENTERPRISE"));
         assert!(args.contains("/RunModeOrdinaryApplication"));
         assert!(args.contains("/DisableStartupDialogs"));
@@ -425,9 +722,9 @@ mod tests {
             .as_deref()
             .expect("message")
             .contains("v8-runner build"));
-        let args = fs::read_to_string(args_log).expect("args log");
+        let args = read_args_log(&args_log);
         assert!(args.contains("ENTERPRISE"));
-        assert!(args.contains("/C\nrunMcp;mcpPort=9874\n"));
+        assert!(args.contains("/C\nrunMcp;mcpPort=9874"));
         assert!(!args.contains("/LoadCfg"));
         assert!(!args.contains("-Extension"));
     }
@@ -473,6 +770,36 @@ mod tests {
                 .to_string()
                 .contains("client_mcp options are supported only for launch mcp"),
             "{unexpected_options:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn wait_ready_requires_effective_client_mcp_port_before_locating_platform() {
+        let dir = tempdir().expect("tempdir");
+        let platform_dir = dir.path().join("missing-platform");
+        let config = sample_config(dir.path(), dir.path(), &platform_dir);
+
+        let error = execute(
+            &ExecutionContext::cli(CommandName::Launch),
+            &config,
+            &LaunchRequest {
+                target: LaunchTargetRequest::client_mcp_with_mode(ClientMcpMode::Thin),
+                launch: Default::default(),
+                client_mcp: Some(ClientMcpOptionsRequest {
+                    wait_ready: true,
+                    ..ClientMcpOptionsRequest::default()
+                }),
+            },
+        )
+        .expect_err("wait-ready without port should fail before platform lookup");
+
+        assert!(
+            error
+                .error
+                .to_string()
+                .contains("launch mcp --wait-ready requires --mcp-port or tools.client_mcp.port"),
+            "{error:?}"
         );
     }
 }

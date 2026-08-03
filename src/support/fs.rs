@@ -253,18 +253,23 @@ fn lock_holder_is_live(_pid: u32) -> bool {
 
 pub fn best_effort_fsync_dir(path: &Path) -> std::io::Result<()> {
     #[cfg(unix)]
-    unsafe {
+    {
         let dir = File::open(path)?;
-        let rc = libc::fsync(std::os::fd::AsRawFd::as_raw_fd(&dir));
-        if rc == 0 {
-            return Ok(());
-        }
 
-        let error = std::io::Error::last_os_error();
-        if error.raw_os_error() == Some(libc::EINVAL) {
-            return Ok(());
+        // SAFETY: `dir` owns a valid file descriptor for the duration of the call,
+        // and `fsync` does not retain it. The return code is checked below.
+        unsafe {
+            let rc = libc::fsync(std::os::fd::AsRawFd::as_raw_fd(&dir));
+            if rc == 0 {
+                return Ok(());
+            }
+
+            let error = std::io::Error::last_os_error();
+            if error.raw_os_error() == Some(libc::EINVAL) {
+                return Ok(());
+            }
+            Err(error)
         }
-        return Err(error);
     }
 
     #[cfg(not(unix))]
@@ -412,11 +417,13 @@ pub fn replace_dir_atomically(
     if !target_dir.exists() {
         std::fs::rename(staging_dir, target_dir)?;
         let fsync_result = best_effort_fsync_dir(parent);
-        let _ = remove_path_if_exists(&stage_metadata_path);
+        let cleanup_warning = cleanup_path_warning(
+            &stage_metadata_path,
+            "stage metadata",
+            &remove_path_if_exists,
+        );
         fsync_result?;
-        return Ok(ReplaceDirOutcome {
-            cleanup_warning: None,
-        });
+        return Ok(ReplaceDirOutcome { cleanup_warning });
     }
 
     std::fs::rename(target_dir, &backup_dir)?;
@@ -467,9 +474,14 @@ pub fn replace_dir_atomically(
         ));
     }
 
-    let _ = remove_path_if_exists(&stage_metadata_path);
-
     let mut warnings = Vec::new();
+    if let Some(warning) = cleanup_path_warning(
+        &stage_metadata_path,
+        "stage metadata",
+        &remove_path_if_exists,
+    ) {
+        warnings.push(warning);
+    }
     if let Err(error) = remove_path_if_exists(&backup_dir) {
         warnings.push(format!(
             "failed to remove backup dir '{}': {error}",
@@ -502,7 +514,7 @@ pub fn replace_file_atomically(
         target_file,
         run_id,
         target_identity,
-        &|path| remove_path_if_exists(path),
+        &remove_path_if_exists,
     )
 }
 
@@ -633,6 +645,8 @@ fn with_rollback_context(
 
 #[cfg(test)]
 mod tests {
+    #[cfg(windows)]
+    use super::replace_dir_atomically;
     use super::{
         acquire_advisory_lock, advisory_lock_owner_id, publish_file_atomically,
         publish_file_atomically_impl, read_advisory_lock_metadata, remove_path_if_exists,
@@ -874,6 +888,33 @@ mod tests {
         let warning = outcome.cleanup_warning.expect("cleanup warning");
         assert!(warning.contains(&stage_metadata.display().to_string()));
         assert!(warning.contains("cleanup denied"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_publishes_staged_directory_to_new_target() {
+        let dir = tempdir().expect("tempdir");
+        let staging_dir = dir.path().join(".stage");
+        let target_dir = dir.path().join("target");
+        fs::create_dir(&staging_dir).expect("staging dir");
+        fs::write(staging_dir.join("payload.txt"), "payload").expect("payload");
+        assert!(!target_dir.exists());
+
+        let outcome = replace_dir_atomically(
+            &staging_dir,
+            &target_dir,
+            "test-run",
+            "test-target",
+            ".backup",
+        )
+        .expect("publish staged directory");
+
+        assert_eq!(outcome.cleanup_warning, None);
+        assert!(!staging_dir.exists());
+        assert_eq!(
+            fs::read_to_string(target_dir.join("payload.txt")).expect("target payload"),
+            "payload"
+        );
     }
 
     #[cfg(windows)]
