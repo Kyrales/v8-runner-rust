@@ -9,6 +9,43 @@ use support::{temp_workspace, v8_runner_command};
 const V8_EXTERNAL_OBJECTS_NATURE: &str = "com._1c.g5.v8.dt.core.V8ExternalObjectsNature";
 const LOCAL_CONFIG_SCHEMA_MODEL_LINE: &str = "# yaml-language-server: $schema=https://raw.githubusercontent.com/IngvarConsulting/v8-runner-rust/master/docs/schemas/v8project.local.schema.json";
 
+#[cfg(windows)]
+#[test]
+fn config_init_windows_path_is_readable_and_relative_sources_use_slashes() {
+    let dir = temp_workspace();
+    let source = dir.path().join("src").join("cf");
+    fs::create_dir_all(&source).expect("source");
+    fs::write(source.join("Configuration.xml"), "<Configuration/>").expect("xml");
+
+    let output = v8_runner_command()
+        .current_dir(dir.path())
+        .args([
+            "--json-message",
+            "init",
+            "--output",
+            "config/v8project.yaml",
+        ])
+        .output()
+        .expect("run init");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let payload: Value = serde_json::from_slice(&output.stdout).expect("json");
+    for field in ["path", "local_path", "gitignore_path"] {
+        assert!(!payload["data"][field]
+            .as_str()
+            .expect("path")
+            .starts_with(r"\\?\"));
+    }
+    let yaml =
+        fs::read_to_string(dir.path().join("config").join("v8project.yaml")).expect("config");
+    assert!(yaml.contains("../src/cf"), "{yaml}");
+    assert!(!yaml.contains(r"..\src\cf"), "{yaml}");
+}
+
 fn copy_dir_all(src: &Path, dst: &Path) {
     fs::create_dir_all(dst).expect("create dst");
     for entry in fs::read_dir(src).expect("read dir") {
@@ -141,6 +178,13 @@ fn config_init_uses_json_envelope_and_output_override() {
     // команда вправе печатать не то, что за ней объявлено.
     assert_data_matches_its_command_form(&payload, "`config init --output`");
     let canonical_dir = fs::canonicalize(dir.path()).expect("canonical project dir");
+    #[cfg(windows)]
+    let canonical_dir = PathBuf::from(
+        canonical_dir
+            .display()
+            .to_string()
+            .trim_start_matches(r"\\?\"),
+    );
     assert_eq!(
         payload["data"]["local_path"],
         canonical_dir

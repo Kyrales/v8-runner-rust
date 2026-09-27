@@ -225,6 +225,8 @@ v8-runner init [--force] [--output <FILE>] [--connection <CONNECTION>] [--format
 
 - Не требует существующего `v8project.yaml`.
 - Пишет результат в текущий каталог или в `--output`.
+- На Windows пути файлов в ответе показаны без служебного префикса `\\?\`, а относительные
+  пути `source-set` в созданном YAML записаны с `/`.
 - Рядом с primary config создает/обновляет пустой `v8project.local.yaml` со schema modeline и
   добавляет `v8project.local.yaml` в `.gitignore`, если подходящий pattern еще не указан.
 - Не использует глобальный `--config` как shortcut output path.

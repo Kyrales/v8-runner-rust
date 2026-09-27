@@ -7,7 +7,9 @@ use crate::config::schema::main_config_schema_url;
 use crate::domain::config_init::{ConfigInitResult, ConfigInitSourceSet};
 use crate::support::edt_project::{self, EdtProjectKind};
 use crate::support::error::AppError;
-use crate::support::path::{is_safe_path_segment, nearest_existing_canonical_path};
+use crate::support::path::{
+    is_safe_path_segment, nearest_existing_canonical_path, normalize_windows_verbatim_path,
+};
 use crate::support::source_descriptor::{
     self, SourceDescriptorParseError, SourceDescriptorPurpose, SourceSetRootScanError,
 };
@@ -129,9 +131,15 @@ pub fn execute(request: &ConfigInitRequest) -> Result<ConfigInitResult, AppError
 
     Ok(ConfigInitResult {
         ok: true,
-        path: output_path.display().to_string(),
-        local_path: local_path.display().to_string(),
-        gitignore_path: gitignore_path.display().to_string(),
+        path: normalize_windows_verbatim_path(&output_path)
+            .display()
+            .to_string(),
+        local_path: normalize_windows_verbatim_path(&local_path)
+            .display()
+            .to_string(),
+        gitignore_path: normalize_windows_verbatim_path(&gitignore_path)
+            .display()
+            .to_string(),
         format: format.as_yaml().to_owned(),
         platform_version,
         source_sets,
@@ -1003,7 +1011,7 @@ fn relative_path(root: &Path, path: &Path) -> String {
         .ok()
         .filter(|relative| !relative.as_os_str().is_empty())
     {
-        return relative.display().to_string();
+        return relative.display().to_string().replace('\\', "/");
     }
 
     let root_components = normalized_components(root);
@@ -1025,7 +1033,7 @@ fn relative_path(root: &Path, path: &Path) -> String {
     if relative.as_os_str().is_empty() {
         ".".to_owned()
     } else {
-        relative.display().to_string()
+        relative.display().to_string().replace('\\', "/")
     }
 }
 
