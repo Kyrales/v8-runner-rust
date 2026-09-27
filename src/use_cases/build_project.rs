@@ -337,7 +337,7 @@ fn execute_edt_export_step(
         ))
     })?;
     let export_result = dsl
-        .export_project(&project_name, designer_context.path())
+        .export_project_path(edt_context.path(), designer_context.path())
         .map_err(AppError::from)?;
     let export_log_path = write_edt_export_log(
         config,
@@ -849,7 +849,7 @@ mod tests {
             })
             .unwrap_or_default();
         let body = format!(
-            "args=\"$*\"\nproject=\"\"\ntarget=\"\"\nprev=\"\"\nfor arg in \"$@\"; do\n  if [ \"$prev\" = \"--project-name\" ]; then project=\"$arg\"; fi\n  if [ \"$prev\" = \"--configuration-files\" ]; then target=\"$arg\"; fi\n  prev=\"$arg\"\ndone\nif [ -n \"$target\" ]; then mkdir -p \"$target\"; printf 'exported from %s\\n' \"$project\" > \"$target/exported.txt\"; printf '<Configuration />\\n' > \"$target/Configuration.xml\"; fi\nprintf '%s\\n' \"$args\" >> \"{}\"\n{}\nexit 0",
+            "args=\"$*\"\nproject=\"\"\ntarget=\"\"\nprev=\"\"\nfor arg in \"$@\"; do\n  if [ \"$prev\" = \"--project-name\" ] || [ \"$prev\" = \"--project\" ]; then project=\"$arg\"; fi\n  if [ \"$prev\" = \"--configuration-files\" ]; then target=\"$arg\"; fi\n  prev=\"$arg\"\ndone\nif [ -n \"$target\" ]; then mkdir -p \"$target\"; printf 'exported from %s\\n' \"$project\" > \"$target/exported.txt\"; printf '<Configuration />\\n' > \"$target/Configuration.xml\"; fi\nprintf '%s\\n' \"$args\" >> \"{}\"\n{}\nexit 0",
             calls_log.display(),
             pattern_branch
         );
@@ -1776,11 +1776,7 @@ mod tests {
             tool_extension_storage_generation(&config, &tool_source, "client_mcp"),
             1
         );
-        write_edt_script(
-            &edt,
-            &edt_calls,
-            Some("export --project-name client-mcp-project"),
-        );
+        write_edt_script(&edt, &edt_calls, Some("export --project "));
 
         fs::write(
             tool_source
@@ -2058,7 +2054,9 @@ mod tests {
         assert!(result.steps.iter().any(|step| {
             step.source_set == "main" && matches!(step.mode, BuildMode::Full) && step.ok
         }));
-        assert!(edt_calls_text.contains("export --project-name main"));
+        assert!(
+            edt_calls_text.contains(&format!("export --project {}", base.join("main").display()))
+        );
         assert!(designer_calls_text.contains("/LoadConfigFromFiles"));
         assert!(!designer_calls_text.contains("-partial"));
         assert!(designer_calls_text.contains(
@@ -2081,7 +2079,7 @@ mod tests {
             .all(|step| matches!(step.mode, BuildMode::Skipped) && step.ok));
         assert_eq!(
             rerun_edt_calls
-                .matches("export --project-name main")
+                .matches(&format!("export --project {}", base.join("main").display()))
                 .count(),
             1
         );
@@ -2124,7 +2122,9 @@ mod tests {
         assert!(result.steps.iter().any(|step| {
             step.source_set == "main" && matches!(step.mode, BuildMode::Full) && step.ok
         }));
-        assert!(edt_calls_text.contains("export --project-name main"));
+        assert!(
+            edt_calls_text.contains(&format!("export --project {}", base.join("main").display()))
+        );
         assert!(ibcmd_calls_text.contains("infobase --db-path /tmp/ib config import"));
         assert!(!ibcmd_calls_text.contains("config import files"));
         assert!(!ibcmd_calls_text.contains("--partial"));
@@ -2142,7 +2142,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn edt_build_prefers_project_name_from_dot_project_file() {
+    fn edt_export_selected_source_set_path() {
         let dir = tempdir().expect("tempdir");
         let base = dir.path().join("base");
         let work = dir.path().join("work");
@@ -2154,7 +2154,7 @@ mod tests {
         fs::create_dir_all(base.join("exts").join("client-mcp")).expect("ext dir");
         fs::write(
             base.join("exts").join("client-mcp").join(".project"),
-            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<projectDescription>\n  <name>client_mcp</name>\n</projectDescription>\n",
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<projectDescription>\n  <name>edt_extension_project</name>\n</projectDescription>\n",
         )
         .expect("write .project");
         fs::write(
@@ -2166,11 +2166,18 @@ mod tests {
         write_edt_script(&edt_script, &edt_calls, None);
 
         let mut config = build_edt_config(&base, &work, &dir.path().join("platform"), &edt_script);
-        config.source_sets = vec![SourceSetConfig {
-            name: "client_mcp".to_owned(),
-            purpose: SourceSetPurpose::Extension,
-            path: PathBuf::from("exts/client-mcp"),
-        }];
+        config.source_sets = vec![
+            SourceSetConfig {
+                name: "main".to_owned(),
+                purpose: SourceSetPurpose::Configuration,
+                path: PathBuf::from("main"),
+            },
+            SourceSetConfig {
+                name: "client_mcp".to_owned(),
+                purpose: SourceSetPurpose::Extension,
+                path: PathBuf::from("exts/client-mcp"),
+            },
+        ];
         prime_edt_snapshots(&config);
         fs::write(
             base.join("exts").join("client-mcp").join("Module.bsl"),
@@ -2182,8 +2189,18 @@ mod tests {
         let edt_calls_text = fs::read_to_string(&edt_calls).expect("edt calls");
 
         assert!(result.ok);
-        assert!(edt_calls_text.contains("export --project-name client_mcp"));
-        assert!(!edt_calls_text.contains("export --project-name client-mcp"));
+        assert!(result
+            .steps
+            .iter()
+            .any(|step| { step.source_set == "main" && matches!(step.mode, BuildMode::Skipped) }));
+        assert!(edt_calls_text.contains(&format!(
+            "export --project {}",
+            base.join("exts/client-mcp").display()
+        )));
+        assert!(
+            !edt_calls_text.contains(&format!("export --project {}", base.join("main").display()))
+        );
+        assert!(!edt_calls_text.contains("export --project-name"));
     }
 
     #[cfg(unix)]
@@ -2279,7 +2296,10 @@ mod tests {
         assert!(!result.steps.iter().any(|step| {
             step.source_set == "client_mcp" && matches!(step.mode, BuildMode::Partial { .. })
         }));
-        assert!(edt_calls_text.contains("export --project-name client_mcp"));
+        assert!(edt_calls_text.contains(&format!(
+            "export --project {}",
+            base.join("exts/client-mcp").display()
+        )));
         assert!(designer_calls_text.contains("/LoadConfigFromFiles"));
         assert!(designer_calls_text.contains("-Extension client_mcp"));
         assert!(!designer_calls_text.contains("-partial"));
@@ -2353,7 +2373,10 @@ mod tests {
         assert!(!result.steps.iter().any(|step| {
             step.source_set == "client_mcp" && matches!(step.mode, BuildMode::Partial { .. })
         }));
-        assert!(edt_calls_text.contains("export --project-name client_mcp"));
+        assert!(edt_calls_text.contains(&format!(
+            "export --project {}",
+            base.join("exts/client-mcp").display()
+        )));
         assert!(ibcmd_calls_text.contains("config import"));
         assert!(ibcmd_calls_text.contains("--extension client_mcp"));
         assert!(!ibcmd_calls_text.contains("config import files"));
@@ -2465,7 +2488,7 @@ mod tests {
         assert!(result.ok);
         assert_eq!(edt_calls_text.matches("START").count(), 1);
         assert_eq!(edt_calls_text.matches("EXIT").count(), 1);
-        assert_eq!(edt_calls_text.matches("export --project-name").count(), 2);
+        assert_eq!(edt_calls_text.matches("export --project ").count(), 2);
     }
 
     #[cfg(unix)]
@@ -2514,7 +2537,9 @@ mod tests {
             step.source_set == "main" && matches!(step.mode, BuildMode::Partial { .. }) && step.ok
         }));
         assert_eq!(
-            edt_calls_text.matches("export --project-name main").count(),
+            edt_calls_text
+                .matches(&format!("export --project {}", base.join("main").display()))
+                .count(),
             1
         );
         assert_eq!(
@@ -2543,7 +2568,7 @@ mod tests {
         let edt_calls = dir.path().join("edt-calls.log");
         create_source_tree(&base);
         write_designer_script(&platform_script, &designer_calls, None);
-        write_edt_script(&edt_script, &edt_calls, Some("export --project-name"));
+        write_edt_script(&edt_script, &edt_calls, Some("export --project "));
         let config = build_edt_config(&base, &work, &dir.path().join("platform"), &edt_script);
         prime_edt_snapshots(&config);
 
