@@ -43,7 +43,7 @@ pub(crate) fn prepare_test_launch(
         .ok_or_else(|| AppError::Runtime("Vanessa params JSON must be an object".to_owned()))?;
     apply_workspace_root_overlay(object, &config.base_path);
     apply_profile_overlay(object, profile, va.fail_fast);
-    apply_test_overlay(object, artifacts);
+    apply_test_overlay(object, artifacts)?;
     write_params_file(&runtime_params_path, &payload)
         .map_err(|error| AppError::Runtime(format!("failed to write Vanessa params: {error}")))?;
 
@@ -214,7 +214,18 @@ fn apply_workspace_root_overlay(object: &mut Map<String, Value>, base_path: &Pat
     );
 }
 
-fn apply_test_overlay(object: &mut Map<String, Value>, artifacts: VanessaTestArtifacts<'_>) {
+fn apply_test_overlay(
+    object: &mut Map<String, Value>,
+    artifacts: VanessaTestArtifacts<'_>,
+) -> Result<(), AppError> {
+    if object
+        .get("ОтчетJUnit")
+        .is_some_and(|value| !value.is_object())
+    {
+        return Err(AppError::Validation(
+            "Vanessa params field 'ОтчетJUnit' must be an object".to_owned(),
+        ));
+    }
     object.insert("ВыполнитьСценарии".to_owned(), Value::Bool(true));
     object.insert("ЗавершитьРаботуСистемы".to_owned(), Value::Bool(true));
     object.insert(
@@ -230,11 +241,22 @@ fn apply_test_overlay(object: &mut Map<String, Value>, artifacts: VanessaTestArt
         "КаталогВыгрузкиJUnit".to_owned(),
         Value::String(artifacts.junit_dir.display().to_string()),
     );
+    let report = object
+        .entry("ОтчетJUnit".to_owned())
+        .or_insert_with(|| Value::Object(Map::new()));
+    let report = report.as_object_mut().ok_or_else(|| {
+        AppError::Validation("Vanessa params field 'ОтчетJUnit' must be an object".to_owned())
+    })?;
+    report.insert(
+        "КаталогВыгрузкиJUnit".to_owned(),
+        Value::String(artifacts.junit_dir.display().to_string()),
+    );
     apply_logging_overlay(
         object,
         artifacts.runner_log,
         &artifacts.run_dir.join("va-status.log"),
     );
+    Ok(())
 }
 
 fn apply_logging_overlay(
@@ -339,4 +361,47 @@ fn set_file_permissions(path: &Path) -> std::io::Result<()> {
     #[cfg(not(unix))]
     let _ = path;
     Ok(())
+}
+
+#[cfg(test)]
+mod nested_junit_tests {
+    use super::{apply_test_overlay, VanessaTestArtifacts};
+    use serde_json::{json, Map, Value};
+    use std::path::Path;
+
+    fn apply(params: Value) -> Result<Value, crate::support::error::AppError> {
+        let mut params = params.as_object().expect("object").clone();
+        apply_test_overlay(
+            &mut params,
+            VanessaTestArtifacts {
+                run_dir: Path::new("run"),
+                junit_dir: Path::new("run/junit"),
+                runner_log: Path::new("run/runner.log"),
+            },
+        )?;
+        Ok(Value::Object(params))
+    }
+
+    #[test]
+    fn va_nested_junit_creates_node_and_preserves_other_fields() {
+        let result =
+            apply(json!({"ОтчетJUnit":{"existing":42},"unrelated":true})).expect("overlay");
+        assert_eq!(result["ОтчетJUnit"]["existing"], 42);
+        assert_eq!(
+            result["ОтчетJUnit"]["КаталогВыгрузкиJUnit"],
+            result["КаталогВыгрузкиJUnit"]
+        );
+        assert_eq!(result["unrelated"], true);
+        let missing = apply(Value::Object(Map::new())).expect("overlay");
+        assert_eq!(
+            missing["ОтчетJUnit"]["КаталогВыгрузкиJUnit"],
+            missing["КаталогВыгрузкиJUnit"]
+        );
+    }
+
+    #[test]
+    fn va_nested_junit_rejects_wrong_node_type() {
+        let error = apply(json!({"ОтчетJUnit":"not an object"})).expect_err("must reject");
+        assert!(error.to_string().contains("ОтчетJUnit"));
+    }
 }

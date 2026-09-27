@@ -422,6 +422,9 @@ v8-runner test [--no-push] va --feature login --filter-tag @smoke
 - `test va` использует профиль из `tests.va.profile`; `--feature`, `--filter-tag`,
   `--ignore-tag` и `--scenario-filter` переопределяют соответствующие списки выбранного профиля
   только для текущего запуска.
+- Для JUnit-отчёта Vanessa путь текущего прогона записывается в оба параметра шаблона:
+  `КаталогВыгрузкиJUnit` и `ОтчетJUnit.КаталогВыгрузкиJUnit`. Остальные поля `ОтчетJUnit`
+  сохраняются; если он не объект, запуск отказывает с именем поля.
 - Для функциональных `.feature`-сценариев и приемки используйте Vanessa Automation: CLI
   `test va` или MCP `run_all_tests` с `runner=vanessa`, а не дефолтный YaXUnit-runner.
 - `--full` включает полный вывод успешных кейсов и расширенные stack traces.

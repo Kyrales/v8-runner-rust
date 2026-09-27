@@ -41,6 +41,10 @@ When driving tests through the MCP `run_all_tests` tool, pass `runner: "vanessa"
 
 `tests.va.fail_fast` defaults to `false`.
 
+For `test va`, the runtime params set both `КаталогВыгрузкиJUnit` and
+`ОтчетJUnit.КаталогВыгрузкиJUnit` to this run's JUnit directory. A template
+with `ОтчетJUnit` as a non-object is rejected; other fields in that object are preserved.
+
 When setting `tests.va.profiles.<name>.filter_tags` or `ignore_tags`, or passing `--filter-tag` / `--ignore-tag`, a leading `@` is accepted for user convenience but the generated `СписокТеговОтбор` and `СписокТеговИсключение` in runtime `VAParams` must be written without that leading `@`.
 
 ## VA Debugging And Scenario Authoring
