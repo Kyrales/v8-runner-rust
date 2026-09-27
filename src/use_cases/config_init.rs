@@ -1011,7 +1011,7 @@ fn relative_path(root: &Path, path: &Path) -> String {
         .ok()
         .filter(|relative| !relative.as_os_str().is_empty())
     {
-        return relative.display().to_string().replace('\\', "/");
+        return render_relative_path(relative);
     }
 
     let root_components = normalized_components(root);
@@ -1033,7 +1033,19 @@ fn relative_path(root: &Path, path: &Path) -> String {
     if relative.as_os_str().is_empty() {
         ".".to_owned()
     } else {
-        relative.display().to_string().replace('\\', "/")
+        render_relative_path(&relative)
+    }
+}
+
+fn render_relative_path(path: &Path) -> String {
+    let rendered = path.display().to_string();
+    #[cfg(windows)]
+    {
+        rendered.replace('\\', "/")
+    }
+    #[cfg(not(windows))]
+    {
+        rendered
     }
 }
 
@@ -1181,14 +1193,24 @@ fn escape_yaml(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        discover_sources, execute, ConfigFormatRequest, ConfigInitRequest, DeclaredOrigin,
-        OriginKey, SourcePurpose,
+        discover_sources, execute, relative_path, ConfigFormatRequest, ConfigInitRequest,
+        DeclaredOrigin, OriginKey, SourcePurpose,
     };
     use crate::config::loader::load_config;
     use crate::config::model::InfobaseSelector;
     use std::path::Path;
     use std::process::Command;
     use tempfile::tempdir;
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_relative_path_preserves_literal_backslash_in_filename() {
+        let root = Path::new("/project");
+        assert_eq!(
+            relative_path(root, &root.join("src").join("c\\f")),
+            "src/c\\f"
+        );
+    }
 
     fn write_file(path: &Path, contents: &str) {
         if let Some(parent) = path.parent() {
