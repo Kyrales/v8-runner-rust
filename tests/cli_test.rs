@@ -975,6 +975,10 @@ fn test_va_builds_vanessa_command_and_overlay() {
         .as_str()
         .expect("КаталогВыгрузкиJUnit")
         .contains("/junit"));
+    assert_eq!(
+        params["ОтчетJUnit"]["КаталогВыгрузкиJUnit"],
+        params["КаталогВыгрузкиJUnit"]
+    );
     assert_eq!(params["ДелатьЛогВыполненияСценариевВТекстовыйФайл"], true);
     assert_eq!(params["ВыводитьВЛогВыполнениеШагов"], true);
     assert_eq!(params["ПодробныйЛогВыполненияСценариев"], 1);
@@ -1003,6 +1007,32 @@ fn test_va_builds_vanessa_command_and_overlay() {
         payload["data"]["report"]["extracted_errors"][0],
         "Ошибка VA из текстового лога"
     );
+}
+
+#[test]
+fn test_va_rejects_malformed_nested_junit_before_enterprise_launch() {
+    let (dir, config_path, _build_calls, test_calls, _captured_params) =
+        setup_va_project(JUNIT_SMOKE_REPORT_FIXTURE, &[]);
+    fs::write(
+        dir.path().join("cfg").join("va-base.json"),
+        r#"{"ОтчетJUnit":"invalid"}"#,
+    )
+    .expect("params template");
+
+    let output = v8_runner_command()
+        .args([
+            "--config",
+            &config_path.display().to_string(),
+            "--json-message",
+            "test",
+            "va",
+        ])
+        .output()
+        .expect("run");
+
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stdout).contains("ОтчетJUnit"));
+    assert!(!test_calls.exists(), "Enterprise test client was launched");
 }
 
 #[test]
