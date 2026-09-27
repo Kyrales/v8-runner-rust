@@ -11,6 +11,8 @@
 - `arc42/`: подробное описание архитектуры и набор рисков. Оно рассказывает,
   как устроено, и ничего не обещает.
 - Открытые задачи ведутся в GitHub issues; сводный план по целевой модели — issue #233.
+- Текущий дизайн переноса пользовательских поправок с `develop` на ветку Ингвара —
+  [`docs/superpowers/specs/2026-09-27-fork-corrections-on-ingvar-design.md`](../docs/superpowers/specs/2026-09-27-fork-corrections-on-ingvar-design.md).
 
 История правил — в Git. Замеры на живой платформе 1С лежат в
 [`references/1c/`](../references/1c/README.md).
