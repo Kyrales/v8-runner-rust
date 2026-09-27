@@ -106,7 +106,7 @@ target.write_text(text, encoding="utf-8")
 PY
 
     grep -Eq '^format:[[:space:]]*DESIGNER[[:space:]]*$' "$CONFIG_PATH" || die "Generated config must keep format: DESIGNER"
-    grep -Eq '^builder:[[:space:]]*DESIGNER[[:space:]]*$' "$CONFIG_PATH" || die "Generated config must keep builder: DESIGNER"
+    grep -Eq '^  push:[[:space:]]*designer[[:space:]]*$' "$CONFIG_PATH" || die "Generated config must keep providers.push: designer"
     grep -Eq "^[[:space:]]*path:[[:space:]]*[\"']?.+[\"']?$" "$CONFIG_PATH" || die "Generated config must contain tools.platform.path"
     grep -Eq "^[[:space:]]*connection:[[:space:]]*[\"']?File=" "$CONFIG_PATH" || die "Generated config must contain file infobase.connection"
 

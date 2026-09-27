@@ -1,3 +1,4 @@
+use crate::config::model::InfobaseSelector;
 use crate::domain::artifacts::{CFE_RUNNER_ID, CF_RUNNER_ID, EPF_RUNNER_ID, ERF_RUNNER_ID};
 use crate::domain::execution::ExecutionTimeouts;
 use crate::domain::launch::LaunchVia;
@@ -9,6 +10,7 @@ use crate::domain::runner::{
 use crate::domain::test::TEST_RUNNER_ID;
 use crate::domain::tools_download::{ToolDownloadTarget, ToolExtensionInstallMode};
 use crate::use_cases::result::{UseCaseError, UseCaseErrorKind};
+use std::path::PathBuf;
 
 /// Transport-neutral request for the `build` use case.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -32,6 +34,8 @@ pub struct ToolsDownloadRequest {
     pub extensions: ToolExtensionInstallMode,
     /// Allows replacing existing downloaded paths.
     pub force: bool,
+    /// Selector used while revalidating the merged configuration.
+    pub infobase_selector: InfobaseSelector,
 }
 
 /// Transport-neutral request for the `load` use case.
@@ -72,6 +76,10 @@ pub struct TestRequest {
     pub build_policy: TestBuildPolicy,
     /// Selected test scope. Module targets require a non-empty module name.
     pub scope: TestScopeRequest,
+    /// CLI-only destination for a verified YaXUnit report.
+    pub junit_output: Option<PathBuf>,
+    /// Primary YAML used to resolve and protect a CLI JUnit destination.
+    pub junit_config_path: Option<PathBuf>,
 }
 
 impl TestRequest {
@@ -242,6 +250,7 @@ pub enum SyntaxTargetRequest {
     /// Runs EDT validation for selected projects or all EDT projects when empty.
     Edt {
         projects: Vec<String>,
+        exception_file: Option<PathBuf>,
     },
 }
 

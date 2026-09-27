@@ -3,7 +3,8 @@
 
 workPath: __OUTPUT_ROOT__/work
 format: DESIGNER
-builder: DESIGNER
+providers:
+  push: designer
 infobase:
   connection: "File=__OUTPUT_ROOT__/infobase"
 

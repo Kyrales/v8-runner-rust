@@ -118,6 +118,18 @@ pub fn nearest_existing_canonical_path(path: &Path) -> std::io::Result<PathBuf> 
 
     let mut existing = absolute.as_path();
     loop {
+        if existing
+            .components()
+            .any(|component| component == Component::ParentDir)
+        {
+            existing = existing.parent().ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!("no existing ancestor for path '{}'", path.display()),
+                )
+            })?;
+            continue;
+        }
         match std::fs::symlink_metadata(existing) {
             Ok(_) => break,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -259,9 +271,8 @@ mod tests {
             nearest_existing_canonical_path(&root.join("nested").join("target")).expect("resolved");
 
         assert_eq!(
-            resolved,
-            std::fs::canonicalize(&root)
-                .expect("canonical root")
+            normalize_windows_verbatim_path(&resolved),
+            normalize_windows_verbatim_path(&std::fs::canonicalize(&root).expect("canonical root"))
                 .join("nested")
                 .join("target")
         );

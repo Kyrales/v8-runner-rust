@@ -96,14 +96,19 @@ v8-runner infobase create
 - Source files changed and infobase may be stale: run `v8-runner push`.
 - Only one source-set changed: use commands that accept `--source-set <NAME>` instead of rebuilding or materializing everything.
 - Branch switch, rebase, large object moves, stale source-backed tool extension state, or suspicious incremental state: run `v8-runner push --full`.
-- Configuration check: run `v8-runner check`. The project `format` picks the branch — `/CheckConfig` for DESIGNER, EDT validation for EDT — and a key the branch does not execute is refused. With no mode key the default profile runs; name modes to narrow it. One executor (Designer), no `providers` key. A project of external data processors and reports only is refused with `error.code: subject`. `--dry-run` stops after the utility is located and before the platform runs: no platform log directory is created, and the answer names `status: planned`, `provider_dispatched: false` and `exit_code: -1`.
+- Configuration check: run `v8-runner check`. The project `format` picks the branch — `/CheckConfig` for DESIGNER, EDT validation for EDT — and a key the branch does not execute is refused. With no mode key the default profile runs; name modes to narrow it. EDT accepts `--exception-file path` with exact `path<TAB>message` lines; relative paths start at the primary YAML, and preview does not read the file. One executor (Designer), no `providers` key. A project of external data processors and reports only is refused with `error.code: subject`. `--dry-run` stops after the utility is located and before the platform runs: no platform log directory is created, and the answer names `status: planned`, `provider_dispatched: false` and `exit_code: -1`.
 - Behavior validation: run the relevant `v8-runner test ...` command; tests run `push` first unless the
   caller explicitly requests `--no-push` for an already prepared infobase.
+- YaXUnit accepts the CLI-only `--junit-output <path>` option for `all` and `module`; relative
+  paths resolve from the primary project YAML. The report is parsed once and exported byte-for-byte
+  after a target identity check; an export failure remains `junit_export_failed` alongside the run result.
 - Missing local YAxUnit, Vanessa Automation, or onec-client-mcp-devkit setup: run
   `v8-runner tools download yaxunit --sources`, `v8-runner tools download vanessa`, and
   `v8-runner tools download client-mcp --sources` for source-backed setup. Omit
   `--sources` on `yaxunit` or `client-mcp` to download `.cfe` artifacts; loading a
   `.cfe` needs the Designer executor.
+- Before `tools download vanessa`, provide `tools/VAParams.json` and a `features` directory
+  to enable the default `tests.va` profile; if absent, create them and rerun the download.
 - Vanessa Automation debugging or scenario authoring: use `v8-runner launch mcp va --wait-ready ...` to start the client MCP server with VA loaded and verify the VA MCP tools before driving `.feature` workflows.
 - Extension security properties: use `extensions --name <SOURCE_SET>` or
   `extensions --installed-name <PLATFORM_NAME>` for a separately loaded CFE such as YAXUNIT.

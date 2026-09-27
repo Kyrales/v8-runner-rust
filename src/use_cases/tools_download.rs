@@ -8,8 +8,9 @@ use serde::Deserialize;
 use tracing::debug;
 use zip::ZipArchive;
 
-use crate::config::loader::LOCAL_CONFIG_FILE_NAME;
+use crate::config::loader::{load_tools_download_text, LOCAL_CONFIG_FILE_NAME};
 use crate::config::model::AppConfig;
+use crate::config::model::InfobaseSelector;
 use crate::domain::capability::{Operation, Provider};
 use crate::domain::tools_download::{
     ToolDownloadDestination, ToolDownloadTarget, ToolExtensionInstallMode, ToolsDownloadResult,
@@ -83,13 +84,15 @@ fn tools_download(
         )?,
     };
 
-    update_config_for_download(
+    let warnings = update_config_for_download(
         context,
+        config,
         &config_path,
         &local_config_path,
         request.target,
         request.extensions,
         &destinations,
+        &request.infobase_selector,
     )?;
 
     Ok(ToolsDownloadResult {
@@ -100,6 +103,7 @@ fn tools_download(
         config_path,
         local_config_path,
         duration_ms: started.elapsed().as_millis() as u64,
+        warnings,
     })
 }
 
@@ -673,28 +677,38 @@ fn normalized_components(path: &Path) -> Vec<OsString> {
 
 fn update_config_for_download(
     context: &ExecutionContext,
+    config: &AppConfig,
     config_path: &Path,
     local_config_path: &Path,
     target: ToolDownloadTarget,
     mode: ToolExtensionInstallMode,
     destinations: &[ToolDownloadDestination],
-) -> Result<(), AppError> {
+    selector: &InfobaseSelector,
+) -> Result<Vec<String>, AppError> {
     match target {
         ToolDownloadTarget::Yaxunit if mode == ToolExtensionInstallMode::Sources => {
             add_yaxunit_source_set(context, config_path)?;
+            Ok(Vec::new())
         }
-        ToolDownloadTarget::Yaxunit => {}
+        ToolDownloadTarget::Yaxunit => Ok(Vec::new()),
         ToolDownloadTarget::VanessaAutomationSingle => {
-            let local_overlay = render_vanessa_local_overlay(local_config_path, destinations)?;
+            let (local_overlay, warnings) = render_vanessa_local_overlay(
+                config,
+                selector,
+                config_path,
+                local_config_path,
+                destinations,
+            )?;
             publish_bytes(context, local_overlay.as_bytes(), local_config_path)?;
+            Ok(warnings)
         }
         ToolDownloadTarget::ClientMcp => {
             let local_overlay =
                 render_client_mcp_local_overlay(local_config_path, destinations, mode)?;
             publish_bytes(context, local_overlay.as_bytes(), local_config_path)?;
+            Ok(Vec::new())
         }
     }
-    Ok(())
 }
 
 fn add_yaxunit_source_set(context: &ExecutionContext, config_path: &Path) -> Result<(), AppError> {
@@ -791,10 +805,25 @@ fn insert_yaxunit_source_set_text(content: &str) -> Result<String, AppError> {
 }
 
 fn render_vanessa_local_overlay(
+    _config: &AppConfig,
+    selector: &InfobaseSelector,
+    config_path: &Path,
     path: &Path,
     destinations: &[ToolDownloadDestination],
-) -> Result<String, AppError> {
-    let mut root = read_local_overlay(path)?;
+) -> Result<(String, Vec<String>), AppError> {
+    let project = fs::read_to_string(config_path).map_err(io_error("failed to read config"))?;
+    let mut local = if path.exists() {
+        fs::read_to_string(path).map_err(io_error("failed to read local config"))?
+    } else {
+        String::new()
+    };
+    let project_root: serde_yaml::Value = serde_yaml::from_str(&project)
+        .map_err(|error| AppError::Validation(format!("invalid project YAML: {error}")))?;
+    let local_root: serde_yaml::Value = serde_yaml::from_str(&local)
+        .map_err(|error| AppError::Validation(format!("invalid local YAML: {error}")))?;
+    // Check the existing documents through the same schema and merge path used by the command.
+    let existing = load_tools_download_text(config_path, &project, &local, selector)
+        .map_err(|error| AppError::Validation(error.to_string()))?;
     let vanessa_path = destinations
         .iter()
         .find(|destination| destination.tool == "vanessa-automation-single")
@@ -802,18 +831,187 @@ fn render_vanessa_local_overlay(
         .path
         .clone();
     let config_dir = path.parent().unwrap_or_else(|| Path::new("."));
-    let vanessa_path = relative_path(config_dir, &vanessa_path);
+    let vanessa_path = relative_path(config_dir, &vanessa_path).replace('\\', "/");
 
-    let root_mapping = root.as_mapping_mut().ok_or_else(|| {
-        AppError::Validation("expected a YAML mapping at local config root".to_owned())
-    })?;
-    let tools = ensure_mapping(root_mapping, "tools")?;
-    let va = ensure_mapping(tools, "va")?;
-    va.insert(
-        serde_yaml::Value::String("epf_path".to_owned()),
-        serde_yaml::Value::String(vanessa_path),
-    );
-    render_local_overlay(root)
+    let mut fields: Vec<(&[&str], String)> = vec![(&["tools", "va", "epf_path"], vanessa_path)];
+    let params = config_dir.join("tools/VAParams.json");
+    let features = config_dir.join("features");
+    let mut missing = Vec::new();
+    if !params.is_file() {
+        missing.push("tools/VAParams.json");
+    }
+    if !features.is_dir() {
+        missing.push("features");
+    }
+    let warnings = if missing.is_empty() {
+        fields.extend([
+            (
+                &["tests", "execution_timeout_seconds"][..],
+                "3600".to_owned(),
+            ),
+            (
+                &["tests", "va", "params_path"][..],
+                "tools/VAParams.json".to_owned(),
+            ),
+            (&["tests", "va", "profile"][..], "all".to_owned()),
+            (
+                &["tests", "va", "timeouts", "total_ms"][..],
+                "3600000".to_owned(),
+            ),
+            (
+                &["tests", "va", "profiles", "all", "feature_path"][..],
+                "features".to_owned(),
+            ),
+            (
+                &["tests", "va", "profiles", "all", "ignore_tags"][..],
+                "[IgnoreOnCIMainBuild]".to_owned(),
+            ),
+        ]);
+        Vec::new()
+    } else {
+        vec![format!(
+            "Vanessa tests were not configured: create {}, then rerun `tools download vanessa`",
+            missing.join(" and ")
+        )]
+    };
+    // A supplied path is the user's choice. Reject a broken one instead of hiding it with defaults.
+    if let Some(params_path) = &existing.config.tests.va.params_path {
+        if !params_path.is_file() {
+            return Err(AppError::Validation(format!(
+                "tests.va.params_path does not exist: {}",
+                params_path.display()
+            )));
+        }
+    }
+    for (name, profile) in &existing.config.tests.va.profiles {
+        if let Some(feature_path) = &profile.feature_path {
+            if !feature_path.is_dir() {
+                return Err(AppError::Validation(format!(
+                    "tests.va.profiles.{name}.feature_path does not exist: {}",
+                    feature_path.display()
+                )));
+            }
+        }
+    }
+    for (keys, value) in fields {
+        if !yaml_path_exists(&project_root, keys)? && !yaml_path_exists(&local_root, keys)? {
+            local = insert_local_yaml_field(&local, keys, &value)?;
+        }
+    }
+    let proposed = load_tools_download_text(config_path, &project, &local, selector)
+        .map_err(|error| AppError::Validation(error.to_string()))?;
+    crate::config::validate::validate_vanessa_download_settings(&proposed.config)
+        .map_err(|error| AppError::Validation(error.to_string()))?;
+    if !path.exists() && !local.contains("# yaml-language-server:") {
+        local = format!("{LOCAL_CONFIG_SCHEMA_MODEL_LINE}\n{local}");
+    }
+    Ok((local, warnings))
+}
+
+fn yaml_path_exists(root: &serde_yaml::Value, keys: &[&str]) -> Result<bool, AppError> {
+    let mut current = root;
+    for (index, key) in keys.iter().enumerate() {
+        if current.is_null() && index == 0 {
+            return Ok(false);
+        }
+        let mapping = current.as_mapping().ok_or_else(|| {
+            AppError::Validation(format!(
+                "unsupported YAML section '{}'",
+                keys[..index].join(".")
+            ))
+        })?;
+        let Some(next) = mapping.get(serde_yaml::Value::String((*key).to_owned())) else {
+            return Ok(false);
+        };
+        current = next;
+    }
+    Ok(true)
+}
+
+fn insert_local_yaml_field(content: &str, keys: &[&str], value: &str) -> Result<String, AppError> {
+    let newline = if content.contains("\r\n") {
+        "\r\n"
+    } else {
+        "\n"
+    };
+    let lines: Vec<&str> = content.lines().collect();
+    let mut parent_start = 0usize;
+    let mut parent_end = lines.len();
+    let mut depth = 0usize;
+    let mut parent_indent = None;
+    while depth + 1 < keys.len() {
+        let child_indent = (parent_start..parent_end)
+            .filter(|&i| !lines[i].trim().is_empty() && !lines[i].trim_start().starts_with('#'))
+            .map(|i| lines[i].len() - lines[i].trim_start().len())
+            .filter(|&indent| parent_indent.is_none_or(|parent| indent > parent))
+            .min();
+        let match_index = child_indent.and_then(|indent| {
+            (parent_start..parent_end).find(|&i| {
+                lines[i].len() - lines[i].trim_start().len() == indent
+                    && lines[i]
+                        .trim_start()
+                        .starts_with(&format!("{}:", keys[depth]))
+            })
+        });
+        let Some(index) = match_index else {
+            break;
+        };
+        let Some(indent) = child_indent else { break };
+        let trimmed = lines[index].trim_start();
+        let tail = &trimmed[keys[depth].len() + 1..];
+        if !tail.trim().is_empty() && !tail.trim_start().starts_with('#') {
+            return Err(AppError::Validation(format!(
+                "unsupported YAML section '{}' for local insertion",
+                keys[..=depth].join(".")
+            )));
+        }
+        parent_start = index + 1;
+        parent_end = (parent_start..parent_end)
+            .find(|&i| {
+                let line = lines[i];
+                !line.trim().is_empty()
+                    && !line.trim_start().starts_with('#')
+                    && line.len() - line.trim_start().len() <= indent
+            })
+            .unwrap_or(parent_end);
+        parent_indent = Some(indent);
+        depth += 1;
+    }
+    let mut insertion = String::new();
+    let mut indent = (parent_start..parent_end)
+        .filter(|&i| !lines[i].trim().is_empty() && !lines[i].trim_start().starts_with('#'))
+        .map(|i| lines[i].len() - lines[i].trim_start().len())
+        .filter(|&value| parent_indent.is_none_or(|parent| value > parent))
+        .min()
+        .unwrap_or_else(|| parent_indent.map_or(0, |value| value + 2));
+    for key in &keys[depth..keys.len() - 1] {
+        insertion.push_str(&format!("{}{}:{}", " ".repeat(indent), key, newline));
+        indent += 2;
+    }
+    insertion.push_str(&format!(
+        "{}{}: {}{}",
+        " ".repeat(indent),
+        keys[keys.len() - 1],
+        value,
+        newline,
+    ));
+    // `lines()` strips CRLF terminators, so summing `line.len() + 1` corrupts a CRLF
+    // document by one byte per preceding line. `split_inclusive` keeps the original
+    // terminator and therefore gives a byte offset into the untouched source text.
+    let offset = content
+        .split_inclusive('\n')
+        .take(parent_end)
+        .map(str::len)
+        .sum::<usize>()
+        .min(content.len());
+    let mut result = String::with_capacity(content.len() + insertion.len() + 1);
+    result.push_str(&content[..offset]);
+    if !result.is_empty() && !result.ends_with('\n') {
+        result.push_str(newline);
+    }
+    result.push_str(&insertion);
+    result.push_str(&content[offset..]);
+    Ok(result)
 }
 
 fn render_client_mcp_local_overlay(
@@ -829,7 +1027,7 @@ fn render_client_mcp_local_overlay(
         .path
         .clone();
     let config_dir = path.parent().unwrap_or_else(|| Path::new("."));
-    let client_path = relative_path(config_dir, &client_path);
+    let client_path = relative_path(config_dir, &client_path).replace('\\', "/");
 
     let root_mapping = root.as_mapping_mut().ok_or_else(|| {
         AppError::Validation("expected a YAML mapping at local config root".to_owned())

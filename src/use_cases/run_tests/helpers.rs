@@ -379,6 +379,9 @@ pub(super) fn enterprise_error_kind(
         AppError::PlatformProcess(ProcessError::StartupCheckFailed { .. }) => {
             TestErrorKind::EnterpriseStartupCheckFailed
         }
+        AppError::PlatformProcess(ProcessError::ManagedWaitFailed { .. }) => {
+            TestErrorKind::EnterpriseStartupCheckFailed
+        }
         AppError::PlatformProcess(ProcessError::ExitedEarly { .. }) => {
             TestErrorKind::EnterpriseExitedEarly
         }
@@ -456,6 +459,21 @@ mod tests {
                 assert!(matches!(
                     error,
                     AppError::PlatformProcess(ProcessError::StartupCheckFailed { .. })
+                ));
+            },
+        );
+        assert_process_mapping(
+            ProcessError::ManagedWaitFailed {
+                cmd: "1cv8c ENTERPRISE".to_owned(),
+                interruption: None,
+                observation: Some(std::io::Error::other("observe failed")),
+                cleanup: crate::platform::process::ManagedCleanupFailure::default(),
+            },
+            TestErrorKind::EnterpriseStartupCheckFailed,
+            |error| {
+                assert!(matches!(
+                    error,
+                    AppError::PlatformProcess(ProcessError::ManagedWaitFailed { .. })
                 ));
             },
         );

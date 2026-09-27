@@ -41,6 +41,7 @@ const IGNORED_FILES: &[&str] = &["ConfigDumpInfo.xml"];
 
 /// Coarse filesystem mtime guard (2 seconds).
 pub const COARSE_MARGIN_NS: u64 = 2_000_000_000;
+const PROGRESS_EVERY_FILES: usize = 1_000;
 
 /// One discovered source file (metadata only, no hash).
 #[derive(Debug, Clone)]
@@ -74,6 +75,7 @@ pub fn scan(
     watermark: Option<u64>,
     stored_keys: &HashSet<String>,
 ) -> Result<ScanSnapshot, ScanError> {
+    tracing::info!(event = "scan_started", "source scan started");
     let scan_started_at =
         mtime_nanos(std::time::SystemTime::now(), root).map_err(|source| ScanError::Mtime {
             path: root.to_path_buf(),
@@ -143,7 +145,22 @@ pub fn scan(
             });
         }
         seen_files.push(seen);
+        if seen_files.len() % PROGRESS_EVERY_FILES == 0 {
+            tracing::info!(
+                event = "scan_progress",
+                seen_files = seen_files.len(),
+                hashed_candidates = candidates.len(),
+                "source scan in progress"
+            );
+        }
     }
+
+    tracing::info!(
+        event = "scan_completed",
+        seen_files = seen_files.len(),
+        hashed_candidates = candidates.len(),
+        "source scan completed"
+    );
 
     Ok(ScanSnapshot {
         scan_started_at,

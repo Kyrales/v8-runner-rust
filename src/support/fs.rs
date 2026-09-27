@@ -8,6 +8,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use super::path::FilesystemObjectIdentity;
+
 pub const TOOL_NAME: &str = "v8-runner";
 
 pub fn is_known_tool_name(tool: &str) -> bool {
@@ -555,6 +557,232 @@ pub fn remove_path_if_exists(path: &Path) -> std::io::Result<()> {
     }
 }
 
+/// Publishes a sibling staging file only when the destination is still absent.
+/// A hard link performs the no-replacement check and publication in one operation.
+pub fn publish_file_noclobber(staging_file: &Path, target_file: &Path) -> std::io::Result<()> {
+    std::fs::hard_link(staging_file, target_file)?;
+    std::fs::remove_file(staging_file).map_err(|error| {
+        std::io::Error::new(
+            error.kind(),
+            format!(
+                "published '{}' but failed to remove staging file '{}': {error}",
+                target_file.display(),
+                staging_file.display()
+            ),
+        )
+    })
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RemoveIdentifiedFileTestPoint {
+    BeforeOpenOrMove,
+    BeforeDelete,
+}
+
+#[cfg(test)]
+thread_local! {
+    static REMOVE_IDENTIFIED_FILE_TEST_HOOK: std::cell::RefCell<Option<Box<dyn Fn(RemoveIdentifiedFileTestPoint)>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn identified_file_test_point(point: RemoveIdentifiedFileTestPoint) {
+    REMOVE_IDENTIFIED_FILE_TEST_HOOK.with(|hook| {
+        if let Some(hook) = hook.borrow().as_ref() {
+            hook(point);
+        }
+    });
+}
+
+#[cfg(not(test))]
+fn before_identified_file_removal() {}
+
+#[cfg(test)]
+fn before_identified_file_removal() {
+    identified_file_test_point(RemoveIdentifiedFileTestPoint::BeforeOpenOrMove);
+}
+
+#[cfg(test)]
+fn before_identified_file_delete() {
+    identified_file_test_point(RemoveIdentifiedFileTestPoint::BeforeDelete);
+}
+
+#[cfg(not(test))]
+fn before_identified_file_delete() {}
+
+/// Removes a regular file only if it still denotes the object previously inspected.
+/// A mismatched file moved to quarantine is restored without overwriting a new target;
+/// if restoration fails, the error names its retained quarantine location.
+pub fn remove_file_if_identity(
+    target: &Path,
+    expected: &FilesystemObjectIdentity,
+) -> std::io::Result<()> {
+    #[cfg(windows)]
+    {
+        remove_file_if_identity_windows(target, expected)
+    }
+    #[cfg(not(windows))]
+    {
+        remove_file_if_identity_quarantined(target, expected)
+    }
+}
+
+#[cfg(windows)]
+fn remove_file_if_identity_windows(
+    target: &Path,
+    expected: &FilesystemObjectIdentity,
+) -> std::io::Result<()> {
+    use std::os::windows::fs::OpenOptionsExt;
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FileDispositionInfo, GetFileInformationByHandle, SetFileInformationByHandle,
+        BY_HANDLE_FILE_INFORMATION, DELETE, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT,
+        FILE_DISPOSITION_INFO, FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES,
+        FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    };
+
+    before_identified_file_removal();
+    let file = OpenOptions::new()
+        .access_mode(DELETE | FILE_READ_ATTRIBUTES)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(target)?;
+    let handle = file.as_raw_handle();
+    let mut info = BY_HANDLE_FILE_INFORMATION::default();
+    if unsafe { GetFileInformationByHandle(handle, &mut info) } == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let observed = FilesystemObjectIdentity::Windows {
+        volume_serial: info.dwVolumeSerialNumber,
+        file_index: ((info.nFileIndexHigh as u64) << 32) | info.nFileIndexLow as u64,
+    };
+    if info.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT) != 0
+        || &observed != expected
+    {
+        return Err(std::io::Error::new(
+            ErrorKind::InvalidData,
+            format!(
+                "refusing to remove changed or non-regular file '{}'",
+                target.display()
+            ),
+        ));
+    }
+    before_identified_file_delete();
+    let disposition = FILE_DISPOSITION_INFO { DeleteFile: true };
+    if unsafe {
+        SetFileInformationByHandle(
+            handle,
+            FileDispositionInfo,
+            (&raw const disposition).cast(),
+            std::mem::size_of::<FILE_DISPOSITION_INFO>() as u32,
+        )
+    } == 0
+    {
+        return Err(std::io::Error::last_os_error());
+    }
+    drop(file);
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn remove_file_if_identity_quarantined(
+    target: &Path,
+    expected: &FilesystemObjectIdentity,
+) -> std::io::Result<()> {
+    use super::path::filesystem_object_identity;
+
+    let metadata = std::fs::symlink_metadata(target)?;
+    if !metadata.is_file()
+        || metadata.file_type().is_symlink()
+        || &filesystem_object_identity(target)? != expected
+    {
+        return Err(std::io::Error::new(
+            ErrorKind::InvalidData,
+            format!(
+                "refusing to remove changed or non-regular file '{}'",
+                target.display()
+            ),
+        ));
+    }
+    let parent = target
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let quarantine_dir = tempfile::Builder::new()
+        .prefix(".v8-runner-old-report-")
+        .tempdir_in(parent)?
+        .keep();
+    let quarantined = quarantine_dir.join("old");
+    before_identified_file_removal();
+    if let Err(error) = std::fs::rename(target, &quarantined) {
+        let _ = std::fs::remove_dir(&quarantine_dir);
+        return Err(error);
+    }
+
+    let still_expected = std::fs::symlink_metadata(&quarantined)
+        .and_then(|metadata| {
+            if metadata.is_file() && !metadata.file_type().is_symlink() {
+                filesystem_object_identity(&quarantined)
+            } else {
+                Err(std::io::Error::new(
+                    ErrorKind::InvalidData,
+                    "non-regular file",
+                ))
+            }
+        })
+        .is_ok_and(|identity| &identity == expected);
+    if !still_expected {
+        let quarantined_metadata = std::fs::symlink_metadata(&quarantined);
+        // hard_link refuses an occupied target atomically, unlike rename on Unix. Directories
+        // cannot be hard-linked, so restore one only when the target is still absent; never
+        // overwrite a concurrent replacement.
+        let restored = if quarantined_metadata
+            .as_ref()
+            .is_ok_and(|metadata| metadata.is_dir())
+        {
+            if std::fs::symlink_metadata(target).is_ok() {
+                Err(std::io::Error::new(
+                    ErrorKind::AlreadyExists,
+                    "target was replaced while the old directory was quarantined",
+                ))
+            } else {
+                std::fs::rename(&quarantined, target)
+            }
+        } else {
+            std::fs::hard_link(&quarantined, target)
+                .and_then(|()| std::fs::remove_file(&quarantined))
+        };
+        if restored.is_ok() {
+            let _ = std::fs::remove_dir(&quarantine_dir);
+            return Err(std::io::Error::new(
+                ErrorKind::InvalidData,
+                format!("refusing to remove changed file '{}'", target.display()),
+            ));
+        }
+        return Err(std::io::Error::new(
+            ErrorKind::InvalidData,
+            format!(
+                "refusing to remove changed file '{}'; displaced file retained at '{}' (restoration failed: {})",
+                target.display(),
+                quarantined.display(),
+                restored.expect_err("checked error")
+            ),
+        ));
+    }
+
+    std::fs::remove_file(&quarantined).map_err(|error| {
+        std::io::Error::new(
+            error.kind(),
+            format!(
+                "failed to remove old report retained at '{}': {error}",
+                quarantined.display()
+            ),
+        )
+    })?;
+    std::fs::remove_dir(&quarantine_dir)
+}
+
 pub fn replace_dir_atomically(
     staging_dir: &Path,
     target_dir: &Path,
@@ -836,6 +1064,168 @@ mod tests {
     use std::thread;
     use std::time::Duration;
     use tempfile::tempdir;
+
+    #[test]
+    fn remove_file_if_identity_rejects_a_swap_before_removal() {
+        use crate::support::path::filesystem_object_identity;
+        let dir = tempdir().expect("tempdir");
+        let target = dir.path().join("report.xml");
+        let original_elsewhere = dir.path().join("original.xml");
+        fs::write(&target, "original").expect("original");
+        let identity = filesystem_object_identity(&target).expect("identity");
+        super::REMOVE_IDENTIFIED_FILE_TEST_HOOK.with(|hook| {
+            *hook.borrow_mut() = Some(Box::new({
+                let target = target.clone();
+                let original_elsewhere = original_elsewhere.clone();
+                move |point| {
+                    if point != super::RemoveIdentifiedFileTestPoint::BeforeOpenOrMove {
+                        return;
+                    }
+                    fs::rename(&target, &original_elsewhere).expect("move original");
+                    fs::write(&target, "foreign").expect("foreign");
+                }
+            }));
+        });
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                super::REMOVE_IDENTIFIED_FILE_TEST_HOOK.with(|hook| *hook.borrow_mut() = None);
+            }
+        }
+        let _reset = Reset;
+
+        let error = super::remove_file_if_identity(&target, &identity).expect_err("swapped");
+
+        assert_eq!(error.kind(), ErrorKind::InvalidData);
+        assert_eq!(
+            fs::read_to_string(&target).expect("foreign preserved"),
+            "foreign"
+        );
+        assert_eq!(
+            fs::read_to_string(&original_elsewhere).expect("original"),
+            "original"
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn remove_file_if_identity_restores_a_directory_swap_without_losing_it() {
+        use crate::support::path::filesystem_object_identity;
+        let dir = tempdir().expect("tempdir");
+        let target = dir.path().join("report.xml");
+        let original_elsewhere = dir.path().join("original.xml");
+        fs::write(&target, "original").expect("original");
+        let identity = filesystem_object_identity(&target).expect("identity");
+        super::REMOVE_IDENTIFIED_FILE_TEST_HOOK.with(|hook| {
+            *hook.borrow_mut() = Some(Box::new({
+                let target = target.clone();
+                let original_elsewhere = original_elsewhere.clone();
+                move |point| {
+                    if point != super::RemoveIdentifiedFileTestPoint::BeforeOpenOrMove {
+                        return;
+                    }
+                    fs::rename(&target, &original_elsewhere).expect("move original");
+                    fs::create_dir(&target).expect("replacement directory");
+                }
+            }));
+        });
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                super::REMOVE_IDENTIFIED_FILE_TEST_HOOK.with(|hook| *hook.borrow_mut() = None);
+            }
+        }
+        let _reset = Reset;
+
+        let error = super::remove_file_if_identity(&target, &identity).expect_err("swapped");
+
+        assert_eq!(error.kind(), ErrorKind::InvalidData);
+        assert!(
+            target.is_dir(),
+            "replacement directory must remain at target"
+        );
+        assert_eq!(
+            fs::read_to_string(&original_elsewhere).expect("original"),
+            "original"
+        );
+    }
+
+    #[test]
+    fn remove_file_if_identity_removes_only_the_expected_file() {
+        use crate::support::path::filesystem_object_identity;
+        let dir = tempdir().expect("tempdir");
+        let target = dir.path().join("report.xml");
+        fs::write(&target, "old report").expect("old report");
+        let identity = filesystem_object_identity(&target).expect("identity");
+
+        super::remove_file_if_identity(&target, &identity).expect("remove old report");
+
+        assert!(!target.exists());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn remove_file_if_identity_keeps_a_target_replaced_after_handle_verification() {
+        use crate::support::path::filesystem_object_identity;
+        let dir = tempdir().expect("tempdir");
+        let target = dir.path().join("report.xml");
+        let original_elsewhere = dir.path().join("original.xml");
+        fs::write(&target, "original").expect("original");
+        let identity = filesystem_object_identity(&target).expect("identity");
+        super::REMOVE_IDENTIFIED_FILE_TEST_HOOK.with(|hook| {
+            *hook.borrow_mut() = Some(Box::new({
+                let target = target.clone();
+                let original_elsewhere = original_elsewhere.clone();
+                move |point| {
+                    if point != super::RemoveIdentifiedFileTestPoint::BeforeDelete {
+                        return;
+                    }
+                    fs::rename(&target, &original_elsewhere).expect("move opened file");
+                    fs::write(&target, "foreign").expect("foreign");
+                }
+            }));
+        });
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                super::REMOVE_IDENTIFIED_FILE_TEST_HOOK.with(|hook| *hook.borrow_mut() = None);
+            }
+        }
+        let _reset = Reset;
+
+        super::remove_file_if_identity(&target, &identity).expect("delete opened original");
+
+        assert_eq!(fs::read_to_string(&target).expect("foreign"), "foreign");
+        assert!(!original_elsewhere.exists());
+    }
+
+    #[test]
+    fn publish_file_noclobber_keeps_a_late_target_and_the_stage() {
+        let dir = tempdir().expect("tempdir");
+        let stage = dir.path().join(".report.stage");
+        let target = dir.path().join("report.xml");
+        fs::write(&stage, "new report").expect("stage");
+        fs::write(&target, "foreign").expect("late target");
+
+        let error = super::publish_file_noclobber(&stage, &target).expect_err("no replacement");
+
+        assert_eq!(error.kind(), ErrorKind::AlreadyExists);
+        assert_eq!(fs::read_to_string(&target).expect("target"), "foreign");
+        assert_eq!(fs::read_to_string(&stage).expect("stage"), "new report");
+    }
+
+    #[test]
+    fn publish_file_noclobber_moves_the_staged_bytes_to_an_empty_target() {
+        let dir = tempdir().expect("tempdir");
+        let stage = dir.path().join(".report.stage");
+        let target = dir.path().join("report.xml");
+        fs::write(&stage, "new report").expect("stage");
+
+        super::publish_file_noclobber(&stage, &target).expect("publish");
+
+        assert_eq!(fs::read_to_string(&target).expect("target"), "new report");
+        assert!(!stage.exists());
+    }
 
     #[test]
     fn try_acquire_advisory_lock_reports_busy() {

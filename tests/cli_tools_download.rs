@@ -5,7 +5,6 @@ use std::fs;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
@@ -289,16 +288,15 @@ fn make_zip(path: &Path, entries: &[(&str, &str)]) {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).expect("zip parent");
     }
-    let status = Command::new("python3")
-        .arg("-c")
-        .arg(
-            "import sys, zipfile\nwith zipfile.ZipFile(sys.argv[1], 'w') as z:\n    for pair in sys.argv[2:]:\n        name, value = pair.split('=', 1)\n        z.writestr(name, value)\n",
-        )
-        .arg(path)
-        .args(entries.iter().map(|(name, value)| format!("{name}={value}")))
-        .status()
-        .expect("zip");
-    assert!(status.success());
+    let file = fs::File::create(path).expect("zip file");
+    let mut writer = zip::ZipWriter::new(file);
+    for (name, value) in entries {
+        writer
+            .start_file(*name, zip::write::SimpleFileOptions::default())
+            .expect("zip entry");
+        writer.write_all(value.as_bytes()).expect("zip contents");
+    }
+    writer.finish().expect("finish zip");
 }
 
 #[test]
@@ -506,9 +504,10 @@ fn tools_download_sources_rejects_legacy_tests_markers_outside_build() {
 }
 
 #[test]
-fn tools_download_repairs_pending_vanessa_configuration() {
+fn vanessa_download_rejects_invalid_existing_test_configuration() {
     let dir = temp_workspace();
     let config_path = write_config_with_pending_va(dir.path());
+    let original = fs::read(&config_path).expect("original config");
     let server_root = dir.path().join("server");
     let (_server, port) = FixtureServer::start(&server_root);
     write_http_fixture(&server_root, port);
@@ -529,16 +528,182 @@ fn tools_download_repairs_pending_vanessa_configuration() {
         .expect("run command");
 
     assert!(
-        output.status.success(),
+        !output.status.success(),
         "status={:?}\nstdout={}\nstderr={}",
         output.status.code(),
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
+    assert!(!dir.path().join("v8project.local.yaml").exists());
+    assert_eq!(fs::read(&config_path).expect("config"), original);
+    assert!(dir
+        .path()
+        .join("build/tools/vanessa-automation-single.epf")
+        .exists());
+}
+
+#[test]
+fn vanessa_download_rejects_unsupported_local_tests_section_without_rewriting_yaml() {
+    let dir = temp_workspace();
+    let config_path = write_minimal_config(dir.path());
+    fs::create_dir_all(dir.path().join("tools")).expect("tools");
+    fs::create_dir_all(dir.path().join("features")).expect("features");
+    fs::write(dir.path().join("tools/VAParams.json"), "{}").expect("params");
+    let local_path = dir.path().join("v8project.local.yaml");
+    let local = "# keep me\ntests: []\n";
+    fs::write(&local_path, local).expect("local");
+    let project = fs::read(&config_path).expect("project");
+    let server_root = dir.path().join("server");
+    let (_server, port) = FixtureServer::start(&server_root);
+    write_http_fixture(&server_root, port);
+    let output = v8_runner_command()
+        .env(
+            "V8TR_GITHUB_API_BASE_URL",
+            format!("http://127.0.0.1:{port}"),
+        )
+        .args([
+            "--config",
+            &config_path.display().to_string(),
+            "tools",
+            "download",
+            "vanessa",
+        ])
+        .output()
+        .expect("run command");
+    assert!(!output.status.success());
+    assert_eq!(fs::read_to_string(&local_path).expect("local"), local);
+    assert_eq!(fs::read(&config_path).expect("project"), project);
+}
+
+#[test]
+fn vanessa_download_without_prerequisites_warns_without_enabling_tests() {
+    let dir = temp_workspace();
+    let config_path = write_minimal_config(dir.path());
+    let server_root = dir.path().join("server");
+    let (_server, port) = FixtureServer::start(&server_root);
+    write_http_fixture(&server_root, port);
+
+    let output = v8_runner_command()
+        .env(
+            "V8TR_GITHUB_API_BASE_URL",
+            format!("http://127.0.0.1:{port}"),
+        )
+        .args([
+            "--config",
+            &config_path.display().to_string(),
+            "--json-message",
+            "tools",
+            "download",
+            "vanessa",
+        ])
+        .output()
+        .expect("run command");
+
+    assert!(
+        output.status.success(),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let payload: Value = serde_json::from_slice(&output.stdout).expect("json");
+    assert_eq!(payload["ok"], true);
+    assert!(payload["data"].get("warnings").is_none());
+    let warnings = payload["warnings"].as_array().expect("warnings");
+    assert!(warnings.iter().any(|warning| {
+        warning
+            .as_str()
+            .is_some_and(|text| text.contains("tools/VAParams.json") && text.contains("features"))
+    }));
     let local = fs::read_to_string(dir.path().join("v8project.local.yaml")).expect("local");
-    assert!(local.contains("epf_path:"));
-    assert!(local.contains("epf_path: build/tools/vanessa-automation-single.epf"));
-    assert!(!local.contains(&dir.path().display().to_string()));
+    assert!(!local.contains("tests:"));
+    let text_output = v8_runner_command()
+        .env(
+            "V8TR_GITHUB_API_BASE_URL",
+            format!("http://127.0.0.1:{port}"),
+        )
+        .args([
+            "--config",
+            &config_path.display().to_string(),
+            "tools",
+            "download",
+            "vanessa",
+        ])
+        .output()
+        .expect("text command");
+    assert!(text_output.status.success());
+    assert!(String::from_utf8_lossy(&text_output.stdout).contains("tools/VAParams.json"));
+    assert!(dir
+        .path()
+        .join("build/tools/vanessa-automation-single.epf")
+        .exists());
+}
+
+#[test]
+fn vanessa_download_adds_missing_defaults_and_preserves_both_yaml_files() {
+    let dir = temp_workspace();
+    let config_path = write_minimal_config(dir.path());
+    fs::create_dir_all(dir.path().join("tools")).expect("tools");
+    fs::create_dir_all(dir.path().join("features")).expect("features");
+    fs::write(dir.path().join("tools/VAParams.json"), "{}").expect("params");
+    let project = format!(
+        "{}\n# keep project comment\ntests:\n  execution_timeout_seconds: 4200 # user value\n  va:\n    profile: all\n",
+        fs::read_to_string(&config_path).expect("project")
+    );
+    fs::write(&config_path, &project).expect("project");
+    let local_path = dir.path().join("v8project.local.yaml");
+    fs::write(
+        &local_path,
+        "# keep local comment\r\ntests:\r\n    va:\r\n        params_path: tools/VAParams.json # user value\r\n",
+    )
+    .expect("local");
+    let server_root = dir.path().join("server");
+    let (_server, port) = FixtureServer::start(&server_root);
+    write_http_fixture(&server_root, port);
+    let run = || {
+        v8_runner_command()
+            .env(
+                "V8TR_GITHUB_API_BASE_URL",
+                format!("http://127.0.0.1:{port}"),
+            )
+            .args([
+                "--config",
+                &config_path.display().to_string(),
+                "tools",
+                "download",
+                "vanessa",
+            ])
+            .output()
+            .expect("run command")
+    };
+    let output = run();
+    assert!(
+        output.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let local = fs::read_to_string(&local_path).expect("local");
+    assert_eq!(fs::read_to_string(&config_path).expect("project"), project);
+    assert!(local.contains("# keep local comment"));
+    assert!(local.contains("# keep local comment\r\n"));
+    assert!(local.contains("params_path: tools/VAParams.json # user value"));
+    for expected in [
+        "total_ms: 3600000",
+        "feature_path: features",
+        "ignore_tags: [IgnoreOnCIMainBuild]",
+        "epf_path: build/tools/vanessa-automation-single.epf",
+    ] {
+        assert!(local.contains(expected), "missing {expected}: {local}");
+    }
+    assert!(!local.contains("execution_timeout_seconds: 3600"));
+    let repeat = run();
+    assert!(
+        repeat.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&repeat.stdout),
+        String::from_utf8_lossy(&repeat.stderr)
+    );
+    assert_eq!(fs::read_to_string(&local_path).expect("local"), local);
 }
 
 #[test]

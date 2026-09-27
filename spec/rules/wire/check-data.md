@@ -1,6 +1,6 @@
 ---
 id: CTR.WIRE.SYNTAX-DATA
-version: 5
+version: 6
 artifact: docs/schemas/command-data/check.schema.json
 check:
   - src/command_data.rs::generated_command_data_schemas_are_current
@@ -8,6 +8,9 @@ check:
   - tests/cli_syntax.rs::a_preview_that_cannot_find_the_platform_still_reports_no_dispatch
   - tests/mcp_stdio.rs::mcp_stdio_tools_answer_in_the_forms_of_their_commands
   - tests/mcp_stdio.rs::mcp_stdio_the_live_edt_check_answers_in_the_form_of_check
+  - src/use_cases/check_syntax.rs::exception_file_uses_exact_normalized_edt_pairs
+  - src/use_cases/check_syntax.rs::edt_exception_status_matrix_preserves_tool_failures
+  - tests/cli_syntax.rs::exception_file_filters_exact_edt_issue_relative_to_primary_config
 ---
 # `data` команды `check`
 
@@ -41,6 +44,11 @@ check:
 значит признак, говорит [общее правило](provider-dispatched-says-whether-an-executor-got-work.md).
 Ветка EDT квитанции `provider` не несёт ни в превью, ни в боевом прогоне — выбирать там не
 из чего, EDT CLI ищется напрямую.
+
+Ветка EDT может исключить замечания по точной паре нормализованных `path` и `message` из
+`--exception-file`. Исключения уменьшают `issues` и `summary`, но не превращают сбой
+инструмента в `clean`: ненулевой выход с неразобранным выводом или ошибкой чтения журнала
+остаётся `tool_failed`. Превью файл исключений не читает. Designer этот ключ отвергает.
 
 Необязательное поле `message` называет предмет словами: превью говорит им, что было бы
 выполнено — команду платформы с режимами и найденную утилиту.

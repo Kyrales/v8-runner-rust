@@ -332,7 +332,7 @@ mod schema_tests {
         }
         let actual = std::fs::read_to_string(artifact_path()).expect("envelope schema artifact");
         assert_eq!(
-            actual, generated,
+            actual.replace("\r\n", "\n"), generated,
             "{COMMAND_ENVELOPE_SCHEMA_PATH} is stale; rerun UPDATE_ENVELOPE_SCHEMA=1 cargo test generated_envelope_schema_is_current"
         );
     }

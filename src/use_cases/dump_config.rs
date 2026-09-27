@@ -1538,6 +1538,7 @@ exit 0"#,
         assert_eq!(failure.error.message(), PARTIAL_OBJECT_CONTROL_ERROR);
     }
 
+    #[cfg(unix)]
     #[test]
     fn partial_accepts_future_root_type_before_running_designer() {
         let dir = tempdir().expect("tempdir");
@@ -1951,6 +1952,7 @@ exit 0"#,
         assert!(!meta_path.exists());
     }
 
+    #[cfg(unix)]
     #[test]
     fn dump_incremental_creates_missing_target_dir() {
         let dir = tempdir().expect("tempdir");
@@ -1984,6 +1986,7 @@ exit 0"#,
         assert!(!calls.contains("-updateConfigDumpInfo"));
     }
 
+    #[cfg(unix)]
     #[test]
     fn dump_incremental_designer_extension_uses_update_and_extension_flag() {
         let dir = tempdir().expect("tempdir");
@@ -2078,6 +2081,7 @@ exit 0"#,
         assert!(partial_list_paths(&work).is_empty());
     }
 
+    #[cfg(unix)]
     #[test]
     fn dump_partial_designer_creates_missing_target_dir_and_writes_normalized_list() {
         let dir = tempdir().expect("tempdir");
@@ -2140,6 +2144,7 @@ exit 0"#,
         assert!(partial_list_paths(&work).is_empty());
     }
 
+    #[cfg(unix)]
     #[test]
     fn dump_partial_designer_extension_uses_extension_flag() {
         let dir = tempdir().expect("tempdir");
@@ -2171,6 +2176,7 @@ exit 0"#,
         assert!(partial_list_paths(&work).is_empty());
     }
 
+    #[cfg(unix)]
     #[test]
     fn dump_partial_designer_failure_cleans_up_temp_file_and_keeps_partial_mode() {
         let dir = tempdir().expect("tempdir");
@@ -2200,6 +2206,7 @@ exit 0"#,
         assert!(partial_list_paths(&work).is_empty());
     }
 
+    #[cfg(unix)]
     #[test]
     fn dump_partial_ibcmd_uses_sync_and_returns_warning() {
         let dir = tempdir().expect("tempdir");
@@ -2240,6 +2247,7 @@ exit 0"#,
         assert!(calls.contains("--sync"));
     }
 
+    #[cfg(unix)]
     #[test]
     fn dump_partial_ibcmd_accepts_future_root_type_and_degrades_to_incremental() {
         let dir = tempdir().expect("tempdir");
@@ -2289,6 +2297,7 @@ exit 0"#,
         assert!(!calls.contains("FutureRoot.Items"));
     }
 
+    #[cfg(unix)]
     #[test]
     fn dump_partial_ibcmd_extension_uses_extension_flag() {
         let dir = tempdir().expect("tempdir");
@@ -2330,6 +2339,7 @@ exit 0"#,
             .contains("extension 'ext'"));
     }
 
+    #[cfg(unix)]
     #[test]
     fn dump_partial_ibcmd_failure_keeps_partial_mode_and_warning() {
         let dir = tempdir().expect("tempdir");
@@ -2373,6 +2383,7 @@ exit 0"#,
             .contains("IBCMD does not support object-scoped partial dump"));
     }
 
+    #[cfg(unix)]
     #[test]
     fn dump_full_preserves_old_dump_on_platform_failure() {
         let dir = tempdir().expect("tempdir");
@@ -2408,6 +2419,7 @@ exit 0"#,
         assert!(calls.contains(".dump-stage-"), "{calls}");
     }
 
+    #[cfg(unix)]
     #[test]
     fn dump_full_success_replaces_old_target() {
         let dir = tempdir().expect("tempdir");
@@ -2437,6 +2449,7 @@ exit 0"#,
         assert!(!base.join("main").join("old.txt").exists());
     }
 
+    #[cfg(unix)]
     #[test]
     fn ibcmd_dump_full_uses_staging_dir_and_atomic_publish() {
         let dir = tempdir().expect("tempdir");
@@ -2474,6 +2487,7 @@ exit 0"#,
         assert!(!base.join("main").join("old.txt").exists());
     }
 
+    #[cfg(unix)]
     #[test]
     fn ibcmd_dump_with_server_infobase_passes_dbms_and_infobase_credentials() {
         let dir = tempdir().expect("tempdir");
@@ -2520,6 +2534,7 @@ exit 0"#,
         assert!(calls.contains("--password secret"));
     }
 
+    #[cfg(unix)]
     #[test]
     fn ibcmd_dump_full_preserves_old_target_on_platform_failure() {
         let dir = tempdir().expect("tempdir");
@@ -2557,6 +2572,7 @@ exit 0"#,
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn ibcmd_dump_incremental_uses_sync_against_resolved_target() {
         let dir = tempdir().expect("tempdir");
@@ -2593,6 +2609,7 @@ exit 0"#,
         assert!(calls.contains(base.join("main").display().to_string().as_str()));
     }
 
+    #[cfg(unix)]
     #[test]
     fn dump_full_edt_designer_updates_designer_mirror_and_publishes_edt_target() {
         let dir = tempdir().expect("tempdir");
@@ -2638,6 +2655,7 @@ exit 0"#,
         assert!(edt_calls.contains(work.join("edt-workspace").display().to_string().as_str()));
     }
 
+    #[cfg(unix)]
     #[test]
     fn dump_partial_edt_designer_bootstraps_missing_or_invalid_designer_snapshot() {
         let dir = tempdir().expect("tempdir");
@@ -2691,6 +2709,7 @@ exit 0"#,
         assert_eq!(edt_calls.matches("-command import").count(), 1);
     }
 
+    #[cfg(unix)]
     #[test]
     fn dump_incremental_edt_designer_bootstrap_is_full_then_follow_up_uses_update() {
         let dir = tempdir().expect("tempdir");
@@ -2735,6 +2754,7 @@ exit 0"#,
         assert_eq!(edt_calls.matches("-command import").count(), 1);
     }
 
+    #[cfg(unix)]
     #[test]
     fn dump_full_edt_extension_infers_base_project_name_from_configuration_source_set() {
         let dir = tempdir().expect("tempdir");
@@ -2771,6 +2791,7 @@ exit 0"#,
         assert!(edt_calls.contains("--base-project-name BaseProject"));
     }
 
+    #[cfg(unix)]
     #[test]
     fn dump_full_edt_ibcmd_exports_to_designer_mirror_before_edt_import() {
         let dir = tempdir().expect("tempdir");
@@ -3417,6 +3438,7 @@ exit 0"#,
         assert_eq!(json["platform_log_path"], "/tmp/platform.log");
     }
 
+    #[cfg(unix)]
     #[test]
     fn build_designer_dsl_requests_platform_log() {
         let dir = tempdir().expect("tempdir");
@@ -3470,6 +3492,7 @@ exit 0"#,
         assert_eq!(parsed.logical_name, "Foo");
     }
 
+    #[cfg(unix)]
     #[test]
     fn run_external_dump_designer_rejects_missing_descriptor() {
         let dir = tempdir().expect("tempdir");

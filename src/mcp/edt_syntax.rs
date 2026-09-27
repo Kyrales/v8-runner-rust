@@ -54,7 +54,7 @@ async fn run(
 ) -> Result<UseCaseResult<SyntaxCheckResult>, EdtSyntaxTransportError> {
     let started = Instant::now();
     let projects = match &request.target {
-        SyntaxTargetRequest::Edt { projects } => projects,
+        SyntaxTargetRequest::Edt { projects, .. } => projects,
         _ => {
             let error = AppError::Validation(
                 "shared EDT syntax executor requires an EDT syntax target".to_owned(),

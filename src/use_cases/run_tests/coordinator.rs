@@ -1,8 +1,93 @@
 use super::helpers::build_prerequisite_failure;
 use super::*;
+use crate::domain::execution::{ExecutionInterruptionDetails, ExecutionInterruptionPhase};
 use crate::support::error::CapabilityReason;
+use crate::use_cases::interruption::deferred_command_interruption_details;
 use crate::use_cases::progress::log_live_stage;
 use crate::use_cases::request::TestBuildPolicy;
+
+fn export_junit(
+    context: &ExecutionContext,
+    output: Option<&JunitOutput>,
+    bytes: Option<&[u8]>,
+    parsed: bool,
+    steps: &mut Vec<StepResult>,
+    warnings: &mut Vec<String>,
+) -> (Option<AppError>, Option<ExecutionInterruptionDetails>) {
+    let Some(output) = output else {
+        return (None, None);
+    };
+    let started = Instant::now();
+    let result = match (parsed, bytes) {
+        (true, Some(bytes)) => publish_junit_output(context, output, bytes),
+        _ => Err(AppError::Runtime(
+            "JUnit report cannot be exported because it was not parsed".to_owned(),
+        )),
+    };
+    match result {
+        Ok(published) => {
+            if let Some(warning) = published.cleanup_warning {
+                warnings.push(warning);
+            }
+            steps.push(
+                succeeded_step(
+                    "export_junit",
+                    ExecutionStepKind::Publish,
+                    started.elapsed().as_millis() as u64,
+                    "published JUnit report",
+                )
+                .with_target(output.path().display().to_string()),
+            );
+            let interruption = published.deferred_interruption.map(|interruption| {
+                deferred_command_interruption_details(
+                    interruption,
+                    ExecutionInterruptionPhase::Publication,
+                    "JUnit publication completed after cancellation",
+                )
+            });
+            (None, interruption)
+        }
+        Err(error) => {
+            let message = error.to_string();
+            steps.push(
+                failed_step(
+                    "export_junit",
+                    ExecutionStepKind::Publish,
+                    started.elapsed().as_millis() as u64,
+                    message.clone(),
+                )
+                .with_target(output.path().display().to_string())
+                .with_errors(vec![test_execution_error(
+                    TestErrorKind::JunitExportFailed,
+                    message,
+                )]),
+            );
+            (Some(error), None)
+        }
+    }
+}
+
+fn with_junit_export(
+    mut outcome: ExecutionOutcome<TestReport>,
+    error: Option<&AppError>,
+    interruption: Option<ExecutionInterruptionDetails>,
+) -> ExecutionOutcome<TestReport> {
+    if let Some(error) = error {
+        let message = error.to_string();
+        outcome.diagnostics.push(message.clone());
+        outcome.errors.insert(
+            0,
+            test_execution_error(TestErrorKind::JunitExportFailed, message),
+        );
+        if outcome.status == ExecutionStatus::Succeeded {
+            outcome.status = ExecutionStatus::Failed;
+        }
+    }
+    if let Some(interruption) = interruption {
+        outcome.interruptions.push(interruption);
+    }
+    outcome
+}
 
 pub(super) fn run_tests(
     context: &ExecutionContext,
@@ -41,6 +126,39 @@ pub(super) fn run_tests(
 
     let mut steps = Vec::new();
     let mut warnings = Vec::new();
+    let junit_output = match prepare_junit_output(config, args) {
+        Ok(output) => output,
+        Err(error) => {
+            let message = error.to_string();
+            steps.push(
+                failed_step(
+                    "export_junit",
+                    ExecutionStepKind::Validation,
+                    0,
+                    message.clone(),
+                )
+                .with_errors(vec![test_execution_error(
+                    TestErrorKind::JunitExportFailed,
+                    message.clone(),
+                )]),
+            );
+            let outcome = ExecutionOutcome::new(ExecutionStatus::Failed)
+                .with_diagnostics(vec![message.clone()])
+                .with_errors(vec![test_execution_error(
+                    TestErrorKind::JunitExportFailed,
+                    message,
+                )]);
+            let result = make_test_result(
+                target,
+                mode,
+                outcome,
+                warnings,
+                steps,
+                started.elapsed().as_millis() as u64,
+            );
+            return Err(TestExecutionFailure::with_payload(error, result));
+        }
+    };
     if let Some(failure) =
         interrupted_test_failure(context, &target, &mode, &warnings, &steps, started)
     {
@@ -353,6 +471,51 @@ pub(super) fn run_tests(
                 step = step.with_errors(vec![test_execution_error(kind, app_error.to_string())]);
             }
             steps.push(step);
+            let (report, export_error, export_interruption) = if junit_output.is_some() {
+                let parse_started = Instant::now();
+                let parsed = parse_junit_report(&artifacts, true);
+                let report = parsed.result.payload;
+                if let Some(report) = &report {
+                    steps.push(
+                        succeeded_step(
+                            "parse_junit",
+                            ExecutionStepKind::ParseOutput,
+                            parse_started.elapsed().as_millis() as u64,
+                            format!("parsed {} test cases", report.summary.total),
+                        )
+                        .with_target(artifacts.junit_xml.display().to_string()),
+                    );
+                } else {
+                    let message = parsed
+                        .result
+                        .errors
+                        .first()
+                        .map_or("JUnit report could not be parsed", |error| {
+                            error.message.as_str()
+                        });
+                    steps.push(
+                        failed_step(
+                            "parse_junit",
+                            ExecutionStepKind::ParseOutput,
+                            parse_started.elapsed().as_millis() as u64,
+                            message,
+                        )
+                        .with_target(artifacts.junit_xml.display().to_string())
+                        .with_errors(parsed.result.errors),
+                    );
+                }
+                let (export_error, export_interruption) = export_junit(
+                    context,
+                    junit_output.as_ref(),
+                    parsed.bytes.as_deref(),
+                    report.is_some(),
+                    &mut steps,
+                    &mut warnings,
+                );
+                (report, export_error, export_interruption)
+            } else {
+                (None, None, None)
+            };
             let retained_paths = retain_run_artifacts(config, &artifacts).ok();
             let mut outcome =
                 ExecutionOutcome::new(status).with_diagnostics(vec![app_error.to_string()]);
@@ -363,7 +526,18 @@ pub(super) fn run_tests(
             if let Some(interruption) = interruption {
                 outcome = outcome.with_interruptions(vec![interruption]);
             }
-            let outcome = with_retained_artifacts(outcome, retained_paths);
+            if let Some(report) = report {
+                outcome = outcome
+                    .with_metrics(ExecutionMetrics::from(&report.summary))
+                    .with_payload(match mode {
+                        TestOutputMode::Full => report,
+                        TestOutputMode::Compact => compact_report(&report),
+                    });
+            }
+            let outcome = with_retained_artifacts(
+                with_junit_export(outcome, export_error.as_ref(), export_interruption),
+                retained_paths,
+            );
             let result = make_test_result(
                 target,
                 mode,
@@ -385,7 +559,9 @@ pub(super) fn run_tests(
 
     debug!(path = %artifacts.junit_xml.display(), "parsing JUnit report");
     let parse_junit_started = Instant::now();
-    let junit_parse = parse_junit_report(&artifacts);
+    let parsed_junit = parse_junit_report(&artifacts, junit_output.is_some());
+    let junit_bytes = parsed_junit.bytes;
+    let junit_parse = parsed_junit.result;
     let mut report = match junit_parse.payload {
         Some(report) => {
             steps.push(
@@ -428,16 +604,24 @@ pub(super) fn run_tests(
                     .with_errors(vec![error.with_details(junit_parse.diagnostics)]),
                 retained_paths,
             );
+            let (export_error, export_interruption) = export_junit(
+                context,
+                junit_output.as_ref(),
+                junit_bytes.as_deref(),
+                false,
+                &mut steps,
+                &mut warnings,
+            );
             let result = make_test_result(
                 target,
                 mode,
-                outcome,
+                with_junit_export(outcome, export_error.as_ref(), export_interruption),
                 warnings,
                 steps,
                 started.elapsed().as_millis() as u64,
             );
             return Err(TestExecutionFailure::with_payload(
-                AppError::Runtime(message),
+                export_error.unwrap_or(AppError::Runtime(message)),
                 result,
             ));
         }
@@ -449,6 +633,15 @@ pub(super) fn run_tests(
         &mut report,
         &mut warnings,
         &mut steps,
+    );
+
+    let (export_error, export_interruption) = export_junit(
+        context,
+        junit_output.as_ref(),
+        junit_bytes.as_deref(),
+        true,
+        &mut steps,
+        &mut warnings,
     );
 
     let rendered_report = match mode {
@@ -489,6 +682,7 @@ pub(super) fn run_tests(
                 .with_payload(rendered_report),
             retained_paths,
         );
+        let outcome = with_junit_export(outcome, export_error.as_ref(), export_interruption);
         let result = make_test_result(
             target,
             mode,
@@ -498,16 +692,40 @@ pub(super) fn run_tests(
             started.elapsed().as_millis() as u64,
         );
         return Err(TestExecutionFailure::with_payload(
-            AppError::Runtime(if process_failed {
+            export_error.unwrap_or(AppError::Runtime(if process_failed {
                 format!(
                     "enterprise test run exited with code {}",
                     platform_result.process.exit_code
                 )
             } else {
                 "test run reported failures".to_owned()
-            }),
+            })),
             result,
         ));
+    }
+
+    if let Some(error) = export_error {
+        let retained_paths = retain_run_artifacts(config, &artifacts).ok();
+        let outcome = with_retained_artifacts(
+            with_junit_export(
+                ExecutionOutcome::new(ExecutionStatus::Succeeded)
+                    .with_diagnostics(diagnostics)
+                    .with_metrics(ExecutionMetrics::from(&report.summary))
+                    .with_payload(rendered_report),
+                Some(&error),
+                export_interruption,
+            ),
+            retained_paths,
+        );
+        let result = make_test_result(
+            target,
+            mode,
+            outcome,
+            warnings,
+            steps,
+            started.elapsed().as_millis() as u64,
+        );
+        return Err(TestExecutionFailure::with_payload(error, result));
     }
 
     debug!(path = %artifacts.run_dir.display(), "cleaning successful test run directory");
@@ -515,10 +733,14 @@ pub(super) fn run_tests(
     Ok(make_test_result(
         target,
         mode,
-        ExecutionOutcome::new(ExecutionStatus::Succeeded)
-            .with_diagnostics(diagnostics)
-            .with_metrics(ExecutionMetrics::from(&report.summary))
-            .with_payload(rendered_report),
+        with_junit_export(
+            ExecutionOutcome::new(ExecutionStatus::Succeeded)
+                .with_diagnostics(diagnostics)
+                .with_metrics(ExecutionMetrics::from(&report.summary))
+                .with_payload(rendered_report),
+            None,
+            export_interruption,
+        ),
         warnings,
         steps,
         started.elapsed().as_millis() as u64,
@@ -555,5 +777,37 @@ fn validate_prepared_infobase(config: &AppConfig) -> Result<(), AppError> {
             "prepared file infobase is unavailable: expected '{}'",
             marker.display()
         )))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::with_junit_export;
+    use crate::domain::execution::{ExecutionOutcome, ExecutionStatus};
+    use crate::domain::test::{TestErrorKind, TestReport};
+    use crate::support::error::AppError;
+
+    #[test]
+    fn junit_export_failure_keeps_original_run_status_and_error() {
+        let outcome =
+            ExecutionOutcome::<TestReport>::new(ExecutionStatus::TimedOut).with_errors(vec![
+                crate::domain::test::test_execution_error(
+                    TestErrorKind::EnterpriseTimedOut,
+                    "run timed out",
+                ),
+            ]);
+        let error = AppError::Runtime("failed to publish JUnit".to_owned());
+
+        let outcome = with_junit_export(outcome, Some(&error), None);
+
+        assert_eq!(outcome.status, ExecutionStatus::TimedOut);
+        assert_eq!(
+            outcome.errors[0].code,
+            TestErrorKind::JunitExportFailed.code()
+        );
+        assert_eq!(
+            outcome.errors[1].code,
+            TestErrorKind::EnterpriseTimedOut.code()
+        );
     }
 }

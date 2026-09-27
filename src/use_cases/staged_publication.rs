@@ -5,8 +5,8 @@ use chrono::Utc;
 
 use crate::support::error::AppError;
 use crate::support::fs::{
-    ensure_dir, is_known_tool_name, metadata_sidecar_path, read_temp_dir_metadata,
-    remove_path_if_exists, replace_dir_atomically, replace_file_atomically,
+    ensure_dir, is_known_tool_name, metadata_sidecar_path, publish_file_noclobber,
+    read_temp_dir_metadata, remove_path_if_exists, replace_dir_atomically, replace_file_atomically,
     write_temp_dir_metadata, ReplaceFileFailureState, TempDirKind, TempDirMetadata,
 };
 use crate::use_cases::context::{ExecutionContext, ExecutionInterruption};
@@ -160,6 +160,27 @@ impl StagedPublication {
     ) -> Result<StagedPublicationOutcome, AppError> {
         self.publish_file_with_state(context, error_prefix)
             .map_err(|failure| failure.error)
+    }
+
+    /// Publish a staged file only when its target is still absent. A late target is never
+    /// moved to a backup or overwritten, which is required for an external JUnit destination.
+    pub fn publish_file_noclobber_after_completed_run(
+        &self,
+        context: &ExecutionContext,
+        error_prefix: &str,
+    ) -> Result<StagedPublicationOutcome, AppError> {
+        let phase = context.run_no_process_critical_phase(|| {
+            publish_file_noclobber(&self.staging_path, &self.target_path)
+                .map_err(|error| AppError::Runtime(format!("{error_prefix}: {error}")))
+        })?;
+        let cleanup_warning = remove_path_if_exists(&metadata_sidecar_path(&self.staging_path))
+            .err()
+            .map(|error| format!("failed to remove JUnit staging metadata: {error}"));
+        Ok(StagedPublicationOutcome {
+            cleanup_warning,
+            deferred_interruption: phase.deferred_interruption,
+            previous_target_present: self.previous_target_present,
+        })
     }
 
     #[allow(clippy::result_large_err)] // Typed rollback state must stay attached to the publication error.

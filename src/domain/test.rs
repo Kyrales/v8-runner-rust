@@ -23,6 +23,7 @@ pub const TEST_ERROR_CODE_TEST_FAILURES: &str = "test_failures";
 pub const TEST_ERROR_CODE_JUNIT_NOT_PRODUCED: &str = "junit_not_produced";
 pub const TEST_ERROR_CODE_JUNIT_EMPTY: &str = "junit_empty";
 pub const TEST_ERROR_CODE_JUNIT_MALFORMED: &str = "junit_malformed";
+pub const TEST_ERROR_CODE_JUNIT_EXPORT_FAILED: &str = "junit_export_failed";
 pub const TEST_RUNNER_ID: &str = "yaxunit";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema)]
@@ -56,6 +57,7 @@ pub enum TestErrorKind {
     JunitNotProduced,
     JunitEmpty,
     JunitMalformed,
+    JunitExportFailed,
 }
 
 impl TestErrorKind {
@@ -75,6 +77,7 @@ impl TestErrorKind {
             Self::JunitNotProduced => TEST_ERROR_CODE_JUNIT_NOT_PRODUCED,
             Self::JunitEmpty => TEST_ERROR_CODE_JUNIT_EMPTY,
             Self::JunitMalformed => TEST_ERROR_CODE_JUNIT_MALFORMED,
+            Self::JunitExportFailed => TEST_ERROR_CODE_JUNIT_EXPORT_FAILED,
         }
     }
 
@@ -94,6 +97,7 @@ impl TestErrorKind {
             TEST_ERROR_CODE_JUNIT_NOT_PRODUCED => Self::JunitNotProduced,
             TEST_ERROR_CODE_JUNIT_EMPTY => Self::JunitEmpty,
             TEST_ERROR_CODE_JUNIT_MALFORMED => Self::JunitMalformed,
+            TEST_ERROR_CODE_JUNIT_EXPORT_FAILED => Self::JunitExportFailed,
             _ => return None,
         })
     }
@@ -297,7 +301,8 @@ pub fn test_execution_status(kind: Option<TestErrorKind>, ok: bool) -> Execution
             | TestErrorKind::EnterpriseStdoutLogIo
             | TestErrorKind::EnterpriseStderrLogIo
             | TestErrorKind::EnterpriseExitedNonZero
-            | TestErrorKind::TestFailures,
+            | TestErrorKind::TestFailures
+            | TestErrorKind::JunitExportFailed,
         )
         | None => ExecutionStatus::Failed,
     }

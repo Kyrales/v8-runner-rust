@@ -438,6 +438,23 @@ pub fn validate_tools_download_bootstrap(config: &AppConfig) -> Result<(), Confi
     Ok(())
 }
 
+/// Check only Vanessa settings after a download prepares its local overlay.
+pub(crate) fn validate_vanessa_download_settings(
+    config: &AppConfig,
+) -> Result<(), ConfigValidationError> {
+    if !(1..=86_400).contains(&config.tests.execution_timeout_seconds) {
+        return Err(ConfigValidationError::InvalidTestExecutionTimeout);
+    }
+    validate_timeout_block(
+        &config.tests.va.timeouts,
+        ConfigValidationError::InvalidVanessaTimeout,
+    )?;
+    if config.tests.va.is_configured() {
+        validate_vanessa_config(config)?;
+    }
+    Ok(())
+}
+
 /// Validate only the configuration required to run tests against a prepared infobase.
 ///
 /// Source trees and build tooling are intentionally excluded because `test --no-build`
@@ -1155,6 +1172,10 @@ fn validate_test_config(config: &AppConfig) -> Result<(), ConfigValidationError>
         ConfigValidationError::InvalidVanessaTimeout,
     )?;
 
+    validate_vanessa_config(config)
+}
+
+fn validate_vanessa_config(config: &AppConfig) -> Result<(), ConfigValidationError> {
     let va = &config.tests.va;
     if !va.is_configured() {
         return Ok(());

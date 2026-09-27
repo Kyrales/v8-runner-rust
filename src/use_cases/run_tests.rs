@@ -1,5 +1,5 @@
 use std::fs;
-use std::io::BufReader;
+use std::io::{BufReader, Cursor};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -21,10 +21,15 @@ use crate::parsers::junit;
 use crate::parsers::vanessa_log;
 use crate::parsers::yaxunit_log;
 use crate::support::error::AppError;
+use crate::support::path::{
+    filesystem_object_identity, nearest_existing_canonical_path, stable_path_identity,
+    FilesystemObjectIdentity,
+};
 use crate::use_cases::build_project;
 use crate::use_cases::context::ExecutionContext;
 use crate::use_cases::request::{BuildRequest as BuildArgs, TestRequest as TestArgs};
 use crate::use_cases::result::{UseCaseFailure, UseCaseResult};
+use crate::use_cases::staged_publication::{StagedPublication, StagedPublicationOutcome};
 use crate::use_cases::vanessa::{self, VanessaTestArtifacts};
 use tracing::debug;
 
@@ -100,6 +105,210 @@ enum PreparedRun {
 }
 
 type TestExecutionFailure = UseCaseFailure<TestRunResult>;
+
+struct JunitOutput {
+    requested: PathBuf,
+    target: PathBuf,
+    parent_identity: FilesystemObjectIdentity,
+    target_identity: String,
+}
+
+impl JunitOutput {
+    fn path(&self) -> &Path {
+        &self.target
+    }
+
+    fn recheck(&self) -> Result<(), AppError> {
+        let current = nearest_existing_canonical_path(&self.requested).map_err(|error| {
+            AppError::Runtime(format!("failed to recheck JUnit output path: {error}"))
+        })?;
+        if current != self.target {
+            return Err(AppError::Runtime(
+                "JUnit output path changed before publication".to_owned(),
+            ));
+        }
+        let parent = self
+            .target
+            .parent()
+            .expect("validated JUnit target has parent");
+        if filesystem_object_identity(parent).map_err(|error| {
+            AppError::Runtime(format!("failed to recheck JUnit output parent: {error}"))
+        })? != self.parent_identity
+        {
+            return Err(AppError::Runtime(
+                "JUnit output parent changed before publication".to_owned(),
+            ));
+        }
+        match fs::symlink_metadata(&self.target) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Ok(_) => Err(AppError::Runtime(
+                "JUnit output target appeared before publication".to_owned(),
+            )),
+            Err(error) => Err(AppError::Runtime(format!(
+                "failed to recheck JUnit output target: {error}"
+            ))),
+        }
+    }
+}
+
+fn prepare_junit_output(
+    config: &AppConfig,
+    args: &TestArgs,
+) -> Result<Option<JunitOutput>, AppError> {
+    let Some(requested) = args.junit_output.as_deref() else {
+        return Ok(None);
+    };
+    if args.execution.profile.kind != crate::domain::runner::RunnerKind::YaXUnit {
+        return Err(AppError::Validation(
+            "--junit-output is available only for YaXUnit".to_owned(),
+        ));
+    }
+    let primary = args.junit_config_path.as_deref().ok_or_else(|| {
+        AppError::Validation("primary config path is required for --junit-output".to_owned())
+    })?;
+    if requested.file_name().is_none() || requested.as_os_str().is_empty() {
+        return Err(AppError::Validation(
+            "JUnit output must name a file".to_owned(),
+        ));
+    }
+    let original_metadata = match fs::symlink_metadata(requested) {
+        Ok(metadata) => Some(metadata),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => {
+            return Err(AppError::Runtime(format!(
+                "failed to inspect JUnit output: {error}"
+            )))
+        }
+    };
+    if let Some(metadata) = original_metadata.as_ref() {
+        if !metadata.is_file() || is_reparse_point(metadata) {
+            return Err(AppError::Validation(
+                "JUnit output must be a regular file, not a directory or link".to_owned(),
+            ));
+        }
+    }
+    let target = nearest_existing_canonical_path(requested).map_err(|error| {
+        AppError::Runtime(format!("failed to resolve JUnit output path: {error}"))
+    })?;
+    let original_target_identity = if original_metadata.is_some() {
+        Some(filesystem_object_identity(&target).map_err(|error| {
+            AppError::Runtime(format!("failed to observe JUnit output target: {error}"))
+        })?)
+    } else {
+        None
+    };
+    let protected =
+        std::iter::once(primary.to_path_buf())
+            .chain(std::iter::once(
+                primary.with_file_name(crate::config::loader::LOCAL_CONFIG_FILE_NAME),
+            ))
+            .chain(config.source_sets.iter().map(|source| {
+                if source.path.is_absolute() {
+                    source.path.clone()
+                } else {
+                    config.base_path.join(&source.path)
+                }
+            }))
+            .chain(config.tools.va.epf_path.iter().cloned())
+            .chain(config.tests.va.params_path.iter().cloned())
+            .chain(config.tools.client_mcp.extension.iter().map(
+                |extension| match &extension.input {
+                    crate::config::model::ToolExtensionInput::Source(source) => source.path.clone(),
+                    crate::config::model::ToolExtensionInput::Artifact(artifact) => {
+                        artifact.path.clone()
+                    }
+                },
+            ));
+    for path in protected {
+        let path = if path.is_absolute() {
+            path
+        } else {
+            config.base_path.join(path)
+        };
+        let protected_path = nearest_existing_canonical_path(&path).map_err(|error| {
+            AppError::Runtime(format!("failed to resolve protected JUnit path: {error}"))
+        })?;
+        if target == protected_path
+            || (protected_path.is_dir() && target.starts_with(&protected_path))
+        {
+            return Err(AppError::Validation(format!(
+                "JUnit output targets a configuration, source, or tool input: {}",
+                requested.display()
+            )));
+        }
+    }
+    let parent = target.parent().ok_or_else(|| {
+        AppError::Validation("JUnit output must have a parent directory".to_owned())
+    })?;
+    fs::create_dir_all(parent).map_err(|error| {
+        AppError::Runtime(format!("failed to create JUnit output parent: {error}"))
+    })?;
+    if nearest_existing_canonical_path(requested).map_err(|error| {
+        AppError::Runtime(format!("failed to recheck JUnit output path: {error}"))
+    })? != target
+    {
+        return Err(AppError::Runtime(
+            "JUnit output path changed before preparation".to_owned(),
+        ));
+    }
+    let parent_identity = filesystem_object_identity(parent).map_err(|error| {
+        AppError::Runtime(format!("failed to observe JUnit output parent: {error}"))
+    })?;
+    if let Some(identity) = original_target_identity.as_ref() {
+        crate::support::fs::remove_file_if_identity(&target, identity).map_err(|error| {
+            AppError::Runtime(format!(
+                "failed to remove prior JUnit output safely: {error}"
+            ))
+        })?;
+    }
+    let output = JunitOutput {
+        requested: requested.to_path_buf(),
+        target_identity: stable_path_identity(&target),
+        target,
+        parent_identity,
+    };
+    output.recheck()?;
+    Ok(Some(output))
+}
+
+fn is_reparse_point(metadata: &fs::Metadata) -> bool {
+    if metadata.file_type().is_symlink() {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        metadata.file_attributes() & 0x400 != 0
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
+}
+
+fn publish_junit_output(
+    context: &ExecutionContext,
+    output: &JunitOutput,
+    bytes: &[u8],
+) -> Result<StagedPublicationOutcome, AppError> {
+    let publication = StagedPublication::prepare_file(
+        &output.target,
+        &output.target_identity,
+        ".v8-runner-junit-stage",
+        "xml",
+    )?;
+    if let Err(error) = fs::write(publication.staging_path(), bytes) {
+        return Err(publication.cleanup_failure(AppError::Runtime(format!(
+            "failed to stage JUnit output: {error}"
+        ))));
+    }
+    if let Err(error) = output.recheck() {
+        return Err(publication.cleanup_failure(error));
+    }
+    publication
+        .publish_file_noclobber_after_completed_run(context, "failed to publish JUnit output")
+        .map_err(|error| publication.cleanup_failure(error))
+}
 
 fn run_tests(
     context: &ExecutionContext,
@@ -311,35 +520,62 @@ fn discover_junit_report(root: &Path) -> Option<PathBuf> {
     None
 }
 
-fn parse_junit_report(artifacts: &RunArtifacts) -> crate::parsers::NormalizedParse<TestReport> {
-    if !artifacts.junit_xml.exists() {
-        return crate::parsers::NormalizedParse::default().with_errors(vec![test_execution_error(
-            TestErrorKind::JunitNotProduced,
-            "JUnit report was not produced",
-        )]);
-    }
-    if fs::metadata(&artifacts.junit_xml)
-        .map(|meta| meta.len() == 0)
-        .unwrap_or(false)
-    {
-        return crate::parsers::NormalizedParse::default().with_errors(vec![test_execution_error(
-            TestErrorKind::JunitEmpty,
-            "JUnit report is empty",
-        )]);
-    }
-    let file = fs::File::open(&artifacts.junit_xml).map_err(|error| error.to_string());
-    let file = match file {
-        Ok(file) => file,
-        Err(error) => {
-            return crate::parsers::NormalizedParse::default().with_errors(vec![
-                test_execution_error(TestErrorKind::JunitNotProduced, error),
-            ]);
-        }
+struct ParsedJunitReport {
+    result: crate::parsers::NormalizedParse<TestReport>,
+    bytes: Option<Vec<u8>>,
+}
+
+fn parse_junit_report(artifacts: &RunArtifacts, retain_bytes: bool) -> ParsedJunitReport {
+    let (mut normalized, bytes) = if retain_bytes {
+        let bytes = match fs::read(&artifacts.junit_xml) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                let message = if error.kind() == std::io::ErrorKind::NotFound {
+                    "JUnit report was not produced".to_owned()
+                } else {
+                    error.to_string()
+                };
+                return ParsedJunitReport {
+                    result: crate::parsers::NormalizedParse::default().with_errors(vec![
+                        test_execution_error(TestErrorKind::JunitNotProduced, message),
+                    ]),
+                    bytes: None,
+                };
+            }
+        };
+        let normalized = if bytes.is_empty() {
+            crate::parsers::NormalizedParse::default().with_errors(vec![test_execution_error(
+                TestErrorKind::JunitEmpty,
+                "JUnit report is empty",
+            )])
+        } else {
+            junit::parse_normalized(Cursor::new(bytes.as_slice()))
+        };
+        (normalized, Some(bytes))
+    } else {
+        let file = match fs::File::open(&artifacts.junit_xml) {
+            Ok(file) => file,
+            Err(error) => {
+                let message = if error.kind() == std::io::ErrorKind::NotFound {
+                    "JUnit report was not produced".to_owned()
+                } else {
+                    error.to_string()
+                };
+                return ParsedJunitReport {
+                    result: crate::parsers::NormalizedParse::default().with_errors(vec![
+                        test_execution_error(TestErrorKind::JunitNotProduced, message),
+                    ]),
+                    bytes: None,
+                };
+            }
+        };
+        (junit::parse_normalized(BufReader::new(file)), None)
     };
-    let reader = BufReader::new(file);
-    let mut normalized = junit::parse_normalized(reader);
     if normalized.errors.is_empty() {
-        return normalized;
+        return ParsedJunitReport {
+            result: normalized,
+            bytes,
+        };
     }
     normalized.errors = normalized
         .errors
@@ -352,7 +588,10 @@ fn parse_junit_report(artifacts: &RunArtifacts) -> crate::parsers::NormalizedPar
             _ => error,
         })
         .collect();
-    normalized
+    ParsedJunitReport {
+        result: normalized,
+        bytes,
+    }
 }
 
 fn compact_report(report: &TestReport) -> TestReport {
@@ -520,8 +759,8 @@ fn set_file_permissions(path: &Path) -> std::io::Result<()> {
 mod tests {
     use super::{
         build_yaxunit_config, compact_report, create_run_artifacts, materialize_vanessa_runner_log,
-        parse_junit_report, retain_run_artifacts, run_tests, sanitize_text, sanitize_text_full,
-        truncate_stack_trace, RunArtifacts,
+        parse_junit_report, prepare_junit_output, retain_run_artifacts, run_tests, sanitize_text,
+        sanitize_text_full, truncate_stack_trace, RunArtifacts,
     };
     use crate::config::model::{
         AppConfig, BuildConfig, PlatformToolConfig, SourceFormat, SourceSetConfig,
@@ -712,7 +951,7 @@ mod tests {
         std::fs::write(&artifacts.platform_log, b"enterprise /Out").expect("platform log");
 
         materialize_vanessa_runner_log(&artifacts).expect("materialize log");
-        let junit_parse = parse_junit_report(&artifacts);
+        let junit_parse = parse_junit_report(&artifacts, false).result;
         assert!(junit_parse.payload.is_none());
         assert_eq!(
             junit_parse.errors[0].code,
@@ -724,6 +963,74 @@ mod tests {
             .expect("retained paths");
         assert!(retained_paths.yaxunit_log.exists());
         assert_eq!(retained_paths.yaxunit_log, artifacts.runner_log);
+    }
+
+    fn junit_request(output: PathBuf, primary: PathBuf) -> TestRequest {
+        TestRequest {
+            execution: TestRequest::default_execution(),
+            full: false,
+            build_policy: crate::use_cases::request::TestBuildPolicy::Skip,
+            scope: TestScopeRequest::All,
+            junit_output: Some(output),
+            junit_config_path: Some(primary),
+        }
+    }
+
+    #[test]
+    fn junit_output_removes_only_a_valid_old_report_before_test_setup() {
+        let dir = tempdir().expect("tempdir");
+        let config = config(dir.path());
+        let primary = config.base_path.join("v8project.yaml");
+        std::fs::write(&primary, "config").expect("config");
+        let output = dir.path().join("reports/report.xml");
+        std::fs::create_dir_all(output.parent().expect("parent")).expect("reports");
+        std::fs::write(&output, "old report").expect("old report");
+        let request = junit_request(output.clone(), primary);
+
+        let prepared = prepare_junit_output(&config, &request)
+            .expect("preflight")
+            .expect("requested report");
+        assert!(!output.exists());
+        assert_eq!(
+            prepared.path(),
+            crate::support::path::nearest_existing_canonical_path(&output)
+                .expect("canonical report")
+        );
+        std::fs::write(&output, "late target").expect("late target");
+        assert!(prepared.recheck().is_err());
+        assert_eq!(
+            std::fs::read_to_string(&output).expect("target"),
+            "late target"
+        );
+    }
+
+    #[test]
+    fn junit_output_rejects_config_and_source_without_deleting_them() {
+        let dir = tempdir().expect("tempdir");
+        let config = config(dir.path());
+        let primary = config.base_path.join("v8project.yaml");
+        std::fs::write(&primary, "config").expect("config");
+        let source = config.base_path.join("main/module.bsl");
+        std::fs::write(&source, "source").expect("source");
+        for protected in [&primary, &source] {
+            let request = junit_request(protected.clone(), primary.clone());
+            assert!(prepare_junit_output(&config, &request).is_err());
+            assert!(protected.exists());
+        }
+    }
+
+    #[test]
+    fn parsed_junit_keeps_the_exact_bytes_when_source_changes_later() {
+        let dir = tempdir().expect("tempdir");
+        let artifacts = create_artifacts(dir.path());
+        std::fs::create_dir_all(&artifacts.run_dir).expect("run dir");
+        let original = b"<testsuite name=\"suite\">\r\n<testcase name=\"passed\"/>\r\n</testsuite>";
+        std::fs::write(&artifacts.junit_xml, original).expect("junit");
+
+        let parsed = parse_junit_report(&artifacts, true);
+        assert_eq!(parsed.result.payload.expect("parsed").summary.total, 1);
+        std::fs::write(&artifacts.junit_xml, b"replacement").expect("replace source");
+        assert_eq!(parsed.bytes.expect("read bytes"), original);
     }
 
     #[test]
@@ -749,6 +1056,8 @@ mod tests {
         );
 
         let args = crate::use_cases::request::TestRequest {
+            junit_output: None,
+            junit_config_path: None,
             full: false,
             build_policy: crate::use_cases::request::TestBuildPolicy::BuildFirst,
             scope: crate::use_cases::request::TestScopeRequest::All,
@@ -781,6 +1090,8 @@ mod tests {
         cancellation.cancel();
         let context = ExecutionContext::cli(CommandName::Test).with_cancellation(cancellation);
         let args = TestRequest {
+            junit_output: None,
+            junit_config_path: None,
             full: false,
             build_policy: crate::use_cases::request::TestBuildPolicy::BuildFirst,
             scope: TestScopeRequest::All,

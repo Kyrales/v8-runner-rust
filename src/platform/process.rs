@@ -126,43 +126,7 @@ impl ManagedSpawnResult {
                     "managed child missing",
                 ),
             })?;
-        let started = std::time::Instant::now();
-        loop {
-            if let Some(status) =
-                spawned
-                    .child
-                    .try_wait()
-                    .map_err(|source| ProcessError::StartupCheckFailed {
-                        cmd: self.rendered_command.clone(),
-                        source,
-                    })?
-            {
-                return Ok(ManagedProcessOutcome {
-                    exit_code: Some(status.code().unwrap_or(-1)),
-                    timed_out: false,
-                });
-            }
-            if policy.cancellation.is_cancelled() {
-                terminate_child_group_gracefully(&mut spawned, policy.graceful_shutdown_timeout);
-                let _ = spawned.child.wait();
-                return Err(ProcessError::Cancelled {
-                    cmd: self.rendered_command.clone(),
-                    delivered: self.delivered,
-                });
-            }
-            if policy
-                .timeout
-                .is_some_and(|timeout| started.elapsed() >= timeout)
-            {
-                terminate_child_group_gracefully(&mut spawned, policy.graceful_shutdown_timeout);
-                let _ = spawned.child.wait();
-                return Ok(ManagedProcessOutcome {
-                    exit_code: None,
-                    timed_out: true,
-                });
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        }
+        managed_wait(&mut spawned, policy, &self.rendered_command, self.delivered)
     }
 }
 
@@ -171,6 +135,21 @@ impl ManagedSpawnResult {
 pub struct ManagedProcessOutcome {
     pub exit_code: Option<i32>,
     pub timed_out: bool,
+}
+
+/// Distinct failures at the managed wait boundary. A failed cleanup is never a timeout
+/// or a completed cancellation, even when that was the reason cleanup began.
+#[derive(Debug, Default)]
+pub struct ManagedCleanupFailure {
+    pub terminate: Option<std::io::Error>,
+    pub verify: Option<std::io::Error>,
+    pub reap: Option<std::io::Error>,
+}
+
+impl ManagedCleanupFailure {
+    fn failed(&self) -> bool {
+        self.terminate.is_some() || self.verify.is_some() || self.reap.is_some()
+    }
 }
 
 impl Drop for ManagedSpawnResult {
@@ -329,6 +308,16 @@ pub enum ProcessError {
 
     #[error("failed to observe process startup '{cmd}': {source}")]
     StartupCheckFailed { cmd: String, source: std::io::Error },
+
+    #[error(
+        "managed process wait failed for '{cmd}': observation={observation:?}, cleanup={cleanup:?}"
+    )]
+    ManagedWaitFailed {
+        cmd: String,
+        interruption: Option<ProcessInterruptionReason>,
+        observation: Option<std::io::Error>,
+        cleanup: ManagedCleanupFailure,
+    },
 
     #[error("process exited before startup completed '{cmd}' (exit {exit_code})")]
     ExitedEarly { cmd: String, exit_code: i32 },
@@ -548,6 +537,235 @@ impl ProcessIoMode {
 
 struct SpawnedChild {
     child: ChildHandle,
+}
+
+trait ManagedWaitOps {
+    fn observe(&mut self) -> std::io::Result<Option<std::process::ExitStatus>>;
+    fn terminate_group(&mut self, force: bool) -> std::io::Result<()>;
+    fn group_exists(&mut self) -> std::io::Result<bool>;
+}
+
+struct ManagedChildOps<'a> {
+    spawned: &'a mut SpawnedChild,
+    #[cfg(windows)]
+    group_terminated: bool,
+}
+
+impl ManagedWaitOps for ManagedChildOps<'_> {
+    fn observe(&mut self) -> std::io::Result<Option<std::process::ExitStatus>> {
+        self.spawned.child.try_wait()
+    }
+
+    fn terminate_group(&mut self, force: bool) -> std::io::Result<()> {
+        #[cfg(unix)]
+        {
+            let signal = if force { libc::SIGKILL } else { libc::SIGTERM };
+            let result = unsafe { libc::kill(-(self.spawned.child.id() as i32), signal) };
+            if result == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH) {
+                Ok(())
+            } else {
+                Err(std::io::Error::last_os_error())
+            }
+        }
+        #[cfg(windows)]
+        {
+            let _ = force;
+            let tree = Command::new("taskkill")
+                .args(["/T", "/F", "/PID", &self.spawned.child.id().to_string()])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+            // JobObject covers descendants even when the parent races taskkill and exits.
+            let job = self.spawned.child.start_kill();
+            if job.is_ok() || tree.as_ref().is_ok_and(|status| status.success()) {
+                self.group_terminated = true;
+                Ok(())
+            } else {
+                Err(std::io::Error::other(format!(
+                    "taskkill: {tree:?}; JobObject: {job:?}"
+                )))
+            }
+        }
+        #[cfg(all(not(unix), not(windows)))]
+        {
+            let _ = force;
+            self.spawned.child.start_kill()
+        }
+    }
+
+    fn group_exists(&mut self) -> std::io::Result<bool> {
+        #[cfg(unix)]
+        {
+            let result = unsafe { libc::kill(-(self.spawned.child.id() as i32), 0) };
+            if result == 0 {
+                Ok(true)
+            } else {
+                match std::io::Error::last_os_error().raw_os_error() {
+                    Some(libc::ESRCH) => Ok(false),
+                    Some(libc::EPERM) => Ok(true),
+                    _ => Err(std::io::Error::last_os_error()),
+                }
+            }
+        }
+        #[cfg(windows)]
+        {
+            Ok(!self.group_terminated)
+        }
+        #[cfg(all(not(unix), not(windows)))]
+        {
+            Ok(false)
+        }
+    }
+}
+
+fn managed_wait(
+    spawned: &mut SpawnedChild,
+    policy: &ProcessExecutionPolicy,
+    cmd: &str,
+    delivered: bool,
+) -> Result<ManagedProcessOutcome, ProcessError> {
+    let mut ops = ManagedChildOps {
+        spawned,
+        #[cfg(windows)]
+        group_terminated: false,
+    };
+    managed_wait_with_ops(&mut ops, policy, cmd, delivered)
+}
+
+fn managed_wait_with_ops(
+    ops: &mut impl ManagedWaitOps,
+    policy: &ProcessExecutionPolicy,
+    cmd: &str,
+    delivered: bool,
+) -> Result<ManagedProcessOutcome, ProcessError> {
+    let started = std::time::Instant::now();
+    loop {
+        match ops.observe() {
+            Ok(Some(status)) => {
+                return Ok(ManagedProcessOutcome {
+                    exit_code: Some(status.code().unwrap_or(-1)),
+                    timed_out: false,
+                })
+            }
+            Err(observation) => {
+                let cleanup = cleanup_managed_group(ops, policy.graceful_shutdown_timeout);
+                return Err(ProcessError::ManagedWaitFailed {
+                    cmd: cmd.to_owned(),
+                    interruption: None,
+                    observation: Some(observation),
+                    cleanup,
+                });
+            }
+            Ok(None) => {}
+        }
+        let interruption = if policy.cancellation.is_cancelled() {
+            Some(ProcessInterruptionReason::Cancelled)
+        } else if policy
+            .timeout
+            .is_some_and(|timeout| started.elapsed() >= timeout)
+        {
+            Some(ProcessInterruptionReason::TimedOut)
+        } else {
+            None
+        };
+        if let Some(reason) = interruption {
+            let cleanup = cleanup_managed_group(ops, policy.graceful_shutdown_timeout);
+            if cleanup.failed() {
+                return Err(ProcessError::ManagedWaitFailed {
+                    cmd: cmd.to_owned(),
+                    interruption: Some(reason),
+                    observation: None,
+                    cleanup,
+                });
+            }
+            return match reason {
+                ProcessInterruptionReason::Cancelled => Err(ProcessError::Cancelled {
+                    cmd: cmd.to_owned(),
+                    delivered,
+                }),
+                ProcessInterruptionReason::TimedOut => Ok(ManagedProcessOutcome {
+                    exit_code: None,
+                    timed_out: true,
+                }),
+            };
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+fn cleanup_managed_group(ops: &mut impl ManagedWaitOps, grace: Duration) -> ManagedCleanupFailure {
+    let mut failure = ManagedCleanupFailure::default();
+    if let Err(error) = ops.terminate_group(false) {
+        failure.terminate = Some(error);
+    }
+    let deadline = std::time::Instant::now() + grace;
+    loop {
+        let reaped = match ops.observe() {
+            Ok(status) => status.is_some(),
+            Err(error) => {
+                failure.reap = Some(error);
+                false
+            }
+        };
+        let group_gone = match ops.group_exists() {
+            Ok(exists) => !exists,
+            Err(error) => {
+                failure.verify = Some(error);
+                false
+            }
+        };
+        if reaped && group_gone {
+            return failure;
+        }
+        if std::time::Instant::now() >= deadline
+            || failure.terminate.is_some()
+            || failure.verify.is_some()
+            || failure.reap.is_some()
+        {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    if let Err(error) = ops.terminate_group(true) {
+        failure.terminate.get_or_insert(error);
+    }
+    let deadline = std::time::Instant::now() + Duration::from_millis(250);
+    loop {
+        let reaped = match ops.observe() {
+            Ok(status) => status.is_some(),
+            Err(error) => {
+                failure.reap.get_or_insert(error);
+                false
+            }
+        };
+        let group_gone = match ops.group_exists() {
+            Ok(exists) => !exists,
+            Err(error) => {
+                failure.verify.get_or_insert(error);
+                false
+            }
+        };
+        if reaped && group_gone {
+            return failure;
+        }
+        if std::time::Instant::now() >= deadline {
+            if !reaped && failure.reap.is_none() {
+                failure.reap = Some(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "child was not reaped",
+                ));
+            }
+            if !group_gone && failure.verify.is_none() {
+                failure.verify = Some(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "process group is still running",
+                ));
+            }
+            return failure;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
 }
 
 enum ChildHandle {
@@ -1163,14 +1381,159 @@ impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for DeferralWatch {
 #[cfg(test)]
 mod tests {
     use super::{
-        is_invalid_standard_handle_error, render_command, ManagedSpawnMode, ProcessError,
-        ProcessExecutionPolicy, ProcessExecutor, ProcessInterruptionAction,
-        ProcessInterruptionReason, ProcessInterruptionSafety, ProcessIoMode, ProcessRequest,
-        ProcessRunner, WorkGiven, WINDOWS_ERROR_INVALID_HANDLE,
+        is_invalid_standard_handle_error, managed_wait_with_ops, render_command, ManagedSpawnMode,
+        ManagedWaitOps, ProcessError, ProcessExecutionPolicy, ProcessExecutor,
+        ProcessInterruptionAction, ProcessInterruptionReason, ProcessInterruptionSafety,
+        ProcessIoMode, ProcessRequest, ProcessRunner, WorkGiven, WINDOWS_ERROR_INVALID_HANDLE,
     };
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::thread;
+
+    struct ManagedWaitProbe {
+        observations: usize,
+        observation_error: bool,
+        reap_error: bool,
+        terminate_error: bool,
+        verify_error: bool,
+        stubborn: bool,
+        terminated: bool,
+    }
+
+    impl ManagedWaitProbe {
+        fn new() -> Self {
+            Self {
+                observations: 0,
+                observation_error: false,
+                reap_error: false,
+                terminate_error: false,
+                verify_error: false,
+                stubborn: false,
+                terminated: false,
+            }
+        }
+    }
+
+    impl ManagedWaitOps for ManagedWaitProbe {
+        fn observe(&mut self) -> std::io::Result<Option<std::process::ExitStatus>> {
+            self.observations += 1;
+            if self.observations == 1 && self.observation_error {
+                return Err(std::io::Error::other("observation"));
+            }
+            if self.observations == 2 && self.reap_error {
+                return Err(std::io::Error::other("reap"));
+            }
+            Ok(self.terminated.then(success_status))
+        }
+
+        fn terminate_group(&mut self, _force: bool) -> std::io::Result<()> {
+            self.terminated = !self.stubborn;
+            if self.terminate_error {
+                Err(std::io::Error::other("terminate"))
+            } else {
+                Ok(())
+            }
+        }
+
+        fn group_exists(&mut self) -> std::io::Result<bool> {
+            if self.verify_error {
+                self.verify_error = false;
+                Err(std::io::Error::other("verify"))
+            } else {
+                Ok(!self.terminated)
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    fn success_status() -> std::process::ExitStatus {
+        use std::os::windows::process::ExitStatusExt;
+        std::process::ExitStatus::from_raw(0)
+    }
+
+    #[cfg(unix)]
+    fn success_status() -> std::process::ExitStatus {
+        use std::os::unix::process::ExitStatusExt;
+        std::process::ExitStatus::from_raw(0)
+    }
+
+    #[test]
+    fn managed_wait_preserves_observation_error_after_successful_cleanup() {
+        let mut probe = ManagedWaitProbe::new();
+        probe.observation_error = true;
+        let result =
+            managed_wait_with_ops(&mut probe, &ProcessExecutionPolicy::default(), "test", true);
+        assert!(matches!(result, Err(ProcessError::ManagedWaitFailed {
+            observation: Some(_), cleanup, interruption: None, ..
+        }) if !cleanup.failed()));
+        assert!(probe.terminated);
+    }
+
+    #[test]
+    fn managed_wait_preserves_observation_and_cleanup_errors_together() {
+        let mut probe = ManagedWaitProbe::new();
+        probe.observation_error = true;
+        probe.terminate_error = true;
+        probe.reap_error = true;
+        let result =
+            managed_wait_with_ops(&mut probe, &ProcessExecutionPolicy::default(), "test", true);
+        assert!(matches!(result, Err(ProcessError::ManagedWaitFailed {
+            observation: Some(_), cleanup, interruption: None, ..
+        }) if cleanup.terminate.is_some() && cleanup.reap.is_some()));
+    }
+
+    #[test]
+    fn managed_wait_timeout_requires_verified_cleanup() {
+        let mut probe = ManagedWaitProbe::new();
+        let mut policy = ProcessExecutionPolicy::default();
+        policy.timeout = Some(Duration::ZERO);
+        let result = managed_wait_with_ops(&mut probe, &policy, "test", true);
+        assert!(matches!(result, Ok(outcome) if outcome.timed_out));
+        assert!(probe.terminated);
+
+        let mut probe = ManagedWaitProbe::new();
+        probe.verify_error = true;
+        let result = managed_wait_with_ops(&mut probe, &policy, "test", true);
+        assert!(matches!(result, Err(ProcessError::ManagedWaitFailed {
+            interruption: Some(ProcessInterruptionReason::TimedOut), cleanup, ..
+        }) if cleanup.verify.is_some()));
+
+        let mut probe = ManagedWaitProbe::new();
+        probe.reap_error = true;
+        let result = managed_wait_with_ops(&mut probe, &policy, "test", true);
+        assert!(matches!(result, Err(ProcessError::ManagedWaitFailed {
+            interruption: Some(ProcessInterruptionReason::TimedOut), cleanup, ..
+        }) if cleanup.reap.is_some()));
+
+        let mut probe = ManagedWaitProbe::new();
+        probe.stubborn = true;
+        policy.graceful_shutdown_timeout = Duration::ZERO;
+        let result = managed_wait_with_ops(&mut probe, &policy, "test", true);
+        assert!(matches!(result, Err(ProcessError::ManagedWaitFailed {
+            interruption: Some(ProcessInterruptionReason::TimedOut), cleanup, ..
+        }) if cleanup.reap.is_some() && cleanup.verify.is_some()));
+    }
+
+    #[test]
+    fn managed_wait_cancellation_requires_verified_cleanup() {
+        let mut policy = ProcessExecutionPolicy::default();
+        policy.cancellation.cancel();
+        let mut probe = ManagedWaitProbe::new();
+        assert!(matches!(
+            managed_wait_with_ops(&mut probe, &policy, "test", true),
+            Err(ProcessError::Cancelled {
+                delivered: true,
+                ..
+            })
+        ));
+
+        let mut probe = ManagedWaitProbe::new();
+        probe.terminate_error = true;
+        let result = managed_wait_with_ops(&mut probe, &policy, "test", true);
+        assert!(matches!(result, Err(ProcessError::ManagedWaitFailed {
+            interruption: Some(ProcessInterruptionReason::Cancelled), cleanup, ..
+        }) if cleanup.terminate.is_some()));
+    }
     use std::time::Duration;
     use tempfile::tempdir;
     use tokio_util::sync::CancellationToken;
@@ -1849,6 +2212,54 @@ mod tests {
                 "managed termination should terminate Windows job child {child_pid}; fallback cleanup: {cleanup:?}"
             );
         }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn managed_wait_timeout_terminates_windows_job_descendants() {
+        let dir = tempdir().expect("tempdir");
+        let script = dir.path().join("spawn-child.ps1");
+        let child_pid_path = dir.path().join("child.pid");
+        fs::write(
+            &script,
+            format!(
+                "$child = Start-Process -FilePath powershell.exe -WindowStyle Hidden -ArgumentList @('-NoProfile','-Command','Start-Sleep -Seconds 30') -PassThru\nSet-Content -LiteralPath {} -Value $child.Id\nStart-Sleep -Seconds 30\n",
+                powershell_literal(&child_pid_path)
+            ),
+        )
+        .expect("write script");
+        let managed = ProcessExecutor
+            .spawn_managed(
+                &ProcessRequest {
+                    program: PathBuf::from("powershell.exe"),
+                    args: vec![
+                        "-NoProfile".to_owned(),
+                        "-ExecutionPolicy".to_owned(),
+                        "Bypass".to_owned(),
+                        "-File".to_owned(),
+                        script.display().to_string(),
+                    ],
+                    workdir: None,
+                    stdout_log_path: None,
+                    stderr_log_path: Some(dir.path().join("stderr.log")),
+                    startup_probe: None,
+                },
+                ManagedSpawnMode::Wait,
+                None,
+            )
+            .expect("spawn managed wait");
+        let child_pid = read_pid(&child_pid_path);
+        let mut policy = ProcessExecutionPolicy::default();
+        policy.timeout = Some(Duration::ZERO);
+        let result = managed.wait_for_exit(&policy);
+        assert!(
+            matches!(result, Ok(outcome) if outcome.timed_out),
+            "{result:?}"
+        );
+        assert!(
+            !process_exists(child_pid),
+            "job descendant {child_pid} survived"
+        );
     }
 
     #[cfg(windows)]

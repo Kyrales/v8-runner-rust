@@ -11,7 +11,18 @@ use crate::domain::issue::{EdtIssue, Issue, IssueSeverity};
 /// both legacy tab-separated lines with 3..=6 columns and the current 8-column
 /// `1cedtcli` issue table, skipping malformed rows with warnings.
 pub fn parse(content: &str) -> Vec<Issue> {
+    parse_detailed(content).issues
+}
+
+/// Parsed issues and the number of nonempty, nonheader lines that could not be parsed.
+pub struct DetailedParse {
+    pub issues: Vec<Issue>,
+    pub unrecognized_line_count: usize,
+}
+
+pub fn parse_detailed(content: &str) -> DetailedParse {
     let mut issues = Vec::new();
+    let mut unrecognized_line_count = 0;
 
     for (index, raw_line) in content.lines().enumerate() {
         let line_no = index + 1;
@@ -28,6 +39,7 @@ pub fn parse(content: &str) -> Vec<Issue> {
             continue;
         }
 
+        unrecognized_line_count += 1;
         warn!(
             line_no,
             line = raw_line,
@@ -35,7 +47,10 @@ pub fn parse(content: &str) -> Vec<Issue> {
         );
     }
 
-    issues
+    DetailedParse {
+        issues,
+        unrecognized_line_count,
+    }
 }
 
 #[cfg(test)]
@@ -226,7 +241,7 @@ fn looks_like_timestamp(value: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse, parse_path};
+    use super::{parse, parse_detailed, parse_path};
     use crate::domain::issue::{Issue, IssueSeverity};
     use tempfile::tempdir;
 
@@ -359,6 +374,25 @@ mod tests {
             }
             _ => panic!("expected edt issue"),
         }
+    }
+
+    #[test]
+    fn detailed_parse_counts_only_unrecognized_lines() {
+        let content = "\nseverity\tpath\tmessage\nERROR\tCatalogs.Items\tbad call\nrandom noise\nERROR\t\t12\t3\tcheck\tmessage\n\t  \n";
+
+        let result = parse_detailed(content);
+
+        assert_eq!(result.issues.len(), 1);
+        assert_eq!(result.unrecognized_line_count, 2);
+        assert_eq!(parse(content), result.issues);
+    }
+
+    #[test]
+    fn detailed_parse_accepts_empty_and_header_only_logs() {
+        let result = parse_detailed("\nseverity\tpath\tmessage\n  \n");
+
+        assert!(result.issues.is_empty());
+        assert_eq!(result.unrecognized_line_count, 0);
     }
 
     #[test]

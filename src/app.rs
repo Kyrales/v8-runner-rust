@@ -258,13 +258,14 @@ pub fn run() -> i32 {
         | Command::Artifacts(_)
         | Command::Syntax(_)
         | Command::Launch(_)
-        | Command::Publish(_) => execute::execute_command(
+        | Command::Publish(_) => execute::execute_command_with_selector(
             &config,
             &cli.command,
             Some(primary_config_path),
             &presenter,
             cli.clean_before_execution,
             cli.dry_run,
+            crate::config::model::InfobaseSelector::from_flag(cli.infobase.as_deref()),
         ),
         Command::Infobase(_) => execute::execute_prepared_infobase_command(
             &config,

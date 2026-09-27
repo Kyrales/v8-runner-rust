@@ -97,11 +97,12 @@ strip_shell_quotes() {
     printf '%s\n' "$value"
 }
 
-extract_yaml_scalar() {
-    local key="$1"
-    awk -v key="$key" '
-        $0 ~ "^[[:space:]]*" key ":[[:space:]]*" {
-            sub("^[[:space:]]*" key ":[[:space:]]*", "", $0)
+extract_push_provider() {
+    awk '
+        /^providers:[[:space:]]*$/ { in_providers = 1; next }
+        in_providers && /^[^[:space:]#]/ { exit }
+        in_providers && /^  push:[[:space:]]*/ {
+            sub(/^  push:[[:space:]]*/, "", $0)
             print
             exit
         }
@@ -217,9 +218,9 @@ for step in steps:
     if step.get("source_set") == source_set:
         if step.get("ok") is True:
             raise SystemExit(0)
-        raise SystemExit(f"build step for '{source_set}' is not successful: {step}")
+        raise SystemExit(f"push step for '{source_set}' is not successful: {step}")
 
-raise SystemExit(f"build output does not contain step for '{source_set}'")
+raise SystemExit(f"push output does not contain step for '{source_set}'")
 PY
 }
 
@@ -242,14 +243,14 @@ for step in steps:
     partial = mode.get("partial") if isinstance(mode, dict) and set(mode) == {"partial"} else None
     file_count = partial.get("file_count") if isinstance(partial, dict) else None
     if step.get("ok") is not True:
-        raise SystemExit(f"partial build step for '{source_set}' is not successful: {step}")
+        raise SystemExit(f"partial push step for '{source_set}' is not successful: {step}")
     if type(file_count) is not int or file_count < 1:
         raise SystemExit(
-            f"build step for '{source_set}' is not partial with a positive file count: {step}"
+            f"push step for '{source_set}' is not partial with a positive file count: {step}"
         )
     raise SystemExit(0)
 
-raise SystemExit(f"build output does not contain step for '{source_set}'")
+raise SystemExit(f"push output does not contain step for '{source_set}'")
 PY
 }
 
@@ -502,7 +503,7 @@ run_extended_steps() {
 if [[ -z "$DESIGNER_CONFIG_PATH" ]]; then
     if [[ "$ALLOW_MISSING_CONFIG" == "1" ]]; then
         echo "SKIPPED: V8TR_DESIGNER_REAL_CONFIG is not set."
-        echo "Set V8TR_DESIGNER_REAL_CONFIG to a dedicated format=DESIGNER,builder=DESIGNER fixture config."
+        echo "Set V8TR_DESIGNER_REAL_CONFIG to a dedicated format=DESIGNER,providers.push=designer fixture config."
         echo "Default va-path also requires tests/fixtures/vanessa-automation-single.epf, scripts/test/live-cli-designer.va-params.json, and scripts/test/features/live-cli-designer."
         exit 0
     fi
@@ -529,15 +530,15 @@ if ! config_matches "^format:[[:space:]]*DESIGNER[[:space:]]*$" "$DESIGNER_CONFI
     die "Live Designer config must contain 'format: DESIGNER': $DESIGNER_CONFIG_PATH"
 fi
 
-BUILDER_BACKEND="$(extract_yaml_scalar "builder")"
-case "$BUILDER_BACKEND" in
-    DESIGNER|IBCMD)
+PUSH_PROVIDER="$(extract_push_provider)"
+case "$PUSH_PROVIDER" in
+    designer|ibcmd)
         ;;
     *)
-        die "Live config must contain 'builder: DESIGNER' or 'builder: IBCMD': $DESIGNER_CONFIG_PATH"
+        die "Live config must contain 'providers.push: designer' or 'providers.push: ibcmd': $DESIGNER_CONFIG_PATH"
         ;;
 esac
-SMOKE_TITLE="LIVE CLI $BUILDER_BACKEND SMOKE"
+SMOKE_TITLE="LIVE CLI ${PUSH_PROVIDER^^} SMOKE"
 
 if ! extract_connection_file_path >/dev/null; then
     die "Live Designer config must use file-based infobase.connection ('File=...' or raw '/F ...'): $DESIGNER_CONFIG_PATH"
@@ -549,7 +550,7 @@ required_types=(
     CONFIGURATION
     EXTENSION
 )
-if [[ "$BUILDER_BACKEND" == "DESIGNER" ]]; then
+if [[ "$PUSH_PROVIDER" == "designer" ]]; then
     required_types+=(
         EXTERNAL_DATA_PROCESSORS
         EXTERNAL_REPORTS
@@ -619,7 +620,7 @@ for source_set_type in "${required_types[@]}"; do
     fi
 done
 
-if [[ "$BUILDER_BACKEND" == "DESIGNER" ]]; then
+if [[ "$PUSH_PROVIDER" == "designer" ]]; then
     EXTERNAL_PROCESSOR_ARTIFACT_NAME="$(extract_artifact_root_name "$EXTERNAL_PROCESSOR_SOURCE_SET_PATH")"
     EXTERNAL_REPORT_ARTIFACT_NAME="$(extract_artifact_root_name "$EXTERNAL_REPORT_SOURCE_SET_PATH")"
 fi
@@ -629,28 +630,28 @@ run_cli init
 assert_file_exists "$(extract_connection_file_path)/1Cv8.1CD"
 
 build_json="$OUTPUT_ROOT/json/build.json"
-print_stage "build full rebuild"
-run_cli_json_to_file "$build_json" build --full-rebuild
+print_stage "push full rebuild"
+run_cli_json_to_file "$build_json" push --full
 assert_json_step_ok "$build_json" "$CONFIGURATION_SOURCE_SET_NAME"
 assert_json_step_ok "$build_json" "$EXTENSION_SOURCE_SET_NAME"
 
 incremental_build_json="$OUTPUT_ROOT/json/build-incremental.json"
-print_stage "build incremental no-op"
-run_cli_json_to_file "$incremental_build_json" build
+print_stage "push incremental no-op"
+run_cli_json_to_file "$incremental_build_json" push
 assert_json_step_ok "$incremental_build_json" "$CONFIGURATION_SOURCE_SET_NAME"
 assert_json_step_ok "$incremental_build_json" "$EXTENSION_SOURCE_SET_NAME"
 
-if [[ "$BUILDER_BACKEND" == "DESIGNER" ]]; then
+if [[ "$PUSH_PROVIDER" == "designer" ]]; then
     partial_candidate="$WORK_BASE_PATH/$CONFIGURATION_SOURCE_SET_PATH/CommonModules/ОбщийМодуль1/Ext/Module.bsl"
     partial_source="$(resolve_contained_existing_path "$WORK_BASE_PATH" "$partial_candidate")"
     assert_file_exists "$partial_source"
     printf '\n// issue-40 partial-load BOM smoke\n' >> "$partial_source"
 
     partial_build_json="$OUTPUT_ROOT/json/build-partial.json"
-    print_stage "build partial after Cyrillic source change"
+    print_stage "push partial after Cyrillic source change"
     run_cli_json_to_file \
         "$partial_build_json" \
-        build --source-set "$CONFIGURATION_SOURCE_SET_NAME"
+        push --source-set "$CONFIGURATION_SOURCE_SET_NAME"
     assert_json_step_ok "$partial_build_json" "$CONFIGURATION_SOURCE_SET_NAME"
     assert_json_step_partial "$partial_build_json" "$CONFIGURATION_SOURCE_SET_NAME"
 fi
@@ -660,7 +661,7 @@ print_stage "extensions properties"
 run_cli_json_to_file "$extensions_json" extensions --name "$EXTENSION_SOURCE_SET_NAME"
 assert_json_command_ok "$extensions_json" "extensions"
 
-if [[ "$BUILDER_BACKEND" == "DESIGNER" ]]; then
+if [[ "$PUSH_PROVIDER" == "designer" ]]; then
     print_stage "syntax and checks"
     run_cli check --all-extensions
     run_cli check \
@@ -721,4 +722,4 @@ if [[ "$DESIGNER_SMOKE_PROFILE" == "extended" ]]; then
 fi
 
 echo
-echo "Live CLI $BUILDER_BACKEND smoke completed successfully."
+echo "Live CLI ${PUSH_PROVIDER^^} smoke completed successfully."

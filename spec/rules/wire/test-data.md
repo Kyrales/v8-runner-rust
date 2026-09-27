@@ -1,12 +1,13 @@
 ---
 id: CTR.WIRE.TEST-DATA
-version: 3
+version: 4
 artifact: docs/schemas/command-data/test.schema.json
 check:
   - src/command_data.rs::generated_command_data_schemas_are_current
   - tests/cli_test.rs::test_all_full_json_runs_build_first_and_returns_report
   - src/use_cases/run_tests/helpers.rs::a_build_prerequisite_stopped_by_a_cancellation_is_an_interruption
   - src/use_cases/run_tests/helpers.rs::a_cancelled_run_is_classified_by_where_it_stopped
+  - src/use_cases/run_tests/coordinator.rs::junit_export_failure_keeps_original_run_status_and_error
 ---
 
 # `data` команды `test`

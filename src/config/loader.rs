@@ -97,6 +97,29 @@ pub fn load_config_for_tools_download(
     )
 }
 
+/// Check a proposed local overlay with the same merge and admission rules as `tools download`.
+pub(crate) fn load_tools_download_text(
+    config_path: &Path,
+    project: &str,
+    local_overlay: &str,
+    selector: &InfobaseSelector,
+) -> Result<LoadedConfig, ConfigLoadError> {
+    build_config(
+        config_path,
+        serde_yaml::from_str(project)?,
+        || {
+            Ok(Some(if local_overlay.trim().is_empty() {
+                serde_yaml::Value::Mapping(serde_yaml::Mapping::new())
+            } else {
+                serde_yaml::from_str(local_overlay)?
+            }))
+        },
+        None,
+        selector,
+        ConfigValidationMode::ToolsDownload,
+    )
+}
+
 pub fn load_config_for_prepared_test(
     config_path: Option<&str>,
     workdir_override: Option<&str>,

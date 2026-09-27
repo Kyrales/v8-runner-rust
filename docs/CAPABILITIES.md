@@ -292,6 +292,10 @@ v8-runner tools download client-mcp [--sources] [--force]
   `build/tools/onec-client-mcp-devkit/exts/client-mcp`; без `--sources` требует, чтобы
   сборку исполнял Конфигуратор, и скачивает `.cfe` в `build/tools`.
 - `vanessa` всегда скачивает `build/tools/vanessa-automation-single.epf`.
+- Если `tools/VAParams.json` и каталог `features` существуют, `vanessa` добавляет недостающие
+  настройки `tests.va` и увеличивает отсутствующий `tests.execution_timeout_seconds` до `3600`.
+  Пользовательские значения сохраняются. Иначе EPF скачивается, а ответ предупреждает, какие
+  предпосылки создать для настройки тестов.
 - `v8project.local.yaml` обновляется только для команд, которым нужны machine-local пути:
   `vanessa` заполняет `tools.va.epf_path`, `client-mcp` заполняет
   `tools.client_mcp.extension`; повторный запуск переиспользует уже скачанные файлы, а
@@ -409,7 +413,8 @@ v8-runner push [--source-set <NAME>] [--full] [--dry-run]
 
 ```bash
 v8-runner test [--full] [--no-push] yaxunit all
-v8-runner test [--full] [--no-push] yaxunit module <NAME>
+v8-runner test [--full] [--no-push] yaxunit [--junit-output <PATH>] module <NAME>
+v8-runner test [--full] [--no-push] yaxunit [--junit-output <PATH>] all
 v8-runner test [--no-push] va
 v8-runner test [--no-push] va --feature login --filter-tag @smoke
 ```
@@ -421,6 +426,11 @@ v8-runner test [--no-push] va --feature login --filter-tag @smoke
   configuration могут отсутствовать. Валидация ИБ, платформы и настроек test engine сохраняется.
 - `--no-push` является CLI-only контрактом; MCP `run_all_tests` сохраняет build-first поведение.
 - `test yaxunit module <NAME>` требует непустое имя модуля.
+- `--junit-output` доступен только CLI YaXUnit. Относительный путь считается от основного
+  `v8project.yaml`; отчёт читается и проверяется один раз, затем публикуется теми же байтами.
+  Существующая цель удаляется только после проверки identity, а появившаяся подмена не
+  перезаписывается. Ошибка публикации добавляется как `junit_export_failed`, сохраняя исход
+  прогона.
 - `test va` использует профиль из `tests.va.profile`; `--feature`, `--filter-tag`,
   `--ignore-tag` и `--scenario-filter` переопределяют соответствующие списки выбранного профиля
   только для текущего запуска.
@@ -436,7 +446,7 @@ v8-runner test [--no-push] va --feature login --filter-tag @smoke
 
 ```bash
 v8-runner check [MODE FLAGS] [--dry-run]
-v8-runner check --project <PROJECT>... [--dry-run]
+v8-runner check --project <PROJECT>... [--exception-file <PATH>] [--dry-run]
 ```
 
 Команда одна, ветку выбирает `format` проекта.
@@ -450,12 +460,17 @@ v8-runner check --project <PROJECT>... [--dry-run]
   вызывается.
 - Назван хотя бы один режим — выполняются ровно названные.
 - Поддерживает `--extension <EXTENSION>` или `--all-extensions`.
-- `--project` здесь не исполняется и отвергается.
+- `--project` и `--exception-file` здесь не исполняются и отвергаются.
 
 `format=EDT` — проверка проекта средствами EDT CLI:
 
 - Исполнитель — EDT CLI, строки в матрице провайдеров нет; база не нужна.
 - Повторяемый `--project`; без него берутся все EDT-проекты конфига.
+- `--exception-file` задаёт текстовый список точных пар `путь<TAB>сообщение`; пустые строки и
+  комментарии `#` пропускаются. Относительный путь считается от основного `v8project.yaml`.
+  Совпадение учитывает Unicode lowercase и нормализацию пробелов, а не подстроку. Число
+  исключённых проблем указано в `message`; ненулевой код EDT с пустым после фильтрации списком
+  остаётся отказом инструмента.
 - Режимы `/CheckConfig` здесь не исполняются и отвергаются.
 
 Проект, у которого все наборы исходников внешние, получает отказ рода `capability` с кодом

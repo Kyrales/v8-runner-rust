@@ -90,6 +90,7 @@ use crate::use_cases::transport::{dispatch_with_workspace_lock_policy, Workspace
 
 /// Executes a parsed CLI command by mapping it into transport-neutral requests and
 /// rendering the resulting command output.
+#[allow(dead_code)]
 pub fn execute_command(
     config: &AppConfig,
     command: &Command,
@@ -97,6 +98,26 @@ pub fn execute_command(
     presenter: &Presenter,
     clean_before_execution: bool,
     dry_run: bool,
+) -> Result<(), UseCaseError> {
+    execute_command_with_selector(
+        config,
+        command,
+        primary_config_path,
+        presenter,
+        clean_before_execution,
+        dry_run,
+        crate::config::model::InfobaseSelector::Default,
+    )
+}
+
+pub fn execute_command_with_selector(
+    config: &AppConfig,
+    command: &Command,
+    primary_config_path: Option<PathBuf>,
+    presenter: &Presenter,
+    clean_before_execution: bool,
+    dry_run: bool,
+    infobase_selector: crate::config::model::InfobaseSelector,
 ) -> Result<(), UseCaseError> {
     let cancellation = CancellationToken::new();
     let _signal_guard = CliSignalGuard::install(cancellation.clone());
@@ -114,6 +135,7 @@ pub fn execute_command(
             presenter,
             clean_before_execution,
             cancellation,
+            infobase_selector,
         ),
         Command::Extensions(args) => execute_extensions(
             config,
@@ -142,6 +164,7 @@ pub fn execute_command(
         Command::Test(args) => execute_test(
             config,
             args,
+            primary_config_path.as_deref(),
             presenter,
             clean_before_execution,
             cancellation,
@@ -188,6 +211,7 @@ pub fn execute_command(
         Command::Syntax(args) => execute_syntax(
             config,
             args,
+            primary_config_path.as_deref(),
             presenter,
             clean_before_execution,
             dry_run,
@@ -429,6 +453,7 @@ fn execute_tools(
     presenter: &Presenter,
     clean_before_execution: bool,
     cancellation: CancellationToken,
+    infobase_selector: crate::config::model::InfobaseSelector,
 ) -> Result<(), UseCaseError> {
     match &args.command {
         ToolsCommand::Download(download) => execute_tools_download(
@@ -438,6 +463,7 @@ fn execute_tools(
             presenter,
             clean_before_execution,
             cancellation,
+            infobase_selector,
         ),
     }
 }
@@ -449,12 +475,14 @@ fn execute_tools_download(
     presenter: &Presenter,
     clean_before_execution: bool,
     cancellation: CancellationToken,
+    infobase_selector: crate::config::model::InfobaseSelector,
 ) -> Result<(), UseCaseError> {
     let request = ToolsDownloadRequest {
         config_path: primary_config_path,
         target: map_tools_download_target(args),
         extensions: map_tool_extension_mode(args),
         force: map_tools_download_force(args),
+        infobase_selector,
     };
     let context = cli_context(config, CommandName::ToolsDownload, cancellation);
     with_cli_workspace_lock(
@@ -467,11 +495,14 @@ fn execute_tools_download(
         || match tools_download::execute(&context, config, &request) {
             Ok(result) => {
                 if presenter.is_json() {
-                    presenter.print_envelope(&Envelope::ok(
+                    let warnings = result.warnings.clone();
+                    let mut envelope = Envelope::ok(
                         CommandName::ToolsDownload.as_str(),
                         result.duration_ms,
                         result,
-                    ));
+                    );
+                    envelope.warnings = warnings;
+                    presenter.print_envelope(&envelope);
                 } else {
                     render_tools_download_text(&result, presenter);
                 }
@@ -927,11 +958,12 @@ fn execute_build(
 fn execute_test(
     config: &AppConfig,
     args: &TestArgs,
+    primary_config_path: Option<&Path>,
     presenter: &Presenter,
     clean_before_execution: bool,
     cancellation: CancellationToken,
 ) -> Result<(), UseCaseError> {
-    let request = map_test_request(config, args)
+    let request = map_test_request(config, args, primary_config_path)
         .map_err(|error| render_pre_dispatch_error(presenter, CommandName::Test, error))?;
     let effective_config = effective_test_config(config, args)
         .map_err(|error| render_pre_dispatch_error(presenter, CommandName::Test, error))?;
@@ -2255,13 +2287,14 @@ fn execute_artifacts(
 fn execute_syntax(
     config: &AppConfig,
     args: &SyntaxArgs,
+    primary_config_path: Option<&Path>,
     presenter: &Presenter,
     clean_before_execution: bool,
     dry_run: bool,
     cancellation: CancellationToken,
 ) -> Result<(), UseCaseError> {
     let context = cli_context(config, CommandName::Syntax, cancellation);
-    let request = map_syntax_request(config, args, dry_run)
+    let request = map_syntax_request(config, args, primary_config_path, dry_run)
         .map_err(|error| render_pre_dispatch_error(presenter, CommandName::Syntax, error))?;
     with_cli_workspace_lock(
         config,
@@ -2516,7 +2549,11 @@ fn map_tools_download_force(args: &ToolsDownloadArgs) -> bool {
     }
 }
 
-fn map_test_request(config: &AppConfig, args: &TestArgs) -> Result<TestRequest, UseCaseError> {
+fn map_test_request(
+    config: &AppConfig,
+    args: &TestArgs,
+    primary_config_path: Option<&Path>,
+) -> Result<TestRequest, UseCaseError> {
     let client_mode = map_test_client_mode(args.client_mode.as_deref())?;
     let build_policy = if args.no_build {
         crate::use_cases::request::TestBuildPolicy::Skip
@@ -2524,13 +2561,30 @@ fn map_test_request(config: &AppConfig, args: &TestArgs) -> Result<TestRequest, 
         crate::use_cases::request::TestBuildPolicy::BuildFirst
     };
     match &args.runner {
-        TestRunner::Yaxunit(TestYaxunitArgs { scope }) => {
+        TestRunner::Yaxunit(TestYaxunitArgs {
+            scope,
+            junit_output,
+        }) => {
             let scope = map_yaxunit_scope(scope)?;
             Ok(TestRequest {
                 execution: build_yaxunit_execution(config, &args.launch, client_mode)?,
                 full: args.full,
                 build_policy,
                 scope,
+                junit_output: junit_output.as_ref().map(|path| {
+                    if path.is_absolute() {
+                        path.clone()
+                    } else {
+                        primary_config_path
+                            .and_then(Path::parent)
+                            .unwrap_or_else(|| Path::new("."))
+                            .join(path)
+                    }
+                }),
+                junit_config_path: junit_output
+                    .as_ref()
+                    .and(primary_config_path)
+                    .map(Path::to_path_buf),
             })
         }
         TestRunner::Va(_) => Ok(TestRequest {
@@ -2538,6 +2592,8 @@ fn map_test_request(config: &AppConfig, args: &TestArgs) -> Result<TestRequest, 
             full: args.full,
             build_policy,
             scope: TestScopeRequest::All,
+            junit_output: None,
+            junit_config_path: None,
         }),
     }
 }
@@ -2848,6 +2904,7 @@ fn map_artifacts_request_with_config(
 fn map_syntax_request(
     config: &AppConfig,
     args: &SyntaxArgs,
+    primary_config_path: Option<&Path>,
     dry_run: bool,
 ) -> Result<SyntaxRequest, UseCaseError> {
     if let Some(message) = args.keys_next_to_a_previous_name() {
@@ -2862,6 +2919,7 @@ fn map_syntax_request(
         }
         Some(SyntaxTarget::Edt { projects }) => SyntaxTargetRequest::Edt {
             projects: projects.clone(),
+            exception_file: None,
         },
         None if config.format == SourceFormat::Edt => {
             // Ключ, которого ветка не исполняет, отвергается, а не игнорируется.
@@ -2873,9 +2931,25 @@ fn map_syntax_request(
             }
             SyntaxTargetRequest::Edt {
                 projects: args.projects.clone(),
+                exception_file: args.exception_file.as_ref().map(|path| {
+                    if path.is_absolute() {
+                        path.clone()
+                    } else {
+                        primary_config_path
+                            .and_then(Path::parent)
+                            .unwrap_or_else(|| Path::new("."))
+                            .join(path)
+                    }
+                }),
             }
         }
         None => {
+            if args.exception_file.is_some() {
+                return Err(UseCaseError::new(
+                    UseCaseErrorKind::Validation,
+                    "--exception-file is available only for EDT projects",
+                ));
+            }
             if !args.projects.is_empty() {
                 return Err(UseCaseError::new(
                     UseCaseErrorKind::Validation,
@@ -3431,6 +3505,12 @@ fn render_tools_download_text(result: &ToolsDownloadResult, presenter: &Presente
             destination.config
         ));
     }
+    details.extend(
+        result
+            .warnings
+            .iter()
+            .map(|warning| format!("warning: {warning}")),
+    );
 
     single_timeline(
         presenter,
@@ -4367,11 +4447,13 @@ mod tests {
                 client_mode: None,
                 launch: TestLaunchOptionsArgs::default(),
                 runner: TestRunner::Yaxunit(TestYaxunitArgs {
+                    junit_output: None,
                     scope: TestScope::Module {
                         name: "ModuleA".to_owned(),
                     },
                 }),
             },
+            None,
         )
         .expect("request");
 
@@ -4397,9 +4479,11 @@ mod tests {
                 client_mode: None,
                 launch: TestLaunchOptionsArgs::default(),
                 runner: TestRunner::Yaxunit(TestYaxunitArgs {
+                    junit_output: None,
                     scope: TestScope::All,
                 }),
             },
+            None,
         )
         .expect("request");
 
@@ -4418,11 +4502,13 @@ mod tests {
                 client_mode: None,
                 launch: TestLaunchOptionsArgs::default(),
                 runner: TestRunner::Yaxunit(TestYaxunitArgs {
+                    junit_output: None,
                     scope: TestScope::Module {
                         name: "   ".to_owned(),
                     },
                 }),
             },
+            None,
         )
         .expect_err("blank module should be rejected");
 
@@ -4467,6 +4553,7 @@ mod tests {
                 launch: TestLaunchOptionsArgs::default(),
                 runner: TestRunner::Va(TestVaArgs::default()),
             },
+            None,
         )
         .expect("request");
 
@@ -4485,6 +4572,7 @@ mod tests {
                 launch: TestLaunchOptionsArgs::default(),
                 runner: TestRunner::Va(TestVaArgs::default()),
             },
+            None,
         )
         .expect("no-build request");
 
@@ -4504,15 +4592,42 @@ mod tests {
             &SyntaxArgs {
                 modes: DesignerConfigSyntaxArgs::default(),
                 projects: vec!["main".to_owned()],
+                exception_file: None,
                 target: None,
             },
+            None,
             false,
         )
         .expect("request");
 
         assert!(matches!(
             request.target,
-            SyntaxTargetRequest::Edt { ref projects } if projects == &["main".to_owned()]
+            SyntaxTargetRequest::Edt { ref projects, exception_file: None } if projects == &["main".to_owned()]
+        ));
+    }
+
+    #[test]
+    fn edt_exception_file_resolves_from_primary_config_directory() {
+        let work = tempfile::tempdir().expect("tempdir");
+        let mut config = sample_config(work.path());
+        config.format = SourceFormat::Edt;
+        let primary = work.path().join("config/v8project.yaml");
+        let request = map_syntax_request(
+            &config,
+            &SyntaxArgs {
+                modes: DesignerConfigSyntaxArgs::default(),
+                projects: vec![],
+                exception_file: Some(PathBuf::from("exceptions.txt")),
+                target: None,
+            },
+            Some(&primary),
+            false,
+        )
+        .expect("request");
+        assert!(matches!(
+            request.target,
+            SyntaxTargetRequest::Edt { exception_file: Some(path), .. }
+                if path == work.path().join("config/exceptions.txt")
         ));
     }
 
@@ -4527,6 +4642,7 @@ mod tests {
             &SyntaxArgs {
                 modes: DesignerConfigSyntaxArgs::default(),
                 projects: Vec::new(),
+                exception_file: None,
                 target: Some(SyntaxTarget::DesignerModules(DesignerModulesSyntaxArgs {
                     thin_client: true,
                     web_client: false,
@@ -4541,6 +4657,7 @@ mod tests {
                     all_extensions: false,
                 })),
             },
+            None,
             false,
         )
         .expect("request");
@@ -5016,6 +5133,7 @@ mod tests {
                 client_mode: None,
                 launch: TestLaunchOptionsArgs::default(),
                 runner: TestRunner::Yaxunit(TestYaxunitArgs {
+                    junit_output: None,
                     scope: TestScope::All,
                 }),
             }),
@@ -5141,6 +5259,7 @@ mod tests {
                 client_mode: None,
                 launch: TestLaunchOptionsArgs::default(),
                 runner: TestRunner::Yaxunit(TestYaxunitArgs {
+                    junit_output: None,
                     scope: TestScope::Module {
                         name: "   ".to_owned(),
                     },

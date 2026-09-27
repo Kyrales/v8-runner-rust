@@ -456,6 +456,63 @@ fn syntax_edt_json_returns_structured_edt_issues() {
     assert_eq!(payload["data"]["issues"][0]["path"], "CommonModules.Test");
 }
 
+#[test]
+fn exception_file_filters_exact_edt_issue_relative_to_primary_config() {
+    let (dir, config_path) = setup_edt_project(
+        "out=\"\"\nprev=\"\"\nfor arg in \"$@\"; do\n  if [ \"$prev\" = \"--file\" ]; then out=\"$arg\"; fi\n  prev=\"$arg\"\ndone\nprintf 'ERROR\\tCommonModules.Test\\t7\\t2\\tRule\\tbad call\\nERROR\\tCommonModules.Other\\t1\\t1\\tRule\\tnew call\\n' > \"$out\"\nexit 1",
+    );
+    fs::write(
+        config_path
+            .parent()
+            .expect("config dir")
+            .join("exceptions.txt"),
+        "# accepted\nCommonModules.Test\tbad call\n",
+    )
+    .expect("exceptions");
+    let output = v8_runner_command()
+        .args([
+            "--config",
+            &config_path.display().to_string(),
+            "--json-message",
+            "check",
+            "--exception-file",
+            "exceptions.txt",
+        ])
+        .output()
+        .expect("run command");
+    assert_eq!(output.status.code(), Some(3));
+    let payload: Value = serde_json::from_slice(&output.stdout).expect("json");
+    assert_eq!(payload["data"]["status"], "issues_found");
+    assert_eq!(
+        payload["data"]["issues"].as_array().expect("issues").len(),
+        1
+    );
+    assert_eq!(payload["data"]["issues"][0]["path"], "CommonModules.Other");
+    assert!(payload["data"]["message"]
+        .as_str()
+        .expect("message")
+        .contains("suppressed 1"));
+    assert!(!dir.path().join("exceptions.txt").exists());
+}
+
+#[test]
+fn exception_file_rejects_designer_before_launch() {
+    let (dir, config_path) = setup_project("exit 0");
+    let output = v8_runner_command()
+        .args([
+            "--config",
+            &config_path.display().to_string(),
+            "--json-message",
+            "check",
+            "--exception-file",
+            "missing.txt",
+        ])
+        .output()
+        .expect("run command");
+    assert_eq!(output.status.code(), Some(2));
+    assert!(!dir.path().join("platform/bin/calls.log").exists());
+}
+
 /// Команда одна: режимы `/CheckConfig` живут на ней самой, подкоманда не нужна.
 #[test]
 fn check_takes_its_modes_without_a_subcommand() {

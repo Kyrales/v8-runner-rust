@@ -1,4 +1,5 @@
 use clap::{Args, Parser, Subcommand};
+use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -409,6 +410,9 @@ pub enum TestRunner {
 #[derive(Args, Debug)]
 #[command(next_help_heading = "Command options")]
 pub struct TestYaxunitArgs {
+    /// Write the verified JUnit XML to this file; relative paths start at the primary config.
+    #[arg(long = "junit-output")]
+    pub junit_output: Option<PathBuf>,
     #[command(subcommand)]
     pub scope: TestScope,
 }
@@ -591,6 +595,13 @@ pub struct SyntaxArgs {
     /// EDT project names
     #[arg(long = "project", help_heading = "Command options")]
     pub projects: Vec<String>,
+    /// Skip EDT diagnostics listed as exact path and message pairs.
+    #[arg(
+        long = "exception-file",
+        value_name = "PATH",
+        help_heading = "Command options"
+    )]
+    pub exception_file: Option<PathBuf>,
     /// Прежние имена: приняты один цикл, в справке их нет.
     #[command(subcommand)]
     pub target: Option<SyntaxTarget>,
@@ -600,7 +611,9 @@ impl SyntaxArgs {
     /// Ключи самой команды рядом с прежним именем не исполняются, поэтому отвергаются.
     pub fn keys_next_to_a_previous_name(&self) -> Option<&'static str> {
         (self.target.is_some()
-            && (self.modes != DesignerConfigSyntaxArgs::default() || !self.projects.is_empty()))
+            && (self.modes != DesignerConfigSyntaxArgs::default()
+                || !self.projects.is_empty()
+                || self.exception_file.is_some()))
         .then_some("check keys cannot be combined with a subcommand; place the keys after its name")
     }
 }
@@ -1303,6 +1316,29 @@ mod tests {
                 }
                 _ => panic!("unexpected syntax target"),
             },
+            _ => panic!("unexpected command"),
+        }
+    }
+
+    #[test]
+    fn check_accepts_edt_exception_file_key() {
+        let cli = Cli::try_parse_from([
+            "v8-runner",
+            "check",
+            "--project",
+            "main",
+            "--exception-file",
+            "exceptions.txt",
+        ])
+        .expect("check args");
+        match cli.command {
+            Command::Syntax(args) => {
+                assert_eq!(args.projects, ["main"]);
+                assert_eq!(
+                    args.exception_file.as_deref(),
+                    Some(std::path::Path::new("exceptions.txt"))
+                );
+            }
             _ => panic!("unexpected command"),
         }
     }

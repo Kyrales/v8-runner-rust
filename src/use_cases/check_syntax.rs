@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -66,8 +68,19 @@ fn run_syntax_branch(
     let started = Instant::now();
     // Ветка выбирается раньше всего остального: иначе отказ уже отменённой проверки EDT
     // назвался бы именем проверки конфигурации. У ветки EDT своя такая же проверка.
-    if let SyntaxTarget::Edt { projects } = &args.target {
-        return run_edt_syntax(context, config, projects, args.dry_run, started);
+    if let SyntaxTarget::Edt {
+        projects,
+        exception_file,
+    } = &args.target
+    {
+        return run_edt_syntax(
+            context,
+            config,
+            projects,
+            exception_file.as_deref(),
+            args.dry_run,
+            started,
+        );
     }
     if let Some(failure) =
         interrupted_syntax_failure(context, CheckName::DesignerConfig, started, None)
@@ -503,6 +516,7 @@ fn run_edt_syntax(
     context: &ExecutionContext,
     config: &AppConfig,
     projects: &[String],
+    exception_file: Option<&Path>,
     dry_run: bool,
     started: Instant,
 ) -> UseCaseResult<SyntaxCheckResult> {
@@ -551,6 +565,26 @@ fn run_edt_syntax(
     if dry_run {
         return preview_edt(config, &source_sets, started);
     }
+
+    let exceptions = match exception_file.map(read_edt_exceptions).transpose() {
+        Ok(exceptions) => exceptions.unwrap_or_default(),
+        Err(error) => {
+            let message = error.to_string();
+            return Err(SyntaxExecutionFailure::with_payload(
+                error,
+                failed_result(
+                    CheckName::Edt,
+                    SyntaxCheckStatus::ToolFailed,
+                    -1,
+                    started,
+                    vec![],
+                    None,
+                    Some(message),
+                    None,
+                ),
+            ));
+        }
+    };
 
     let log_dir = match platform_logs_dir(&config.work_path) {
         Ok(dir) => dir,
@@ -638,6 +672,7 @@ fn run_edt_syntax(
     let mut exit_code = 0;
     let mut stderr_lines = Vec::new();
     let mut log_warnings = Vec::new();
+    let mut suppressed_count = 0usize;
     let mut single_platform_log_path = None;
     let single_source_set = source_sets.len() == 1;
 
@@ -703,15 +738,23 @@ fn run_edt_syntax(
             log_warnings.push(format!("{}: {log_warning}", source_set.name));
         }
 
-        let project_issues = result
+        let parsed = result
             .platform_log
             .as_deref()
-            .map(edt_validation::parse)
-            .unwrap_or_default();
+            .map(edt_validation::parse_detailed);
+        let unrecognized_line_count = parsed
+            .as_ref()
+            .map_or(0, |parsed| parsed.unrecognized_line_count);
+        let mut project_issues = parsed.map_or_else(Vec::new, |parsed| parsed.issues);
+        let original_issue_count = project_issues.len();
+        project_issues.retain(|issue| !exceptions.contains(&edt_issue_key(issue)));
+        suppressed_count += original_issue_count - project_issues.len();
         let project_status = edt_status_from_result(
             result.process.exit_code,
             &project_issues,
             result.platform_log_read_error.is_some(),
+            !result.process.stderr.trim().is_empty(),
+            unrecognized_line_count,
         );
         status = combine_status(status, project_status);
 
@@ -743,7 +786,9 @@ fn run_edt_syntax(
     let result = SyntaxCheckResult {
         provider: None,
         provider_dispatched: false,
-        message: None,
+        message: (suppressed_count > 0).then(|| {
+            format!("suppressed {suppressed_count} EDT issue(s) listed in exception file")
+        }),
         status,
         exit_code,
         check_name: CheckName::Edt,
@@ -836,8 +881,10 @@ fn edt_status_from_result(
     exit_code: i32,
     issues: &[Issue],
     log_unreadable: bool,
+    stderr_present: bool,
+    unrecognized_line_count: usize,
 ) -> SyntaxCheckStatus {
-    if log_unreadable && exit_code == 0 && issues.is_empty() {
+    if log_unreadable || (exit_code != 0 && (stderr_present || unrecognized_line_count > 0)) {
         return SyntaxCheckStatus::ToolFailed;
     }
     if exit_code == 0 && issues.is_empty() {
@@ -847,6 +894,67 @@ fn edt_status_from_result(
     } else {
         SyntaxCheckStatus::ToolFailed
     }
+}
+
+fn read_edt_exceptions(path: &Path) -> Result<HashSet<(String, String)>, AppError> {
+    let content = fs::read_to_string(path).map_err(|error| {
+        AppError::Validation(format!(
+            "cannot read EDT exception file '{}': {error}",
+            path.display()
+        ))
+    })?;
+    let mut exceptions = HashSet::new();
+    for (index, line) in content.lines().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let (path_field, message_field) = line.split_once('\t').ok_or_else(|| {
+            AppError::Validation(format!(
+                "EDT exception file '{}' line {} must contain path and message separated by a tab",
+                path.display(),
+                index + 1
+            ))
+        })?;
+        let key = (
+            normalize_edt_exception_field(path_field),
+            normalize_edt_exception_field(message_field),
+        );
+        if key.0.is_empty() || key.1.is_empty() {
+            return Err(AppError::Validation(format!(
+                "EDT exception file '{}' line {} has an empty path or message",
+                path.display(),
+                index + 1
+            )));
+        }
+        exceptions.insert(key);
+    }
+    Ok(exceptions)
+}
+
+fn edt_issue_key(issue: &Issue) -> (String, String) {
+    match issue {
+        Issue::Edt(issue) => (
+            normalize_edt_exception_field(&issue.path),
+            normalize_edt_exception_field(&issue.message),
+        ),
+        _ => (String::new(), String::new()),
+    }
+}
+
+fn normalize_edt_exception_field(value: &str) -> String {
+    let lowered = value.to_lowercase();
+    let replaced = lowered
+        .chars()
+        .map(|ch| {
+            if ch.is_alphanumeric() || matches!(ch, '_' | '.' | '"' | '\'' | ':' | '-' | '/') {
+                ch
+            } else {
+                ' '
+            }
+        })
+        .collect::<String>();
+    replaced.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 fn combine_status(current: SyntaxCheckStatus, next: SyntaxCheckStatus) -> SyntaxCheckStatus {
@@ -1072,7 +1180,8 @@ fn fallback_edt_issue(
 #[cfg(test)]
 mod tests {
     use super::{
-        edt_status_from_result, execute, normalize_config_flags, run_syntax, status_from_exit_code,
+        edt_issue_key, edt_status_from_result, execute, normalize_config_flags,
+        normalize_edt_exception_field, read_edt_exceptions, run_syntax, status_from_exit_code,
     };
     use crate::config::model::{
         AppConfig, BuildConfig, SourceFormat, SourceSetConfig, SourceSetPurpose, TestsConfig,
@@ -1112,23 +1221,94 @@ mod tests {
             severity: IssueSeverity::Error,
         })];
         assert_eq!(
-            edt_status_from_result(0, &[], false),
+            edt_status_from_result(0, &[], false, false, 0),
             SyntaxCheckStatus::Clean,
             "nothing recognised and the tool is happy: the exit code decides"
         );
         assert_eq!(
-            edt_status_from_result(0, &finding, false),
+            edt_status_from_result(0, &finding, false, false, 0),
             SyntaxCheckStatus::IssuesFound,
             "a recognised finding may only tighten the verdict"
         );
         assert_eq!(
-            edt_status_from_result(7, &[], false),
+            edt_status_from_result(7, &[], false, false, 0),
             SyntaxCheckStatus::ToolFailed,
             "nothing recognised and the tool failed: still a failure, never a pass"
         );
         assert_eq!(
-            edt_status_from_result(7, &finding, false),
+            edt_status_from_result(7, &finding, false, false, 0),
             SyntaxCheckStatus::IssuesFound
+        );
+    }
+
+    #[test]
+    fn exception_file_uses_exact_normalized_edt_pairs() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("exceptions.txt");
+        fs::write(
+            &path,
+            "# comment\n\nОбщиеМодули.Test\tОшибка:  лишний   пробел!\n",
+        )
+        .expect("exceptions");
+        let entries = read_edt_exceptions(&path).expect("parse exceptions");
+        let issue = Issue::Edt(crate::domain::issue::EdtIssue {
+            path: "ОБЩИЕМОДУЛИ.Test".to_owned(),
+            line: Some(9),
+            column: None,
+            message: "ОШИБКА: — лишний пробел".to_owned(),
+            severity: IssueSeverity::Error,
+            check: None,
+        });
+        assert!(entries.contains(&edt_issue_key(&issue)));
+        assert!(!entries.contains(&(
+            normalize_edt_exception_field("ОбщиеМодули.Test"),
+            normalize_edt_exception_field("Ошибка: лишний пробел и другой текст"),
+        )));
+    }
+
+    #[test]
+    fn exception_file_rejects_malformed_rows() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("exceptions.txt");
+        fs::write(&path, "path without tab\n").expect("exceptions");
+        assert!(read_edt_exceptions(&path).is_err());
+        fs::write(&path, "path\t!!!\n").expect("exceptions");
+        assert!(read_edt_exceptions(&path).is_err());
+    }
+
+    #[test]
+    fn edt_exception_status_matrix_preserves_tool_failures() {
+        let finding = vec![Issue::Edt(crate::domain::issue::EdtIssue {
+            path: "p".to_owned(),
+            line: None,
+            column: None,
+            message: "m".to_owned(),
+            severity: IssueSeverity::Error,
+            check: None,
+        })];
+        assert_eq!(
+            edt_status_from_result(0, &finding, false, false, 0),
+            SyntaxCheckStatus::IssuesFound
+        );
+        assert_eq!(
+            edt_status_from_result(1, &finding, false, false, 0),
+            SyntaxCheckStatus::IssuesFound
+        );
+        assert_eq!(
+            edt_status_from_result(1, &[], false, false, 0),
+            SyntaxCheckStatus::ToolFailed
+        );
+        assert_eq!(
+            edt_status_from_result(1, &finding, false, true, 0),
+            SyntaxCheckStatus::ToolFailed
+        );
+        assert_eq!(
+            edt_status_from_result(1, &finding, false, false, 1),
+            SyntaxCheckStatus::ToolFailed
+        );
+        assert_eq!(
+            edt_status_from_result(0, &finding, true, false, 0),
+            SyntaxCheckStatus::ToolFailed
         );
     }
 
@@ -1623,7 +1803,10 @@ mod tests {
         let config = sample_edt_config(&base, &work, &binary);
         let args = SyntaxArgs {
             dry_run: false,
-            target: SyntaxTarget::Edt { projects: vec![] },
+            target: SyntaxTarget::Edt {
+                projects: vec![],
+                exception_file: None,
+            },
         };
 
         let failure = run_syntax(&config, &args).expect_err("expected issues");
@@ -1654,6 +1837,7 @@ mod tests {
             dry_run: false,
             target: SyntaxTarget::Edt {
                 projects: vec!["unknown".to_owned()],
+                exception_file: None,
             },
         };
 
@@ -1685,7 +1869,10 @@ mod tests {
         let config = sample_edt_config(&base, &work, &binary);
         let args = SyntaxArgs {
             dry_run: false,
-            target: SyntaxTarget::Edt { projects: vec![] },
+            target: SyntaxTarget::Edt {
+                projects: vec![],
+                exception_file: None,
+            },
         };
 
         let failure = run_syntax(&config, &args).expect_err("expected failure");
@@ -1716,6 +1903,7 @@ mod tests {
             dry_run: false,
             target: SyntaxTarget::Edt {
                 projects: vec!["main".to_owned()],
+                exception_file: None,
             },
         };
         let context = ExecutionContext::mcp_stdio(CommandName::Syntax)
@@ -1748,7 +1936,10 @@ mod tests {
         let config = sample_edt_config(&base, &work, &binary);
         let args = SyntaxArgs {
             dry_run: false,
-            target: SyntaxTarget::Edt { projects: vec![] },
+            target: SyntaxTarget::Edt {
+                projects: vec![],
+                exception_file: None,
+            },
         };
         // Запас нарочно большой: предел шага здесь свой у каждого проекта и ни от чего
         // не убывает, поэтому 20 мс против sleep 0.06 срабатывают детерминированно.
@@ -1786,6 +1977,7 @@ mod tests {
             dry_run: false,
             target: SyntaxTarget::Edt {
                 projects: vec!["main".to_owned()],
+                exception_file: None,
             },
         };
 
@@ -1817,6 +2009,7 @@ mod tests {
             dry_run: false,
             target: SyntaxTarget::Edt {
                 projects: vec!["main".to_owned()],
+                exception_file: None,
             },
         };
 

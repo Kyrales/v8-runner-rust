@@ -24,6 +24,9 @@ pub struct ToolsDownloadResult {
     pub config_path: PathBuf,
     pub local_config_path: PathBuf,
     pub duration_ms: u64,
+    #[serde(skip)]
+    #[schemars(skip)]
+    pub warnings: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, schemars::JsonSchema)]

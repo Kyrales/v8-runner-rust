@@ -35,13 +35,15 @@ replacements = {
 for old, new in replacements.items():
     text = text.replace(old, new)
 
-text = re.sub(
-    r"^builder:\s*DESIGNER\s*$",
-    "builder: IBCMD",
+text, provider_replacements = re.subn(
+    r"^(  push:)\s*designer\s*$",
+    r"\1 ibcmd",
     text,
     count=1,
     flags=re.MULTILINE,
 )
+if provider_replacements != 1:
+    raise SystemExit("base fixture must declare providers.push: designer")
 text = re.sub(
     r"\n  - name: external-processor\n    type: EXTERNAL_DATA_PROCESSORS\n    path: external/processor",
     "",

@@ -46,11 +46,11 @@ live-mcp-http.py
 | `ci-rust.sh` | CI entrypoint | Диспетчер CI-контуров по `V8_RUNNER_CI_SCOPE` | Выбрать нужный scope и передать управление в Linux/macOS `cargo test`, Windows contract или `ci-happy-path.sh` |
 | `ci-happy-path.sh` | CI helper | Canonical happy-path для trusted CI | Собрать бинарь, выполнить `cargo check`, опционально `cargo test`, затем запустить обязательный packaging/live contour |
 | `ci-platform-install.sh` | CI helper | Установить 1С platform bundle на GitHub-hosted runner | Скачать secret-backed bundle, проверить checksum, распаковать и отдать `tools.platform.path`/`ibsrv` paths |
-| `ci-designer-config.sh` | CI helper | Материализовать dedicated live config для mandatory CI smoke | Подготовить `format=DESIGNER`, `builder=DESIGNER`, file `infobase.connection`, required source-set'ы и `tools.platform.path` |
+| `ci-designer-config.sh` | CI helper | Материализовать dedicated live config для mandatory CI smoke | Подготовить `format=DESIGNER`, `providers.push=designer`, file `infobase.connection`, required source-set'ы и `tools.platform.path` |
 | `ci-ibsrv.sh` | CI helper | Поднять/остановить standalone `ibsrv` sidecar для trusted happy-path | Запустить `ibsrv` с `--data` и `--db-path`, синхронизированным с `V8TR_DESIGNER_REAL_CONFIG`, и корректно завершить процесс |
-| `live-cli-fixture.sh` | Общий harness | Универсальный fixture-based smoke для `format=DESIGNER` с `builder=DESIGNER` или `builder=IBCMD` | Валидировать config, развернуть workspace, выполнить последовательность `init/build/extensions/...`, проверить JSON/output артефакты |
-| `live-cli-designer.sh` | Live entrypoint | Удобный ручной запуск smoke для `builder=DESIGNER` | Подготовить designer live-config и передать его в `live-cli-fixture.sh` |
-| `live-cli-ibcmd.sh` | Live entrypoint | Удобный ручной запуск smoke для `builder=IBCMD` | Сгенерировать IBCMD-конфиг из designer fixture, убрать неподходящие source-set и передать управление в `live-cli-fixture.sh` |
+| `live-cli-fixture.sh` | Общий harness | Универсальный fixture-based smoke для `format=DESIGNER` с `providers.push=designer` или `providers.push=ibcmd` | Валидировать config, развернуть workspace, выполнить последовательность `init/push/extensions/...`, проверить JSON/output артефакты |
+| `live-cli-designer.sh` | Live entrypoint | Удобный ручной запуск smoke для `providers.push=designer` | Подготовить designer live-config и передать его в `live-cli-fixture.sh` |
+| `live-cli-ibcmd.sh` | Live entrypoint | Удобный ручной запуск smoke для `providers.push=ibcmd` | Сгенерировать IBCMD-конфиг из designer fixture, убрать неподходящие source-set и передать управление в `live-cli-fixture.sh` |
 | `uat-cli-ibcmd.sh` | UAT wrapper | Полный запуск IBCMD smoke "с нуля" | Собрать бинарь, очистить старые артефакты и вызвать `live-cli-ibcmd.sh` |
 | `live-mcp-http.py` | MCP smoke | Live-проверка MCP HTTP сервера | Поднять `mcp serve http`, выполнить `initialize`, `tools/list` и `tools/call` smoke-последовательность |
 
@@ -62,7 +62,8 @@ live-mcp-http.py
 - Windows contract scope дополнительно запускает нативный CLI smoke выгрузок CFE и DT через
   test-only platform fixture; это сохраняет end-to-end проверку маршрутизации, staging и
   публикации на Windows без требования установленной платформы 1С. Тот же scope запускает
-  cross-process contention smoke и unit-регрессии общего OS/legacy lock protocol.
+  cross-process contention smoke, unit-регрессии общего OS/legacy lock protocol, управляемого
+  ожидания и исключений EDT, а также CLI-проверки Windows-путей `init` и загрузки Vanessa.
 - Linux и macOS contract scope запускают полный `cargo test --locked`; неизвестный OS label
   считается ошибкой конфигурации CI, а не неявным Linux/macOS fallback.
 - Не знает деталей live fixture и не должен дублировать live smoke-логику.
@@ -71,13 +72,13 @@ live-mcp-http.py
 
 - Отвечает за canonical blocking helper chain для happy-path.
 - Должен собирать Rust-бинарь и запускать обязательные Rust-проверки до live contour.
-- Не должен дублировать шаги `init/build/make/dump`; за них отвечает `live-cli-fixture.sh`.
+- Не должен дублировать шаги `init/push/make/dump`; за них отвечает `live-cli-fixture.sh`.
 
 ### `ci-platform-install.sh`
 
 - Используется только в GitHub Actions trusted live path.
 - Принимает OS-specific secret URL bundle-а и обязательный SHA256, затем извлекает из bundle минимум `1cv8` и `ibsrv`.
-- Не должен знать про `build/test/make`; его задача заканчивается на установке platform root/hint и путей до утилит.
+- Не должен знать про `push/test/make`; его задача заканчивается на установке platform root/hint и путей до утилит.
 
 ### `ci-designer-config.sh`
 
@@ -95,8 +96,8 @@ live-mcp-http.py
 
 - Это главный исполнитель реального fixture-based smoke.
 - Он владеет порядком шагов, валидацией config, подготовкой workspace и проверкой результата.
-- Для `builder=DESIGNER` выполняет `syntax`, opt-in `test`, упаковку `.cf/.cfe/.epf/.erf` и проверку deploy-ready артефактов.
-- Для `builder=IBCMD` выполняет `dump full/incremental/partial` smoke вместо designer-specific packaging.
+- Для `providers.push=designer` выполняет `check`, opt-in `test`, упаковку `.cf/.cfe/.epf/.erf` и проверку deploy-ready артефактов.
+- Для `providers.push=ibcmd` выполняет `dump full/incremental/partial` smoke вместо designer-specific packaging.
 - Именно этот скрипт является общим contract layer для `live-cli-designer.sh` и `live-cli-ibcmd.sh`.
 
 ### `live-cli-designer.sh`
@@ -109,7 +110,7 @@ live-mcp-http.py
 
 - Это тонкая IBCMD-специализация поверх общего fixture harness.
 - Если `V8TR_IBCMD_REAL_CONFIG` не задан, скрипт материализует временный config на основе `live-cli-designer.fixture.yaml`.
-- Скрипт меняет `builder` на `IBCMD` и удаляет `EXTERNAL_DATA_PROCESSORS` и `EXTERNAL_REPORTS`, потому что этот contour ориентирован на IBCMD-compatible сценарий.
+- Скрипт меняет `providers.push` на `ibcmd` и удаляет `EXTERNAL_DATA_PROCESSORS` и `EXTERNAL_REPORTS`, потому что этот contour ориентирован на IBCMD-compatible сценарий.
 - Не должен заниматься сборкой бинаря и общей очисткой стенда; это ответственность UAT wrapper или вызывающего окружения.
 
 ### `uat-cli-ibcmd.sh`
@@ -128,7 +129,7 @@ live-mcp-http.py
 
 | Файл | Назначение | Ответственность |
 | --- | --- | --- |
-| `live-cli-designer.fixture.yaml` | Базовый шаблон fixture-based live config | Описывает `format`, `builder`, `infobase`, `source-set` и placeholders для изолированного запуска |
+| `live-cli-designer.fixture.yaml` | Базовый шаблон fixture-based live config | Описывает `format`, `providers.push`, `infobase`, `source-set` и placeholders для изолированного запуска |
 | `live-cli-designer.va-params.json` | Шаблон параметров Vanessa Automation | Используется в opt-in `V8TR_DESIGNER_TEST_MODE=va` |
 | `features/live-cli-designer/smoke.feature` | Минимальный VA smoke-feature | Держит простой сценарий для проверки интеграции VA |
 
@@ -234,5 +235,5 @@ python3 scripts/test/live-mcp-http.py
 
 Legacy-скрипт `live-cli.sh` удалён. Вместо него нужно использовать специализированные entrypoint'ы:
 
-- `live-cli-designer.sh` для `builder=DESIGNER`
-- `live-cli-ibcmd.sh` для `builder=IBCMD`
+- `live-cli-designer.sh` для `providers.push=designer`
+- `live-cli-ibcmd.sh` для `providers.push=ibcmd`

@@ -83,8 +83,8 @@ pub fn analyze_context(context: &SourceSetContext, work_path: &Path) -> ContextA
         Err(e) => {
             if e.is_recoverable() {
                 tracing::warn!(
-                    source_set = %context.name(),
-                    error = %e,
+                    event = "scan_fallback",
+                    reason = "storage_recoverable",
                     "recoverable storage problem, switching to fallback mode"
                 );
                 return ContextAnalysis {
@@ -99,13 +99,20 @@ pub fn analyze_context(context: &SourceSetContext, work_path: &Path) -> ContextA
         }
     };
 
+    tracing::info!(
+        event = "scan_state",
+        stored_files = snapshot.entries.len(),
+        has_watermark = snapshot.watermark.is_some(),
+        "source scan state loaded"
+    );
+
     let stored_keys: HashSet<String> = snapshot.entries.keys().cloned().collect();
     let scan = match scanner::scan(context.path(), snapshot.watermark, &stored_keys) {
         Ok(scan) => scan,
         Err(e) => {
             tracing::warn!(
-                source_set = %context.name(),
-                error = %e,
+                event = "scan_fallback",
+                reason = scan_error_code(&e),
                 "scan failed, switching to fallback mode"
             );
             return ContextAnalysis {
@@ -138,6 +145,15 @@ pub fn analyze_context(context: &SourceSetContext, work_path: &Path) -> ContextA
     } else {
         AnalysisOutcome::Changes { changes, prepared }
     };
+
+    tracing::info!(
+        event = "scan_analysis_completed",
+        changed_files = match &outcome {
+            AnalysisOutcome::Changes { changes, .. } => changes.len(),
+            _ => 0,
+        },
+        "source scan analysis completed"
+    );
 
     ContextAnalysis {
         context: context.clone(),
@@ -308,6 +324,12 @@ fn full_snapshot(
     context: &SourceSetContext,
     input: &StorageSnapshotInputs,
 ) -> Result<FullSnapshot, ChangeDetectionError> {
+    tracing::info!(
+        event = "scan_state",
+        stored_files = input.stored_keys.len(),
+        has_watermark = input.watermark.is_some(),
+        "full source scan state loaded"
+    );
     let scan = scanner::scan(context.path(), input.watermark, &input.stored_keys)
         .map_err(|e| map_scan_error(context, e))?;
     let mut snapshot = HashMap::new();
@@ -325,6 +347,16 @@ fn full_snapshot(
         scan_started_at: scan.scan_started_at,
         observed_generation: input.observed_generation,
     })
+}
+
+fn scan_error_code(error: &ScanError) -> &'static str {
+    match error {
+        ScanError::Walk { .. } => "walk",
+        ScanError::Read { .. } => "read",
+        ScanError::Meta { .. } => "metadata",
+        ScanError::Mtime { .. } => "mtime",
+        ScanError::RelativePath { .. } => "relative_path",
+    }
 }
 
 fn to_storage_snapshot(snapshot: &[PreparedFileState]) -> HashMap<String, StoredFileState> {
@@ -389,8 +421,99 @@ mod tests {
     use crate::change_detection::partial_load::decide;
     use crate::domain::source_set::SourceSetContext;
     use std::fs::File;
+    use std::io::{self, Write};
+    use std::sync::{Arc, Mutex};
     use std::time::SystemTime;
     use tempfile::tempdir;
+
+    #[derive(Clone, Default)]
+    struct EventLog(Arc<Mutex<Vec<u8>>>);
+
+    impl Write for EventLog {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.0.lock().expect("event log").extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for EventLog {
+        type Writer = Self;
+
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    fn capture_events<T>(operation: impl FnOnce() -> T) -> (T, String) {
+        let log = EventLog::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(log.clone())
+            .with_max_level(tracing::Level::INFO)
+            .with_ansi(false)
+            .finish();
+        let result = tracing::subscriber::with_default(subscriber, operation);
+        let bytes = log.0.lock().expect("event log").clone();
+        (result, String::from_utf8(bytes).expect("UTF-8 log"))
+    }
+
+    #[test]
+    fn scan_events_are_count_only_and_distinguish_scan_from_analysis() {
+        let dir = tempdir().expect("tempdir");
+        let root = dir.path().join("secret-root");
+        std::fs::create_dir_all(&root).expect("source");
+        for index in 0..1_001 {
+            std::fs::write(root.join(format!("secret-{index}.bsl")), "private-content")
+                .expect("file");
+        }
+        let context = SourceSetContext::new("secret-source-set", root, "designer-secret");
+        let (analysis, events) = capture_events(|| analyze_context(&context, dir.path()));
+
+        assert!(matches!(
+            analysis.outcome,
+            Ok(AnalysisOutcome::Changes { .. })
+        ));
+        for event in [
+            "scan_state",
+            "scan_started",
+            "scan_progress",
+            "scan_completed",
+            "scan_analysis_completed",
+        ] {
+            assert!(events.contains(event), "missing {event}: {events}");
+        }
+        assert_eq!(events.matches("event=\"scan_progress\"").count(), 1);
+        assert!(events.contains("seen_files=1000"));
+        assert!(events.contains("seen_files=1001"));
+        for secret in [
+            "secret-root",
+            "secret-source-set",
+            "secret-0.bsl",
+            "private-content",
+        ] {
+            assert!(!events.contains(secret), "log leaked {secret}");
+        }
+    }
+
+    #[test]
+    fn scan_fallback_logs_reason_code_without_paths() {
+        let dir = tempdir().expect("tempdir");
+        let context = SourceSetContext::new(
+            "secret-source-set",
+            dir.path().join("secret-missing-root"),
+            "designer-secret",
+        );
+        let (analysis, events) = capture_events(|| analyze_context(&context, dir.path()));
+
+        assert!(matches!(analysis.outcome, Ok(AnalysisOutcome::Fallback)));
+        assert!(events.contains("event=\"scan_fallback\""));
+        assert!(events.contains("reason=\"walk\""));
+        assert!(!events.contains("scan_completed"));
+        assert!(!events.contains("secret-"));
+    }
 
     #[test]
     fn partial_load_contract_stays_compatible_with_file_change() {

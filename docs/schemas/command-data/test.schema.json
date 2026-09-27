@@ -395,7 +395,8 @@
         "test_failures",
         "junit_not_produced",
         "junit_empty",
-        "junit_malformed"
+        "junit_malformed",
+        "junit_export_failed"
       ],
       "type": "string"
     },

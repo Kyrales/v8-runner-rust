@@ -17,6 +17,10 @@ case "$CI_SCOPE" in
         # `cargo clippy --locked --bins`, а тестовые цели собирает сам `cargo test` ниже.
         cargo test --locked --test cli_infobase_cross_platform
         cargo test --locked --bin v8-runner 'support::fs::tests::'
+        cargo test --locked --bin v8-runner managed_wait_
+        cargo test --locked --bin v8-runner exception_file_
+        cargo test --locked --test cli_config_init config_init_windows_path_
+        cargo test --locked --test cli_tools_download vanessa_
         windows_contract_tests=(
           "platform::process::tests::detached_child_does_not_hold_redirected_stdout_open"
           "platform::process::tests::managed_detached_child_does_not_hold_redirected_stdout_open"

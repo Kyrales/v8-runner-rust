@@ -397,7 +397,7 @@ mod tests {
             let actual = std::fs::read_to_string(&path)
                 .unwrap_or_else(|_| panic!("artifact {path} is present"));
             assert_eq!(
-                actual,
+                actual.replace("\r\n", "\n"),
                 schema_json_pretty(&form.schema),
                 "{path} is stale; rerun UPDATE_COMMAND_DATA_SCHEMAS=1 cargo test generated_command_data_schemas_are_current"
             );
@@ -405,7 +405,7 @@ mod tests {
 
         let index = std::fs::read_to_string(COMMAND_DATA_INDEX_PATH).expect("index artifact");
         assert_eq!(
-            index,
+            index.replace("\r\n", "\n"),
             schema_json_pretty(&command_data_index()),
             "{COMMAND_DATA_INDEX_PATH} is stale; rerun UPDATE_COMMAND_DATA_SCHEMAS=1 cargo test generated_command_data_schemas_are_current"
         );

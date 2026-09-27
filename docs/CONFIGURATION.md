@@ -772,7 +772,13 @@ MCP endpoint и не гарантирует наличие Vanessa tools.
 - `epf_path`, путь к внешней обработке Vanessa Automation.
 
 `v8-runner tools download vanessa` заполняет `tools.va.epf_path` в `v8project.local.yaml` путём
-`build/tools/vanessa-automation-single.epf`.
+`build/tools/vanessa-automation-single.epf`, если путь ещё не указан ни в основном, ни в
+локальном файле. При наличии `tools/VAParams.json` и каталога `features` команда добавляет
+только недостающие поля: `tests.execution_timeout_seconds: 3600`,
+`tests.va.params_path: tools/VAParams.json`, `profile: all`, `timeouts.total_ms: 3600000`,
+`profiles.all.feature_path: features` и `ignore_tags: [IgnoreOnCIMainBuild]`.
+Существующие значения и комментарии сохраняются. Без этих двух файлов команда скачивает EPF,
+оставляет `tests.va` как есть и предупреждает, как включить тесты повторным запуском.
 
 ## `tools.platform`
 
