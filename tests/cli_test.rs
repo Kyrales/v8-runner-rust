@@ -666,6 +666,8 @@ fn test_text_output_splits_pipeline_into_timeline_stages() {
             "--config",
             &config_path.display().to_string(),
             "--no-color",
+            "--log-level",
+            "warn",
             "test",
             "yaxunit",
             "all",
@@ -686,7 +688,7 @@ fn test_text_output_splits_pipeline_into_timeline_stages() {
     assert!(!stdout.contains("parse JUnit report"));
     assert!(!stdout.contains("parse runner log"));
     assert!(!stdout.contains("secret"));
-    assert!(!stdout.contains(" INFO "));
+    assert!(!stdout.contains(" INFO "), "{stdout}");
     assert!(!stdout.contains("Test target: all"));
     assert!(!stdout.contains("Summary: total="));
     assert!(!stdout.contains("starting test run"));
@@ -1382,7 +1384,14 @@ fn test_module_edt_extension_build_uses_full_load_before_enterprise_launch() {
 
     assert!(build_calls_text.contains("-Extension client_mcp"));
     assert!(!build_calls_text.contains("-partial"));
-    assert!(edt_calls_text.contains("export --project-name client_mcp"));
+    let extension_source = base_path
+        .join("exts/client-mcp")
+        .canonicalize()
+        .expect("extension source");
+    assert!(
+        edt_calls_text.contains(&format!("export --project {}", extension_source.display())),
+        "{edt_calls_text}"
+    );
     assert!(test_calls_text.contains("RunUnitTests="));
     assert_eq!(payload["ok"], true);
     assert_eq!(

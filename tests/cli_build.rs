@@ -1076,14 +1076,16 @@ fn build_edt_text_interleaves_export_stage_after_edt_log() {
 
     let ibcmd_calls = fs::read_to_string(ibcmd_calls_log).expect("ibcmd calls");
     let edt_calls = fs::read_to_string(edt_calls_log).expect("edt calls");
-    assert!(edt_calls.contains(&format!(
-        "export --project {}",
-        config_path
-            .parent()
-            .expect("config dir")
-            .join("project/configuration")
-            .display()
-    )));
+    let source = config_path
+        .parent()
+        .expect("config dir")
+        .join("project/configuration")
+        .canonicalize()
+        .expect("source path");
+    assert!(
+        edt_calls.contains(&format!("export --project {}", source.display())),
+        "{edt_calls}"
+    );
     assert!(!edt_calls.contains("export --project-name"));
     assert!(ibcmd_calls.contains("config import"));
     assert!(ibcmd_calls.contains("config apply"));

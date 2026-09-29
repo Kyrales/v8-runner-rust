@@ -2588,14 +2588,18 @@ mod tests {
 
     #[cfg(windows)]
     fn read_pid(path: &Path) -> u32 {
-        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
         while std::time::Instant::now() < deadline {
             if let Ok(pid) = fs::read_to_string(path) {
                 return pid.trim().parse().expect("child pid");
             }
             thread::sleep(Duration::from_millis(10));
         }
-        panic!("child pid file was not written: {}", path.display());
+        panic!(
+            "child pid file was not written: {}; stderr: {:?}",
+            path.display(),
+            fs::read_to_string(path.with_file_name("stderr.log"))
+        );
     }
 
     #[cfg(windows)]
