@@ -54,7 +54,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           run_id=""
-          for attempt in {1..60}; do
+          for ((attempt = 0; attempt < 60; attempt++)); do
             run_id="$(gh run list --repo "${GITHUB_REPOSITORY}" --workflow ci.yml \
               --branch develop --commit "${GITHUB_SHA}" --event push --limit 1 \
               --json databaseId --jq '.[0].databaseId // empty')"
