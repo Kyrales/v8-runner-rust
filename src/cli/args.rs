@@ -22,7 +22,7 @@ pub struct Cli {
     pub json_message: bool,
 
     /// Log level
-    #[arg(long, global = true, default_value = "info",
+    #[arg(long, global = true,
           value_parser = ["error", "warn", "info", "debug", "trace"],
           help_heading = "Global options")]
     pub log_level: Option<String>,
