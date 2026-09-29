@@ -15,7 +15,7 @@ import zipfile
 from pathlib import Path, PurePosixPath
 
 
-REPOSITORY = "https://github.com/IngvarConsulting/v8-runner-rust"
+REPOSITORY = "https://github.com/Kyrales/v8-runner-rust"
 SOURCE_ROOT = Path(__file__).resolve().parents[2]
 BUILDER_WORKFLOW = ".github/workflows/release.yml"
 MANIFEST_ASSET = "v8-runner-assets.json"

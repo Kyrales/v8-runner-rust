@@ -10,9 +10,12 @@ below. This test is the reintroduction guard for equivalent release paths.
 from __future__ import annotations
 
 import importlib.util
+import os
 import re
+import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -36,13 +39,17 @@ class ReleaseGovernanceTest(unittest.TestCase):
         self.assertIn('cp LICENSE "${package_dir}/"', workflow)
         self.assertIn('cp FORK_NOTICE.md "${package_dir}/"', workflow)
 
-    def test_release_has_one_protected_entrypoint_and_freezes_only_after_audit(self) -> None:
+    def test_release_starts_from_develop_tag_and_freezes_only_after_audit(self) -> None:
         workflow = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
-        self.assertNotIn("push:\n    tags:", workflow)
-        self.assertIn("workflow_dispatch:", workflow)
-        self.assertIn("group: release-${{ inputs.tag }}", workflow)
+        self.assertIn("push:\n    tags:", workflow)
+        self.assertNotIn("workflow_dispatch:", workflow)
+        self.assertIn("group: release-${{ github.ref_name }}", workflow)
         self.assertIn("environment: release", workflow)
-        self.assertIn("github.ref == 'refs/heads/master'", workflow)
+        self.assertIn("origin develop:refs/remotes/origin/develop", workflow)
+        self.assertIn("--source-ref \"${GITHUB_REF}\"", workflow)
+        self.assertIn("prerelease: ${{ contains(github.ref_name, '-') }}", workflow)
+        self.assertNotIn("ref: ${{ inputs.tag }}", workflow)
+        self.assertIn("ref: ${{ github.sha }}", workflow)
         self.assertIn("name: Audit draft release", workflow)
         self.assertIn("needs: [publish, audit-native]", workflow)
         self.assertIn("gh release edit", workflow)
@@ -187,11 +194,51 @@ class ReleaseGovernanceTest(unittest.TestCase):
         )
         self.assertIn('toolchain: "1.95.0"', workflow)
         self.assertIn("MACOSX_DEPLOYMENT_TARGET", workflow)
-        self.assertIn("refs/remotes/origin/master", verifier)
+        self.assertIn("refs/remotes/origin/develop", verifier)
         self.assertIn("refs/tags/{args.tag}^{{commit}}", verifier)
         self.assertIn("GITHUB_SHA", verifier)
         self.assertIn("MIN_CONSOLIDATED_MANIFEST_VERSION", verifier)
         self.assertIn("consolidated release assets require", verifier)
+
+    def test_release_verifier_accepts_only_tag_at_current_develop(self) -> None:
+        verifier = load_release_verifier()
+        current = "a" * 40
+        stale = "b" * 40
+        revisions = {
+            "HEAD": current,
+            "refs/tags/v0.11.2^{commit}": current,
+            "refs/remotes/origin/develop": current,
+            "refs/remotes/origin/master": stale,
+        }
+        with mock.patch.object(verifier, "git_revision", side_effect=revisions.__getitem__), \
+             mock.patch.object(sys, "argv", ["verify-release-contract.py", "v0.11.2"]), \
+             mock.patch.dict(os.environ, {"GITHUB_SHA": current, "GITHUB_REF": "refs/tags/v0.11.2"}), \
+             mock.patch.object(verifier.subprocess, "run", return_value=mock.Mock(stdout="")):
+            verifier.main()
+
+        revisions["refs/remotes/origin/develop"] = stale
+        with mock.patch.object(verifier, "git_revision", side_effect=revisions.__getitem__), \
+             mock.patch.object(sys, "argv", ["verify-release-contract.py", "v0.11.2"]), \
+             mock.patch.dict(os.environ, {"GITHUB_SHA": current, "GITHUB_REF": "refs/tags/v0.11.2"}), \
+             mock.patch.object(verifier.subprocess, "run", return_value=mock.Mock(stdout="")):
+            with self.assertRaisesRegex(SystemExit, "release source identity"):
+                verifier.main()
+
+    def test_develop_pushes_start_ci(self) -> None:
+        ci = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        push = ci.split("  push:\n", 1)[1].split("  pull_request:", 1)[0]
+        self.assertIn("- develop", push)
+
+    def test_release_waits_for_successful_ci_on_the_tagged_commit(self) -> None:
+        workflow = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
+        preflight = self._release_jobs()["preflight"]
+        self.assertIn("actions: read", preflight)
+        self.assertIn("gh run list", preflight)
+        self.assertIn("--workflow ci.yml", preflight)
+        self.assertIn("--branch develop", preflight)
+        self.assertIn('--commit "${GITHUB_SHA}"', preflight)
+        self.assertIn("gh run watch", preflight)
+        self.assertLess(preflight.index("gh run watch"), preflight.index("Run release tests"))
 
     def test_ci_and_release_pin_the_same_toolchain(self) -> None:
         """CI обязана проверять тот компилятор, которым собирается выпуск.
@@ -316,12 +363,13 @@ class ReleaseGovernanceTest(unittest.TestCase):
 
     def test_documented_attestation_is_bound_to_verified_manifest_commit(self) -> None:
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
-        self.assertIn("gh release verify-asset v0.7.0 ./v8-runner-assets.json", readme)
+        self.assertIn("gh release verify-asset v0.11.2 ./v8-runner-assets.json", readme)
         self.assertIn('source_commit="$(python3', readme)
         self.assertIn(
             "for asset in v8-runner-assets.json v8-runner-linux-x86_64-musl.tar.gz", readme
         )
         self.assertIn('--source-digest "$source_commit"', readme)
+        self.assertIn("--source-ref refs/tags/v0.11.2", readme)
 
     def test_pr_ci_runs_release_asset_contract_tests(self) -> None:
         ci = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
@@ -395,7 +443,9 @@ class ReleaseGovernanceTest(unittest.TestCase):
     def test_package_metadata_names_fork_and_license(self) -> None:
         cargo = (ROOT / "Cargo.toml").read_text(encoding="utf-8")
         self.assertIn('license = "AGPL-3.0-only"', cargo)
-        self.assertIn('repository = "https://github.com/IngvarConsulting/v8-runner-rust"', cargo)
+        self.assertIn('repository = "https://github.com/Kyrales/v8-runner-rust"', cargo)
+        assets = (ROOT / "scripts/release/release_assets.py").read_text(encoding="utf-8")
+        self.assertIn('REPOSITORY = "https://github.com/Kyrales/v8-runner-rust"', assets)
         self.assertTrue((ROOT / "FORK_NOTICE.md").is_file())
 
     def test_generated_schema_contract_no_longer_points_to_old_owner(self) -> None:

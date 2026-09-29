@@ -105,8 +105,8 @@ const LABELS_NOT_VERDICTS: &[(&str, &str)] = &[
 
 /// Sites where the literal is ours by construction, so no tool can reword it.
 ///
-/// Both are the header the runner itself writes into a generated `v8project.yaml` and then
-/// looks for to avoid writing it twice. Keep this list short and argued: it is the guard's
+/// These are the headers the runner itself writes into generated project configuration and then
+/// looks for to avoid writing them twice. Keep this list short and argued: it is the guard's
 /// blind spot, not an escape hatch.
 const NOT_TOOL_OUTPUT: &[(&str, &str)] = &[
     (
@@ -117,6 +117,7 @@ const NOT_TOOL_OUTPUT: &[(&str, &str)] = &[
         "src/use_cases/tools_download.rs",
         "# yaml-language-server: $schema=",
     ),
+    ("src/use_cases/tools_download.rs", "# yaml-language-server:"),
 ];
 
 fn repo_root() -> &'static Path {

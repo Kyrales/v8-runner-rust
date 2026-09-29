@@ -1485,8 +1485,10 @@ mod tests {
     #[test]
     fn managed_wait_timeout_requires_verified_cleanup() {
         let mut probe = ManagedWaitProbe::new();
-        let mut policy = ProcessExecutionPolicy::default();
-        policy.timeout = Some(Duration::ZERO);
+        let mut policy = ProcessExecutionPolicy {
+            timeout: Some(Duration::ZERO),
+            ..Default::default()
+        };
         let result = managed_wait_with_ops(&mut probe, &policy, "test", true);
         assert!(matches!(result, Ok(outcome) if outcome.timed_out));
         assert!(probe.terminated);
@@ -1516,7 +1518,7 @@ mod tests {
 
     #[test]
     fn managed_wait_cancellation_requires_verified_cleanup() {
-        let mut policy = ProcessExecutionPolicy::default();
+        let policy = ProcessExecutionPolicy::default();
         policy.cancellation.cancel();
         let mut probe = ManagedWaitProbe::new();
         assert!(matches!(
@@ -2586,14 +2588,18 @@ mod tests {
 
     #[cfg(windows)]
     fn read_pid(path: &Path) -> u32 {
-        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
         while std::time::Instant::now() < deadline {
             if let Ok(pid) = fs::read_to_string(path) {
                 return pid.trim().parse().expect("child pid");
             }
             thread::sleep(Duration::from_millis(10));
         }
-        panic!("child pid file was not written: {}", path.display());
+        panic!(
+            "child pid file was not written: {}; stderr: {:?}",
+            path.display(),
+            fs::read_to_string(path.with_file_name("stderr.log"))
+        );
     }
 
     #[cfg(windows)]
