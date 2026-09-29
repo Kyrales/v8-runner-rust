@@ -1932,6 +1932,7 @@ fn every_staged_publication_rechecks_its_target_first() {
         "validate_platform_target(",
         "validate_publish_target(",
         "revalidate_before_publish(",
+        "output.recheck(",
     ];
     // Проверки исхода исполнителя: перепроверка, поставленная раньше них, сверяла бы цель до
     // работы исполнителя.
@@ -1953,6 +1954,7 @@ fn every_staged_publication_rechecks_its_target_first() {
         "crate::use_cases::dump_config::run_full_dump_ibcmd",
         "crate::use_cases::infobase_export::execute_configuration_export",
         "crate::use_cases::infobase_export::execute_infobase_snapshot",
+        "crate::use_cases::run_tests::publish_junit_output",
     ];
 
     let index = SourceIndex::of_src();
