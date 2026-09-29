@@ -75,7 +75,7 @@ pub fn scan(
     watermark: Option<u64>,
     stored_keys: &HashSet<String>,
 ) -> Result<ScanSnapshot, ScanError> {
-    tracing::info!(event = "scan_started", "source scan started");
+    tracing::debug!(event = "scan_started", "source scan started");
     let scan_started_at =
         mtime_nanos(std::time::SystemTime::now(), root).map_err(|source| ScanError::Mtime {
             path: root.to_path_buf(),
@@ -146,7 +146,7 @@ pub fn scan(
         }
         seen_files.push(seen);
         if seen_files.len() % PROGRESS_EVERY_FILES == 0 {
-            tracing::info!(
+            tracing::debug!(
                 event = "scan_progress",
                 seen_files = seen_files.len(),
                 hashed_candidates = candidates.len(),
@@ -155,7 +155,7 @@ pub fn scan(
         }
     }
 
-    tracing::info!(
+    tracing::debug!(
         event = "scan_completed",
         seen_files = seen_files.len(),
         hashed_candidates = candidates.len(),

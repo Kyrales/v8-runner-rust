@@ -99,7 +99,7 @@ pub fn analyze_context(context: &SourceSetContext, work_path: &Path) -> ContextA
         }
     };
 
-    tracing::info!(
+    tracing::debug!(
         event = "scan_state",
         stored_files = snapshot.entries.len(),
         has_watermark = snapshot.watermark.is_some(),
@@ -146,7 +146,7 @@ pub fn analyze_context(context: &SourceSetContext, work_path: &Path) -> ContextA
         AnalysisOutcome::Changes { changes, prepared }
     };
 
-    tracing::info!(
+    tracing::debug!(
         event = "scan_analysis_completed",
         changed_files = match &outcome {
             AnalysisOutcome::Changes { changes, .. } => changes.len(),
@@ -324,7 +324,7 @@ fn full_snapshot(
     context: &SourceSetContext,
     input: &StorageSnapshotInputs,
 ) -> Result<FullSnapshot, ChangeDetectionError> {
-    tracing::info!(
+    tracing::debug!(
         event = "scan_state",
         stored_files = input.stored_keys.len(),
         has_watermark = input.watermark.is_some(),
@@ -452,7 +452,7 @@ mod tests {
         let log = EventLog::default();
         let subscriber = tracing_subscriber::fmt()
             .with_writer(log.clone())
-            .with_max_level(tracing::Level::INFO)
+            .with_max_level(tracing::Level::DEBUG)
             .with_ansi(false)
             .finish();
         let result = tracing::subscriber::with_default(subscriber, operation);
