@@ -1485,8 +1485,10 @@ mod tests {
     #[test]
     fn managed_wait_timeout_requires_verified_cleanup() {
         let mut probe = ManagedWaitProbe::new();
-        let mut policy = ProcessExecutionPolicy::default();
-        policy.timeout = Some(Duration::ZERO);
+        let mut policy = ProcessExecutionPolicy {
+            timeout: Some(Duration::ZERO),
+            ..Default::default()
+        };
         let result = managed_wait_with_ops(&mut probe, &policy, "test", true);
         assert!(matches!(result, Ok(outcome) if outcome.timed_out));
         assert!(probe.terminated);
@@ -1516,7 +1518,7 @@ mod tests {
 
     #[test]
     fn managed_wait_cancellation_requires_verified_cleanup() {
-        let mut policy = ProcessExecutionPolicy::default();
+        let policy = ProcessExecutionPolicy::default();
         policy.cancellation.cancel();
         let mut probe = ManagedWaitProbe::new();
         assert!(matches!(

@@ -577,12 +577,16 @@ pub fn publish_file_noclobber(staging_file: &Path, target_file: &Path) -> std::i
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum RemoveIdentifiedFileTestPoint {
     BeforeOpenOrMove,
+    #[cfg(windows)]
     BeforeDelete,
 }
 
 #[cfg(test)]
+type RemoveIdentifiedFileTestHook = Option<Box<dyn Fn(RemoveIdentifiedFileTestPoint)>>;
+
+#[cfg(test)]
 thread_local! {
-    static REMOVE_IDENTIFIED_FILE_TEST_HOOK: std::cell::RefCell<Option<Box<dyn Fn(RemoveIdentifiedFileTestPoint)>>> =
+    static REMOVE_IDENTIFIED_FILE_TEST_HOOK: std::cell::RefCell<RemoveIdentifiedFileTestHook> =
         const { std::cell::RefCell::new(None) };
 }
 
@@ -603,12 +607,12 @@ fn before_identified_file_removal() {
     identified_file_test_point(RemoveIdentifiedFileTestPoint::BeforeOpenOrMove);
 }
 
-#[cfg(test)]
+#[cfg(all(test, windows))]
 fn before_identified_file_delete() {
     identified_file_test_point(RemoveIdentifiedFileTestPoint::BeforeDelete);
 }
 
-#[cfg(not(test))]
+#[cfg(all(not(test), windows))]
 fn before_identified_file_delete() {}
 
 /// Removes a regular file only if it still denotes the object previously inspected.
