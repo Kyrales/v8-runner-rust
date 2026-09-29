@@ -67,8 +67,8 @@ def main() -> None:
     require_consolidated_manifest_version(package["version"] or "")
     if package.get("license") != "AGPL-3.0-only":
         fail("Cargo package must declare AGPL-3.0-only")
-    if package.get("repository") != "https://github.com/IngvarConsulting/v8-runner-rust":
-        fail("Cargo package must name the maintained fork repository")
+    if package.get("repository") != "https://github.com/Kyrales/v8-runner-rust":
+        fail("Cargo package must name the release repository")
 
     for required in (
         "Cargo.lock",
@@ -89,14 +89,16 @@ def main() -> None:
 
     head = git_revision("HEAD")
     tag_commit = git_revision(f"refs/tags/{args.tag}^{{commit}}")
-    master = git_revision("refs/remotes/origin/master")
+    develop = git_revision("refs/remotes/origin/develop")
     workflow_commit = os.environ.get("GITHUB_SHA")
     if not workflow_commit:
-        fail("GITHUB_SHA is required to bind the approved workflow commit")
-    if len({head, tag_commit, master, workflow_commit}) != 1:
+        fail("GITHUB_SHA is required to bind the workflow commit")
+    if os.environ.get("GITHUB_REF") != f"refs/tags/{args.tag}":
+        fail("release must run from the matching tag ref")
+    if len({head, tag_commit, develop, workflow_commit}) != 1:
         fail(
-            "release source identity must match HEAD, tag commit, protected origin/master, "
-            f"and GITHUB_SHA: HEAD={head}, tag={tag_commit}, master={master}, workflow={workflow_commit}"
+            "release source identity must match HEAD, tag commit, current origin/develop, "
+            f"and GITHUB_SHA: HEAD={head}, tag={tag_commit}, develop={develop}, workflow={workflow_commit}"
         )
 
     print(f"release contract verified for {args.tag}")

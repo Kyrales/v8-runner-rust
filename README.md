@@ -1,10 +1,11 @@
 # v8-runner
 
-> **Maintained fork.** This repository is developed and released by
-> [Ingvar Consulting](https://github.com/IngvarConsulting). It was forked from
+> **Correction fork.** This repository follows the
+> [Ingvar Consulting maintained fork](https://github.com/IngvarConsulting/v8-runner-rust)
+> with Kyrales corrections. Releases here are built from this repository's tags.
+> The Ingvar fork originated from
 > [`alkoleft/v8-runner-rust`](https://github.com/alkoleft/v8-runner-rust) on
-> 2026-09-02. See [FORK_NOTICE.md](FORK_NOTICE.md) for provenance, modification,
-> source, and AGPL information.
+> 2026-09-02. See [FORK_NOTICE.md](FORK_NOTICE.md) for provenance and licence.
 
 `v8-runner` — CLI (командная строка) и MCP server (сервер Model Context Protocol) для
 локального 1C development workflow (цикла разработки 1С). Он собирает исходники, готовит
@@ -69,22 +70,29 @@ attestations, которые подтверждают их происхожде�
 их заменяет единый manifest; имена архивов и юридических файлов при этом не
 менялись.
 
+Выпуск этого форка запускается при публикации тега `v<версия>` на текущем
+коммите `develop`. Версия в теге должна совпадать с `Cargo.toml`; `master`
+остаётся линией Ингвара. Workflow проверяет источник, дожидается успешной CI
+для этого коммита, собирает архивы,
+публикует draft и открывает релиз только после аудита. Теги с суффиксом
+предварительной версии, например `-rc.1`, публикуются как prerelease.
+
 Перед использованием проверьте release и конкретный бинарник:
 
 ```bash
-gh release verify v0.7.0 --repo IngvarConsulting/v8-runner-rust
-gh release download v0.7.0 --repo IngvarConsulting/v8-runner-rust \
+gh release verify v0.11.2 --repo Kyrales/v8-runner-rust
+gh release download v0.11.2 --repo Kyrales/v8-runner-rust \
   --pattern v8-runner-assets.json --pattern v8-runner-linux-x86_64-musl.tar.gz
-gh release verify-asset v0.7.0 ./v8-runner-assets.json \
-  --repo IngvarConsulting/v8-runner-rust
-gh release verify-asset v0.7.0 ./v8-runner-linux-x86_64-musl.tar.gz \
-  --repo IngvarConsulting/v8-runner-rust
+gh release verify-asset v0.11.2 ./v8-runner-assets.json \
+  --repo Kyrales/v8-runner-rust
+gh release verify-asset v0.11.2 ./v8-runner-linux-x86_64-musl.tar.gz \
+  --repo Kyrales/v8-runner-rust
 source_commit="$(python3 -c 'import json; print(json.load(open("v8-runner-assets.json"))["release"]["sourceCommit"])')"
 for asset in v8-runner-assets.json v8-runner-linux-x86_64-musl.tar.gz; do
   gh attestation verify "$asset" \
-    --repo IngvarConsulting/v8-runner-rust \
-    --signer-workflow IngvarConsulting/v8-runner-rust/.github/workflows/release.yml \
-    --source-ref refs/heads/master --source-digest "$source_commit" \
+    --repo Kyrales/v8-runner-rust \
+    --signer-workflow Kyrales/v8-runner-rust/.github/workflows/release.yml \
+    --source-ref refs/tags/v0.11.2 --source-digest "$source_commit" \
     --deny-self-hosted-runners
 done
 ```

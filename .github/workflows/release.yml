@@ -1,20 +1,12 @@
 name: Release
 
 on:
-  workflow_dispatch:
-    inputs:
-      tag:
-        description: "Existing release tag on the current protected master commit"
-        required: true
-        type: string
-      prerelease:
-        description: "Mark the GitHub release as a prerelease"
-        required: false
-        default: false
-        type: boolean
+  push:
+    tags:
+      - "v*"
 
 concurrency:
-  group: release-${{ inputs.tag }}
+  group: release-${{ github.ref_name }}
   cancel-in-progress: false
 
 permissions:
@@ -23,25 +15,26 @@ permissions:
 env:
   BIN_NAME: v8-runner
   CARGO_TERM_COLOR: always
-  RELEASE_TAG: ${{ inputs.tag }}
+  RELEASE_TAG: ${{ github.ref_name }}
 
 jobs:
   preflight:
     name: Verify release contract
-    if: ${{ github.ref == 'refs/heads/master' }}
     environment: release
     runs-on: ubuntu-latest
     permissions:
+      actions: read
+      checks: read
       contents: write
     steps:
-      - name: Checkout exact release tag
+      - name: Checkout exact release commit
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
-          ref: ${{ inputs.tag }}
+          ref: ${{ github.sha }}
           fetch-depth: 0
 
-      - name: Fetch protected master identity
-        run: git fetch --no-tags origin master:refs/remotes/origin/master
+      - name: Fetch current develop identity
+        run: git fetch --no-tags origin develop:refs/remotes/origin/develop
 
       - name: Install Python
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
@@ -53,8 +46,29 @@ jobs:
         with:
           toolchain: "1.95.0"
 
-      - name: Verify tag, protected source, license, and package metadata
+      - name: Verify tag, current develop source, license, and package metadata
         run: python3 scripts/release/verify-release-contract.py "${RELEASE_TAG}"
+
+      - name: Wait for CI on the release commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          run_id=""
+          for attempt in {1..60}; do
+            run_id="$(gh run list --repo "${GITHUB_REPOSITORY}" --workflow ci.yml \
+              --branch develop --commit "${GITHUB_SHA}" --event push --limit 1 \
+              --json databaseId --jq '.[0].databaseId // empty')"
+            if [[ -n "${run_id}" ]]; then
+              break
+            fi
+            sleep 10
+          done
+          if [[ -z "${run_id}" ]]; then
+            echo "CI run for ${GITHUB_SHA} on develop was not found" >&2
+            exit 1
+          fi
+          gh run watch "${run_id}" --repo "${GITHUB_REPOSITORY}" \
+            --exit-status --compact --interval 30
 
       - name: Refuse a published release and remove only a stale draft
         env:
@@ -123,7 +137,7 @@ jobs:
       - name: Checkout exact release tag
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
-          ref: ${{ inputs.tag }}
+          ref: ${{ github.sha }}
 
       - name: Install Linux build dependencies
         if: ${{ matrix.linux_deps != '' }}
@@ -198,7 +212,7 @@ jobs:
       - name: Checkout exact release tag
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
-          ref: ${{ inputs.tag }}
+          ref: ${{ github.sha }}
 
       - name: Download release artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -222,14 +236,15 @@ jobs:
       - name: Publish GitHub draft release
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3
         with:
-          tag_name: ${{ inputs.tag }}
-          name: ${{ inputs.tag }}
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
           draft: true
-          prerelease: ${{ inputs.prerelease }}
+          prerelease: ${{ contains(github.ref_name, '-') }}
           generate_release_notes: true
           body: |
-            Maintained fork: https://github.com/IngvarConsulting/v8-runner-rust
-            Corresponding source and build scripts: ${{ github.server_url }}/${{ github.repository }}/tree/${{ inputs.tag }}
+            Release source: ${{ github.server_url }}/${{ github.repository }}
+            Maintained upstream: https://github.com/IngvarConsulting/v8-runner-rust
+            Corresponding source and build scripts: ${{ github.server_url }}/${{ github.repository }}/tree/${{ github.ref_name }}
 
             One archive per platform. Each holds the `v8-runner` binary (`v8-runner.exe` on Windows),
             this README, the licence, the fork notice and the `examples/` directory.
@@ -243,7 +258,7 @@ jobs:
 
             Run `uname -m` to tell an Apple Silicon Mac (`arm64`) from an Intel one (`x86_64`).
 
-            Every archive is built from the same protected source commit.
+            Every archive is built from the same verified source commit.
             v8-runner-assets.json binds the source tag and commit to SHA-256 metadata for every other release asset,
             and for each archive also to the path and SHA-256 of the binary inside it.
             All archives and the manifest have GitHub build attestations.
@@ -280,7 +295,7 @@ jobs:
       - name: Checkout exact release tag
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
-          ref: ${{ inputs.tag }}
+          ref: ${{ github.sha }}
 
       - name: Download draft release assets
         env:
@@ -311,7 +326,7 @@ jobs:
       - name: Checkout exact release tag
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
-          ref: ${{ inputs.tag }}
+          ref: ${{ github.sha }}
 
       - name: Download and verify draft
         env:
@@ -322,7 +337,7 @@ jobs:
           for asset in $(python3 scripts/release/release_assets.py attested-assets); do
             gh attestation verify "dist/${asset}" --repo "${GITHUB_REPOSITORY}" \
               --signer-workflow "${GITHUB_REPOSITORY}/.github/workflows/release.yml" \
-              --source-ref refs/heads/master --source-digest "${GITHUB_SHA}" --deny-self-hosted-runners
+              --source-ref "${GITHUB_REF}" --source-digest "${GITHUB_SHA}" --deny-self-hosted-runners
           done
           gh release view "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" --json assets \
             --jq '.assets | map({name,size,digest}) | sort_by(.name)' > release-assets.snapshot.json
@@ -345,7 +360,7 @@ jobs:
       - name: Checkout exact release tag
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
-          ref: ${{ inputs.tag }}
+          ref: ${{ github.sha }}
 
       - name: Download audited snapshot
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -357,6 +372,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RELEASE_VERIFY_TIMEOUT_SECONDS: "120"
         run: |
+          git fetch --force --no-tags origin "refs/tags/${RELEASE_TAG}:refs/tags/${RELEASE_TAG}"
+          test "$(git rev-parse "refs/tags/${RELEASE_TAG}^{commit}")" = "${GITHUB_SHA}"
           test "$(gh release view "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" --json isDraft --jq .isDraft)" = true
           gh release view "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" --json assets \
             --jq '.assets | map({name,size,digest}) | sort_by(.name)' > release-assets.current.json
@@ -366,7 +383,7 @@ jobs:
           for asset in $(python3 scripts/release/release_assets.py attested-assets); do
             gh attestation verify "dist/${asset}" --repo "${GITHUB_REPOSITORY}" \
               --signer-workflow "${GITHUB_REPOSITORY}/.github/workflows/release.yml" \
-              --source-ref refs/heads/master --source-digest "${GITHUB_SHA}" --deny-self-hosted-runners
+              --source-ref "${GITHUB_REF}" --source-digest "${GITHUB_SHA}" --deny-self-hosted-runners
           done
           gh release edit "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" --verify-tag --draft=false
           test "$(gh release view "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" --json isImmutable --jq .isImmutable)" = true

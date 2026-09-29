@@ -7,7 +7,7 @@ edition = "2021"
 # версии проект не проверяется никем.
 rust-version = "1.95"
 license = "AGPL-3.0-only"
-repository = "https://github.com/IngvarConsulting/v8-runner-rust"
+repository = "https://github.com/Kyrales/v8-runner-rust"
 
 [[bin]]
 name = "v8-runner"
