@@ -2077,8 +2077,13 @@ mod tests {
     fn cancel_once_started(
         started: PathBuf,
         release: PathBuf,
-    ) -> (CancellationToken, thread::JoinHandle<()>) {
+    ) -> (
+        CancellationToken,
+        thread::JoinHandle<()>,
+        std::sync::mpsc::Sender<()>,
+    ) {
         let cancellation = CancellationToken::new();
+        let (finished, finished_rx) = std::sync::mpsc::channel();
         let operator = {
             let cancellation = cancellation.clone();
             thread::spawn(move || {
@@ -2087,10 +2092,14 @@ mod tests {
                     thread::sleep(Duration::from_millis(10));
                 }
                 cancellation.cancel();
-                fs::write(&release, "").expect("release");
+                // Keep the child running until execute observes cancellation; an early
+                // release can turn a cancelled command into a boundary cancellation.
+                if finished_rx.recv_timeout(Duration::from_secs(10)).is_err() {
+                    fs::write(&release, "").expect("release stalled process");
+                }
             })
         };
-        (cancellation, operator)
+        (cancellation, operator, finished)
     }
 
     /// Проба списка расширений, отменённая уже после запуска `ibcmd`, работу получила, и ответ
@@ -2116,15 +2125,16 @@ mod tests {
             settings_path: None,
             extension: Some("ExistingExt".to_owned()),
         };
-        let (cancellation, operator) = cancel_once_started(started, release);
+        let (cancellation, operator, finished) = cancel_once_started(started, release);
 
-        let failure = execute(
+        let result = execute(
             &ExecutionContext::cli(CommandName::Load).with_cancellation(cancellation),
             &sample_config(root, &binary),
             &request,
-        )
-        .expect_err("the cancelled probe stops the command");
+        );
+        let _ = finished.send(());
         operator.join().expect("operator");
+        let failure = result.expect_err("the cancelled probe stops the command");
 
         assert_cancelled_probe(failure);
     }
@@ -2150,15 +2160,16 @@ mod tests {
             extension: None,
         };
         fs::write(root.join("merge.xml"), "<settings/>").expect("settings");
-        let (cancellation, operator) = cancel_once_started(started, release);
+        let (cancellation, operator, finished) = cancel_once_started(started, release);
 
-        let failure = execute(
+        let result = execute(
             &ExecutionContext::cli(CommandName::Load).with_cancellation(cancellation),
             &sample_config(root, &binary),
             &request,
-        )
-        .expect_err("the cancelled probe stops the command");
+        );
+        let _ = finished.send(());
         operator.join().expect("operator");
+        let failure = result.expect_err("the cancelled probe stops the command");
 
         assert_cancelled_probe(failure);
     }

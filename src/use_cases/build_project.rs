@@ -1776,7 +1776,11 @@ mod tests {
             tool_extension_storage_generation(&config, &tool_source, "client_mcp"),
             1
         );
-        write_edt_script(&edt, &edt_calls, Some("export --project "));
+        write_edt_script(
+            &edt,
+            &edt_calls,
+            Some("export --project-name client-mcp-project"),
+        );
 
         fs::write(
             tool_source
