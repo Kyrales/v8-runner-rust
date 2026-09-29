@@ -194,8 +194,7 @@ overrides. Сам local overlay нельзя передавать как `--conf
 
 Принципы вывода:
 
-- Без `--json-message` CLI держит clean success path кратким: обычный текстовый вывод
-  показывает предупреждения и ошибки; служебные сообщения `info` доступны через `--log-level info`.
+- Без `--json-message` CLI держит clean success path кратким.
 - Live progress в text output использует human-readable строки; для long-running stages время
   старта может выводиться как локальный префикс `HH:MM:SS`, без structured ключей вроде
   `started_at`.
