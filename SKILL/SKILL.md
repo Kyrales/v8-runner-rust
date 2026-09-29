@@ -42,7 +42,7 @@ Useful global flags:
 - `--workdir <WORKDIR>` to override `workPath`; it wins over `v8project.local.yaml`.
 - `--infobase <NAME|CONNECTION>` to work with another declared infobase or an ad hoc connection string; defaults to `origin`.
 - `--clean-before-execution` to clear logs before execution.
-- `--log-level <error|warn|info|debug|trace>` for diagnostics.
+- `--log-level <error|warn|info|debug|trace>` for diagnostics; text output defaults to `warn`, so use `info` to see source-scan messages.
 - `--no-color` for plain text output.
 
 ## First Pass

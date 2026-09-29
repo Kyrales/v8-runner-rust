@@ -199,7 +199,14 @@ pub fn run() -> i32 {
         }
     };
 
-    let level = cli.log_level.as_deref().unwrap_or("info");
+    let level = cli
+        .log_level
+        .as_deref()
+        .unwrap_or(if output_format == "text" {
+            "warn"
+        } else {
+            "info"
+        });
     let is_infobase_command = matches!(&cli.command, Command::Infobase(_));
     let logging_result = if is_infobase_command {
         crate::support::logging::init_action_logging_deferred(
@@ -391,7 +398,10 @@ fn run_bootstrap(args: &BootstrapArgs, cli: &Cli, presenter: &Presenter) -> i32 
         }
     };
     let work_path = project_dir.join("build");
-    let level = cli.log_level.as_deref().unwrap_or("info");
+    let level =
+        cli.log_level
+            .as_deref()
+            .unwrap_or(if presenter.is_json() { "info" } else { "warn" });
     if let Err(error) = crate::support::logging::init_action_logging(
         level,
         if presenter.is_json() { "json" } else { "text" },
