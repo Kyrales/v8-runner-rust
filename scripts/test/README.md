@@ -237,3 +237,11 @@ Legacy-скрипт `live-cli.sh` удалён. Вместо него нужно
 
 - `live-cli-designer.sh` для `providers.push=designer`
 - `live-cli-ibcmd.sh` для `providers.push=ibcmd`
+
+## Регрессия наследуемых stdout/stderr
+
+`cargo test --locked --bin v8-runner captured_parent_exit_does_not_wait_for_descendant -- --nocapture`
+проверяет без 1С, что родитель уже вышел, потомок ещё жив, а результат возвращён.
+Watchdog ограничивает тест; release handshake очищает потомка и при старой pipe-реализации.
+Снимки файлов и ошибки чтения: `cargo test --locked --bin v8-runner platform::process::tests::capture`;
+независимая позиция writer: `cargo test --locked --bin v8-runner snapshot_is_a_fixed_prefix`.
