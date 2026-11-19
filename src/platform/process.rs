@@ -1,4 +1,4 @@
-use std::io::Read;
+use std::fs::File;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::Duration;
@@ -39,9 +39,9 @@ pub struct ProcessRequest {
 pub struct ProcessResult {
     /// Child exit code.
     pub exit_code: i32,
-    /// Captured stdout as UTF-8 (lossy-decoded).
+    /// Stdout snapshot after parent exit, as UTF-8 (lossy-decoded).
     pub stdout: String,
-    /// Captured stderr as UTF-8 (lossy-decoded).
+    /// Stderr snapshot after parent exit, as UTF-8 (lossy-decoded).
     pub stderr: String,
     /// Command-boundary interruption observed while the child was running.
     pub interruption: Option<ProcessInterruption>,
@@ -485,11 +485,20 @@ impl ProcessExecutor {
                 timeout_ms: 0,
             });
         }
-        let spawned = spawn_command(request, ProcessIoMode::Captured, &rendered_command)?;
+        let capture = CapturedOutput::new().map_err(|source| ProcessError::SpawnFailed {
+            cmd: rendered_command.clone(),
+            source,
+        })?;
+        let spawned = spawn_command(
+            request,
+            ProcessIoMode::Captured,
+            &rendered_command,
+            Some(&capture),
+        )?;
         if let Some(work) = &policy.work {
             work.mark_work_given();
         }
-        let output = wait_for_output(spawned, &rendered_command, policy)?;
+        let output = wait_for_output(spawned, &rendered_command, policy, &capture)?;
         debug!(
             command = rendered_command.as_str(),
             exit_code = output.status.code().unwrap_or(-1),
@@ -807,22 +816,6 @@ impl ChildHandle {
             Self::Wrapped(child) => child.start_kill(),
         }
     }
-
-    fn stdout(&mut self) -> &mut Option<std::process::ChildStdout> {
-        match self {
-            Self::Standard(child) => &mut child.stdout,
-            #[cfg(windows)]
-            Self::Wrapped(child) => child.stdout(),
-        }
-    }
-
-    fn stderr(&mut self) -> &mut Option<std::process::ChildStderr> {
-        match self {
-            Self::Standard(child) => &mut child.stderr,
-            #[cfg(windows)]
-            Self::Wrapped(child) => child.stderr(),
-        }
-    }
 }
 
 fn spawn_checked_child(
@@ -830,7 +823,7 @@ fn spawn_checked_child(
     io_mode: ProcessIoMode,
     rendered_command: &str,
 ) -> Result<SpawnedChild, ProcessError> {
-    let mut spawned = spawn_command(request, io_mode, rendered_command)?;
+    let mut spawned = spawn_command(request, io_mode, rendered_command, None)?;
 
     if let Some(startup_probe) = request.startup_probe {
         std::thread::sleep(startup_probe);
@@ -869,6 +862,7 @@ fn spawn_command(
     request: &ProcessRequest,
     io_mode: ProcessIoMode,
     rendered_command: &str,
+    capture: Option<&CapturedOutput>,
 ) -> Result<SpawnedChild, ProcessError> {
     for attempt in 0..=EXECUTABLE_BUSY_MAX_RETRIES {
         if io_mode.requires_standard_handle_isolation() {
@@ -877,7 +871,7 @@ fn spawn_command(
                 source,
             })?;
         }
-        let cmd = build_command(request, io_mode, rendered_command)?;
+        let cmd = build_command(request, io_mode, rendered_command, capture)?;
         match spawn_child(cmd, io_mode) {
             Ok(child) => return Ok(SpawnedChild { child }),
             Err(source) if is_executable_busy(&source) && attempt < EXECUTABLE_BUSY_MAX_RETRIES => {
@@ -979,6 +973,7 @@ fn build_command(
     request: &ProcessRequest,
     io_mode: ProcessIoMode,
     rendered_command: &str,
+    capture: Option<&CapturedOutput>,
 ) -> Result<Command, ProcessError> {
     let mut cmd = Command::new(&request.program);
     cmd.args(&request.args);
@@ -1018,8 +1013,18 @@ fn build_command(
             set_child_process_group(&mut cmd);
         }
         ProcessIoMode::Captured => {
-            cmd.stdout(Stdio::piped());
-            cmd.stderr(Stdio::piped());
+            let capture = capture.ok_or_else(|| ProcessError::SpawnFailed {
+                cmd: rendered_command.to_owned(),
+                source: std::io::Error::other("captured process requires output storage"),
+            })?;
+            let (stdout, stderr) = capture
+                .stdio()
+                .map_err(|source| ProcessError::SpawnFailed {
+                    cmd: rendered_command.to_owned(),
+                    source,
+                })?;
+            cmd.stdout(stdout);
+            cmd.stderr(stderr);
             set_child_process_group(&mut cmd);
         }
     }
@@ -1061,40 +1066,104 @@ fn is_executable_busy(error: &std::io::Error) -> bool {
     }
 }
 
+/// Owns finite output snapshots, independent of inherited writer lifetimes.
+struct CapturedOutput {
+    stdout_writer: File,
+    stdout_reader: File,
+    stderr_writer: File,
+    stderr_reader: File,
+}
+
+impl CapturedOutput {
+    fn new() -> std::io::Result<Self> {
+        fn stream() -> std::io::Result<(File, File)> {
+            let named = tempfile::NamedTempFile::new()?;
+            let reader = named.reopen()?;
+            let (writer, path) = named.into_parts();
+            path.close()?;
+            Ok((writer, reader))
+        }
+        let (stdout_writer, stdout_reader) =
+            stream().map_err(|error| capture_io_error("create stdout capture", error))?;
+        let (stderr_writer, stderr_reader) =
+            stream().map_err(|error| capture_io_error("create stderr capture", error))?;
+        Ok(Self {
+            stdout_writer,
+            stdout_reader,
+            stderr_writer,
+            stderr_reader,
+        })
+    }
+
+    fn stdio(&self) -> std::io::Result<(Stdio, Stdio)> {
+        Ok((
+            Stdio::from(self.stdout_writer.try_clone()?),
+            Stdio::from(self.stderr_writer.try_clone()?),
+        ))
+    }
+
+    fn snapshot(&self) -> std::io::Result<(Vec<u8>, Vec<u8>)> {
+        // Fix both boundaries first: descendants may keep appending afterwards.
+        let stdout_len = self
+            .stdout_reader
+            .metadata()
+            .map_err(|error| capture_io_error("capture stdout metadata", error))?
+            .len();
+        let stderr_len = self
+            .stderr_reader
+            .metadata()
+            .map_err(|error| capture_io_error("capture stderr metadata", error))?
+            .len();
+        Ok((
+            read_capture_prefix(&self.stdout_reader, stdout_len)
+                .map_err(|error| capture_io_error("capture stdout read", error))?,
+            read_capture_prefix(&self.stderr_reader, stderr_len)
+                .map_err(|error| capture_io_error("capture stderr read", error))?,
+        ))
+    }
+}
+
+fn capture_io_error(stage: &'static str, source: std::io::Error) -> std::io::Error {
+    let context = format!("{stage}: {source}");
+    std::io::Error::new(source.kind(), anyhow::Error::new(source).context(context))
+}
+
+fn read_capture_prefix(file: &File, length: u64) -> std::io::Result<Vec<u8>> {
+    let mut output = Vec::new();
+    let mut buffer = [0_u8; 16384];
+    let mut offset = 0;
+    while offset < length {
+        let count = (length - offset).min(buffer.len() as u64) as usize;
+        #[cfg(unix)]
+        let read = std::os::unix::fs::FileExt::read_at(file, &mut buffer[..count], offset);
+        // seek_read changes the reader cursor on Windows. It is safe only
+        // because NamedTempFile::reopen, unlike try_clone, separates it from writer.
+        #[cfg(windows)]
+        let read = std::os::windows::fs::FileExt::seek_read(file, &mut buffer[..count], offset);
+        match read {
+            Ok(0) => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "captured output ended before snapshot boundary",
+                ))
+            }
+            Ok(count) => {
+                output.extend_from_slice(&buffer[..count]);
+                offset += count as u64;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(output)
+}
+
 fn wait_for_output(
     mut spawned: SpawnedChild,
     rendered_command: &str,
     policy: &ProcessExecutionPolicy,
+    capture: &CapturedOutput,
 ) -> Result<ObservedOutput, ProcessError> {
-    let mut stdout =
-        spawned
-            .child
-            .stdout()
-            .take()
-            .ok_or_else(|| ProcessError::StartupCheckFailed {
-                cmd: rendered_command.to_owned(),
-                source: std::io::Error::new(std::io::ErrorKind::BrokenPipe, "stdout pipe missing"),
-            })?;
-    let mut stderr =
-        spawned
-            .child
-            .stderr()
-            .take()
-            .ok_or_else(|| ProcessError::StartupCheckFailed {
-                cmd: rendered_command.to_owned(),
-                source: std::io::Error::new(std::io::ErrorKind::BrokenPipe, "stderr pipe missing"),
-            })?;
-    let stdout_reader = std::thread::spawn(move || {
-        let mut buf = Vec::new();
-        let _ = stdout.read_to_end(&mut buf);
-        buf
-    });
-    let stderr_reader = std::thread::spawn(move || {
-        let mut buf = Vec::new();
-        let _ = stderr.read_to_end(&mut buf);
-        buf
-    });
-
     let start = std::time::Instant::now();
     let mut observed_interruption: Option<ProcessInterruptionReason> = None;
     loop {
@@ -1107,13 +1176,13 @@ fn wait_for_output(
                     source,
                 })?
         {
-            // Известный предел: потоки чтения присоединяются после выхода процесса. Внук,
-            // переживший родителя и держащий трубу, задержит присоединение, и прерывание в
-            // это время не наблюдается: цикл уже вышел. Группу снимают только пути
-            // прерывания выше — `Interruptible` и `GracefulThenKill`, — а обычный выход её
-            // не трогает.
-            let stdout = stdout_reader.join().unwrap_or_default();
-            let stderr = stderr_reader.join().unwrap_or_default();
+            let (stdout, stderr) =
+                capture
+                    .snapshot()
+                    .map_err(|source| ProcessError::StartupCheckFailed {
+                        cmd: rendered_command.to_owned(),
+                        source,
+                    })?;
             return match observed_interruption {
                 Some(ProcessInterruptionReason::Cancelled)
                     if policy.safety != ProcessInterruptionSafety::CriticalNonAbortable =>
@@ -1158,8 +1227,6 @@ fn wait_for_output(
                     policy,
                     ProcessInterruptionReason::Cancelled,
                 )? {
-                    let _ = stdout_reader.join();
-                    let _ = stderr_reader.join();
                     return Err(error);
                 }
             } else if let Some(limit) = policy.timeout {
@@ -1171,8 +1238,6 @@ fn wait_for_output(
                         policy,
                         ProcessInterruptionReason::TimedOut,
                     )? {
-                        let _ = stdout_reader.join();
-                        let _ = stderr_reader.join();
                         return Err(error);
                     }
                 }
@@ -1380,6 +1445,428 @@ impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for DeferralWatch {
 
 #[cfg(test)]
 mod tests {
+    // Run the blocking executor in a separate test process: the watchdog must
+    // still be able to release inherited stdio when testing the old pipe code.
+    #[test]
+    #[ignore = "subprocess fixture, invoked with --exact"]
+    fn capture_fixture_entry() {
+        capture_fixture("executor");
+    }
+
+    #[test]
+    #[ignore = "subprocess fixture, invoked with --exact"]
+    fn capture_fixture_parent() {
+        capture_fixture("parent");
+    }
+
+    #[test]
+    #[ignore = "subprocess fixture, invoked with --exact"]
+    fn capture_fixture_descendant() {
+        capture_fixture("descendant");
+    }
+
+    fn capture_fixture(role: &str) {
+        let root = std::env::var_os("V8_CAPTURE_FIXTURE_ROOT").expect("fixture root");
+        let root = std::path::PathBuf::from(root);
+        let helper = || {
+            let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+            command.args([
+                "--ignored",
+                "--exact",
+                "platform::process::tests::capture_fixture_descendant",
+                "--nocapture",
+            ]);
+            command
+        };
+        match role {
+            "descendant" => {
+                std::fs::write(root.join("ready"), std::process::id().to_string()).unwrap();
+                let deadline = std::time::Instant::now() + Duration::from_secs(20);
+                while !root.join("release").exists() && std::time::Instant::now() < deadline {
+                    thread::sleep(Duration::from_millis(10));
+                }
+                std::fs::write(root.join("done"), b"done").unwrap();
+            }
+            "parent" => {
+                use std::io::Write;
+                println!("parent-out");
+                eprintln!("parent-err");
+                std::io::stdout().flush().unwrap();
+                std::io::stderr().flush().unwrap();
+                let mut command = helper();
+                let _child = command.spawn().unwrap();
+                let deadline = std::time::Instant::now() + Duration::from_secs(5);
+                while !root.join("ready").exists() && std::time::Instant::now() < deadline {
+                    thread::sleep(Duration::from_millis(10));
+                }
+                assert!(root.join("ready").exists());
+                if std::env::var_os("V8_CAPTURE_CRITICAL").is_some() {
+                    thread::sleep(Duration::from_millis(100));
+                }
+                std::process::exit(7);
+            }
+            "executor" => {
+                let args = vec![
+                    "--ignored".to_owned(),
+                    "--exact".to_owned(),
+                    "platform::process::tests::capture_fixture_parent".to_owned(),
+                    "--nocapture".to_owned(),
+                ];
+                let request = ProcessRequest {
+                    program: std::env::current_exe().unwrap(),
+                    args,
+                    workdir: None,
+                    stdout_log_path: None,
+                    stderr_log_path: None,
+                    startup_probe: Some(Duration::from_secs(1)),
+                };
+                let critical = std::env::var_os("V8_CAPTURE_CRITICAL").is_some();
+                let policy = if critical {
+                    ProcessExecutionPolicy::new(
+                        Some(Duration::from_millis(10)),
+                        CancellationToken::new(),
+                        ProcessInterruptionSafety::CriticalNonAbortable,
+                        WorkGiven::for_command(),
+                    )
+                } else {
+                    ProcessExecutionPolicy::default()
+                };
+                let result = ProcessExecutor.run_with_policy(&request, &policy).unwrap();
+                assert_eq!(result.exit_code, 7);
+                if critical {
+                    assert_eq!(
+                        result.interruption,
+                        Some(super::ProcessInterruption {
+                            reason: ProcessInterruptionReason::TimedOut,
+                            action: ProcessInterruptionAction::Deferred,
+                        })
+                    );
+                }
+                assert!(result.stdout.contains("parent-out"));
+                assert!(result.stderr.contains("parent-err"));
+                std::fs::write(root.join("result"), b"ok").unwrap();
+            }
+            _ => panic!("unknown fixture role"),
+        }
+    }
+
+    #[test]
+    fn captured_parent_exit_does_not_wait_for_descendant() {
+        run_capture_descendant_case(false);
+    }
+
+    #[test]
+    fn critical_parent_exit_with_live_descendant_returns_deferred_timeout() {
+        run_capture_descendant_case(true);
+    }
+
+    fn run_capture_descendant_case(critical: bool) {
+        struct FixtureGuard {
+            child: std::process::Child,
+            root: PathBuf,
+        }
+        impl Drop for FixtureGuard {
+            fn drop(&mut self) {
+                let _ = fs::write(self.root.join("release"), b"release");
+                let deadline = std::time::Instant::now() + Duration::from_secs(3);
+                while self.root.join("ready").exists()
+                    && !self.root.join("done").exists()
+                    && std::time::Instant::now() < deadline
+                {
+                    thread::sleep(Duration::from_millis(10));
+                }
+                let _ = self.child.kill();
+                let _ = self.child.wait();
+            }
+        }
+        let dir = tempdir().unwrap();
+        let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+        if critical {
+            command.env("V8_CAPTURE_CRITICAL", "1");
+        }
+        let child = command
+            .args([
+                "--ignored",
+                "--exact",
+                "platform::process::tests::capture_fixture_entry",
+                "--nocapture",
+            ])
+            .env("V8_CAPTURE_FIXTURE_ROOT", dir.path())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let mut helper = FixtureGuard {
+            child,
+            root: dir.path().to_owned(),
+        };
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while !dir.path().join("result").exists() && std::time::Instant::now() < deadline {
+            if helper.child.try_wait().unwrap().is_some() {
+                break;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        let returned_before_release = dir.path().join("result").exists();
+        let ready = fs::read_to_string(dir.path().join("ready")).ok();
+        let alive = ready
+            .as_ref()
+            .is_some_and(|pid| process_exists(pid.parse().unwrap()));
+        fs::write(dir.path().join("release"), b"release").unwrap();
+        let cleanup_deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while !dir.path().join("done").exists() && std::time::Instant::now() < cleanup_deadline {
+            thread::sleep(Duration::from_millis(10));
+        }
+        if helper.child.try_wait().unwrap().is_none() {
+            helper.child.kill().unwrap();
+        }
+        let _ = helper.child.wait();
+        assert!(
+            ready.is_some(),
+            "descendant never acknowledged inherited stdio"
+        );
+        assert!(
+            alive,
+            "descendant must still be alive when result is observed"
+        );
+        assert!(dir.path().join("done").exists(), "fixture did not clean up");
+        assert!(
+            returned_before_release,
+            "runner waited for inherited pipe EOF after parent exit"
+        );
+    }
+    #[test]
+    #[ignore = "subprocess output fixture"]
+    fn capture_fixture_output() {
+        use std::io::Write;
+        let mut stdout = vec![b'a'; 1024 * 1024];
+        stdout.push(0xff);
+        let mut stderr = vec![b'b'; 1024 * 1024];
+        stderr.push(0xfe);
+        std::io::stdout().write_all(&stdout).unwrap();
+        std::io::stderr().write_all(&stderr).unwrap();
+        std::process::exit(0);
+    }
+
+    fn capture_output_request() -> ProcessRequest {
+        ProcessRequest {
+            program: std::env::current_exe().unwrap(),
+            args: [
+                "--ignored",
+                "--exact",
+                "platform::process::tests::capture_fixture_output",
+                "--nocapture",
+            ]
+            .map(str::to_owned)
+            .to_vec(),
+            workdir: None,
+            stdout_log_path: None,
+            stderr_log_path: None,
+            startup_probe: None,
+        }
+    }
+
+    #[test]
+    fn captured_output_and_log_bytes_match() {
+        let dir = tempdir().unwrap();
+        let mut request = capture_output_request();
+        request.stdout_log_path = Some(dir.path().join("out"));
+        request.stderr_log_path = Some(dir.path().join("err"));
+        let result = ProcessExecutor
+            .run_with_policy(&request, &ProcessExecutionPolicy::default())
+            .unwrap();
+        let stdout = fs::read(request.stdout_log_path.unwrap()).unwrap();
+        let stderr = fs::read(request.stderr_log_path.unwrap()).unwrap();
+        assert_eq!(result.exit_code, 0);
+        let mut expected_out = vec![b'a'; 1024 * 1024];
+        expected_out.push(0xff);
+        let mut expected_err = vec![b'b'; 1024 * 1024];
+        expected_err.push(0xfe);
+        assert!(stdout.ends_with(&expected_out));
+        assert!(stderr.ends_with(&expected_err));
+        assert_eq!(result.stdout, String::from_utf8_lossy(&stdout));
+        assert_eq!(result.stderr, String::from_utf8_lossy(&stderr));
+    }
+
+    #[test]
+    fn capture_log_error_is_not_success() {
+        let dir = tempdir().unwrap();
+        for stderr in [false, true] {
+            let mut request = capture_output_request();
+            if stderr {
+                request.stderr_log_path = Some(dir.path().to_owned());
+            } else {
+                request.stdout_log_path = Some(dir.path().to_owned());
+            }
+            let error = ProcessExecutor
+                .run_with_policy(&request, &ProcessExecutionPolicy::default())
+                .unwrap_err();
+            assert!(if stderr {
+                matches!(error, ProcessError::StderrLogIo { .. })
+            } else {
+                matches!(error, ProcessError::StdoutLogIo { .. })
+            });
+        }
+    }
+
+    #[test]
+    fn captured_cancel_before_start_creates_no_child() {
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+        let policy = ProcessExecutionPolicy {
+            cancellation,
+            ..ProcessExecutionPolicy::default()
+        };
+        let mut request = capture_output_request();
+        request.program = PathBuf::from("absent-capture-executable");
+        assert!(matches!(
+            ProcessExecutor.run_with_policy(&request, &policy),
+            Err(ProcessError::Cancelled {
+                delivered: false,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn snapshot_is_a_fixed_prefix_and_preserves_writer_position() {
+        use std::io::{Seek, Write};
+        let capture = super::CapturedOutput::new().unwrap();
+        let mut writer = capture.stdout_writer.try_clone().unwrap();
+        writer.write_all(b"abc").unwrap();
+        let length = capture.stdout_reader.metadata().unwrap().len();
+        writer.write_all(b"late").unwrap();
+        assert_eq!(
+            super::read_capture_prefix(&capture.stdout_reader, length).unwrap(),
+            b"abc"
+        );
+        assert_eq!(writer.stream_position().unwrap(), 7);
+        writer.write_all(b"!").unwrap();
+        assert_eq!(capture.snapshot().unwrap().0, b"abclate!");
+    }
+
+    #[test]
+    fn capture_short_read_is_reported() {
+        use std::io::Write;
+        let capture = super::CapturedOutput::new().unwrap();
+        (&capture.stdout_writer).write_all(b"abc").unwrap();
+        assert_eq!(
+            super::read_capture_prefix(&capture.stdout_reader, 4)
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::UnexpectedEof
+        );
+    }
+
+    #[test]
+    fn capture_read_failure_is_reported() {
+        let dir = tempdir().unwrap();
+        let file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(dir.path().join("write-only"))
+            .unwrap();
+        assert!(super::read_capture_prefix(&file, 1).is_err());
+    }
+
+    #[test]
+    fn captured_streams_preserve_large_bytes_and_lossy_logs() {
+        use std::io::Write;
+        let capture = super::CapturedOutput::new().unwrap();
+        let mut out = vec![b'a'; 1024 * 1024];
+        out.push(0xff);
+        let mut err = vec![b'b'; 1024 * 1024];
+        err.push(0xfe);
+        (&capture.stdout_writer).write_all(&out).unwrap();
+        (&capture.stderr_writer).write_all(&err).unwrap();
+        assert_eq!(capture.snapshot().unwrap(), (out, err));
+    }
+
+    #[test]
+    fn repeated_capture_releases_owned_resources() {
+        use std::io::Write;
+
+        #[cfg(unix)]
+        fn identity(fd: std::os::fd::RawFd) -> Option<(libc::dev_t, libc::ino_t)> {
+            let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
+            // fstat only inspects the descriptor; it does not assume ownership.
+            if unsafe { libc::fstat(fd, stat.as_mut_ptr()) } != 0 {
+                return None;
+            }
+            let stat = unsafe { stat.assume_init() };
+            Some((stat.st_dev, stat.st_ino))
+        }
+
+        #[cfg(windows)]
+        fn identity(handle: std::os::windows::io::RawHandle) -> Option<(u32, u64)> {
+            use windows_sys::Win32::Storage::FileSystem::{
+                GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
+            };
+            let mut info = BY_HANDLE_FILE_INFORMATION::default();
+            if unsafe { GetFileInformationByHandle(handle, &mut info) } == 0 {
+                return None;
+            }
+            Some((
+                info.dwVolumeSerialNumber,
+                (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow),
+            ))
+        }
+
+        for _ in 0..20 {
+            let capture = super::CapturedOutput::new().unwrap();
+            let mut inherited_writer = capture.stdout_writer.try_clone().unwrap();
+            let files = [
+                &capture.stdout_writer,
+                &capture.stdout_reader,
+                &capture.stderr_writer,
+                &capture.stderr_reader,
+            ];
+            #[cfg(unix)]
+            let owned = files.map(|file| {
+                use std::os::fd::AsRawFd;
+                use std::os::unix::fs::MetadataExt;
+                assert_eq!(file.metadata().unwrap().nlink(), 0);
+                let raw = file.as_raw_fd();
+                (raw, identity(raw).unwrap())
+            });
+            #[cfg(windows)]
+            let owned = files.map(|file| {
+                use std::os::windows::io::AsRawHandle;
+                use windows_sys::Win32::Storage::FileSystem::{
+                    FileStandardInfo, GetFileInformationByHandleEx, FILE_STANDARD_INFO,
+                };
+                let raw = file.as_raw_handle();
+                let mut info = FILE_STANDARD_INFO::default();
+                assert_ne!(
+                    unsafe {
+                        GetFileInformationByHandleEx(
+                            raw,
+                            FileStandardInfo,
+                            (&mut info as *mut FILE_STANDARD_INFO).cast(),
+                            std::mem::size_of::<FILE_STANDARD_INFO>() as u32,
+                        )
+                    },
+                    0
+                );
+                assert!(info.DeletePending, "capture name was not removed");
+                (raw, identity(raw).unwrap())
+            });
+            inherited_writer.write_all(b"before").unwrap();
+            assert_eq!(capture.snapshot().unwrap().0, b"before");
+            drop(capture);
+            for (raw, original) in owned {
+                // Other tests may reuse the raw value, so compare file identity.
+                assert_ne!(
+                    identity(raw),
+                    Some(original),
+                    "capture retained an owned file"
+                );
+            }
+            // Owner deletion does not kill or invalidate a descendant writer.
+            inherited_writer.write_all(b"after").unwrap();
+        }
+    }
+
     use super::{
         is_invalid_standard_handle_error, managed_wait_with_ops, render_command, ManagedSpawnMode,
         ManagedWaitOps, ProcessError, ProcessExecutionPolicy, ProcessExecutor,

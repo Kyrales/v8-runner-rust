@@ -80,19 +80,19 @@ attestations, которые подтверждают их происхожде�
 Перед использованием проверьте release и конкретный бинарник:
 
 ```bash
-gh release verify v0.11.2 --repo Kyrales/v8-runner-rust
-gh release download v0.11.2 --repo Kyrales/v8-runner-rust \
+gh release verify v0.11.3 --repo Kyrales/v8-runner-rust
+gh release download v0.11.3 --repo Kyrales/v8-runner-rust \
   --pattern v8-runner-assets.json --pattern v8-runner-linux-x86_64-musl.tar.gz
-gh release verify-asset v0.11.2 ./v8-runner-assets.json \
+gh release verify-asset v0.11.3 ./v8-runner-assets.json \
   --repo Kyrales/v8-runner-rust
-gh release verify-asset v0.11.2 ./v8-runner-linux-x86_64-musl.tar.gz \
+gh release verify-asset v0.11.3 ./v8-runner-linux-x86_64-musl.tar.gz \
   --repo Kyrales/v8-runner-rust
 source_commit="$(python3 -c 'import json; print(json.load(open("v8-runner-assets.json"))["release"]["sourceCommit"])')"
 for asset in v8-runner-assets.json v8-runner-linux-x86_64-musl.tar.gz; do
   gh attestation verify "$asset" \
     --repo Kyrales/v8-runner-rust \
     --signer-workflow Kyrales/v8-runner-rust/.github/workflows/release.yml \
-    --source-ref refs/tags/v0.11.2 --source-digest "$source_commit" \
+    --source-ref refs/tags/v0.11.3 --source-digest "$source_commit" \
     --deny-self-hosted-runners
 done
 ```

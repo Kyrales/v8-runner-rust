@@ -206,20 +206,20 @@ class ReleaseGovernanceTest(unittest.TestCase):
         stale = "b" * 40
         revisions = {
             "HEAD": current,
-            "refs/tags/v0.11.2^{commit}": current,
+            "refs/tags/v0.11.3^{commit}": current,
             "refs/remotes/origin/develop": current,
             "refs/remotes/origin/master": stale,
         }
         with mock.patch.object(verifier, "git_revision", side_effect=revisions.__getitem__), \
-             mock.patch.object(sys, "argv", ["verify-release-contract.py", "v0.11.2"]), \
-             mock.patch.dict(os.environ, {"GITHUB_SHA": current, "GITHUB_REF": "refs/tags/v0.11.2"}), \
+             mock.patch.object(sys, "argv", ["verify-release-contract.py", "v0.11.3"]), \
+             mock.patch.dict(os.environ, {"GITHUB_SHA": current, "GITHUB_REF": "refs/tags/v0.11.3"}), \
              mock.patch.object(verifier.subprocess, "run", return_value=mock.Mock(stdout="")):
             verifier.main()
 
         revisions["refs/remotes/origin/develop"] = stale
         with mock.patch.object(verifier, "git_revision", side_effect=revisions.__getitem__), \
-             mock.patch.object(sys, "argv", ["verify-release-contract.py", "v0.11.2"]), \
-             mock.patch.dict(os.environ, {"GITHUB_SHA": current, "GITHUB_REF": "refs/tags/v0.11.2"}), \
+             mock.patch.object(sys, "argv", ["verify-release-contract.py", "v0.11.3"]), \
+             mock.patch.dict(os.environ, {"GITHUB_SHA": current, "GITHUB_REF": "refs/tags/v0.11.3"}), \
              mock.patch.object(verifier.subprocess, "run", return_value=mock.Mock(stdout="")):
             with self.assertRaisesRegex(SystemExit, "release source identity"):
                 verifier.main()
@@ -363,13 +363,13 @@ class ReleaseGovernanceTest(unittest.TestCase):
 
     def test_documented_attestation_is_bound_to_verified_manifest_commit(self) -> None:
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
-        self.assertIn("gh release verify-asset v0.11.2 ./v8-runner-assets.json", readme)
+        self.assertIn("gh release verify-asset v0.11.3 ./v8-runner-assets.json", readme)
         self.assertIn('source_commit="$(python3', readme)
         self.assertIn(
             "for asset in v8-runner-assets.json v8-runner-linux-x86_64-musl.tar.gz", readme
         )
         self.assertIn('--source-digest "$source_commit"', readme)
-        self.assertIn("--source-ref refs/tags/v0.11.2", readme)
+        self.assertIn("--source-ref refs/tags/v0.11.3", readme)
 
     def test_pr_ci_runs_release_asset_contract_tests(self) -> None:
         ci = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")

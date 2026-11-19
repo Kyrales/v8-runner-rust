@@ -141,3 +141,12 @@ MCP deliberately narrower than CLI.
 - HTTP session capacity и execution admission являются разными guardrails.
 - Shared EDT under MCP reuses the same execution model instead of inventing a separate MCP-only
   runtime path.
+
+## Граница захвата stdout/stderr
+
+Начиная с 0.11.3 обычный запуск утилиты возвращает снимок stdout/stderr после выхода
+основного процесса. Оставшиеся дочерние клиенты не задерживают результат открытыми stdio;
+поздние записи потомков не обещаны. Захват использует временный диск: следите за доступным
+местом. Потомок может удерживать это хранилище до своего завершения. Политики отмены
+и критических операций сохраняются. Интерактивный и detached-запуск этим изменением
+не затронуты.

@@ -22,6 +22,16 @@ case "$CI_SCOPE" in
         cargo test --locked --test cli_config_init config_init_windows_path_
         cargo test --locked --test cli_tools_download vanessa_
         windows_contract_tests=(
+          "platform::process::tests::captured_output_and_log_bytes_match"
+          "platform::process::tests::capture_log_error_is_not_success"
+          "platform::process::tests::captured_cancel_before_start_creates_no_child"
+          "platform::process::tests::critical_parent_exit_with_live_descendant_returns_deferred_timeout"
+          "platform::process::tests::captured_parent_exit_does_not_wait_for_descendant"
+          "platform::process::tests::snapshot_is_a_fixed_prefix_and_preserves_writer_position"
+          "platform::process::tests::capture_short_read_is_reported"
+          "platform::process::tests::capture_read_failure_is_reported"
+          "platform::process::tests::captured_streams_preserve_large_bytes_and_lossy_logs"
+          "platform::process::tests::repeated_capture_releases_owned_resources"
           "platform::process::tests::detached_child_does_not_hold_redirected_stdout_open"
           "platform::process::tests::managed_detached_child_does_not_hold_redirected_stdout_open"
           "support::path::tests::filesystem_object_identity_changes_when_directory_is_replaced"
